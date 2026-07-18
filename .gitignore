@@ -1,0 +1,12 @@
+# Binaries
+/bin/
+/sshmng
+
+# Test artifacts
+*.out
+coverage.txt
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
