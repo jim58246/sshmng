@@ -25,12 +25,15 @@ import (
 // fake shell 模拟真实 shell 在 RC 注入后的行为：执行命令、发射 exit/PS1 sentinel。
 //
 // enableSftp=true 时同时支持 sftp subsystem（用于 sftp 集成测试）。
+// echoPty=true 时按 pty-req 中的 ECHO mode 决定是否回显 stdin（模拟真实 SSH server
+// 的 tty driver 行为），用于复现 PTY ECHO 导致 detectShell 误匹配 sentinel 的 bug。
 type fakeShellServer struct {
-	t           *testing.T
-	listener    net.Listener
-	hostKey     ssh.Signer
-	enableSftp  bool
-	wg          sync.WaitGroup
+	t          *testing.T
+	listener   net.Listener
+	hostKey    ssh.Signer
+	enableSftp bool
+	echoPty    bool
+	wg         sync.WaitGroup
 }
 
 func newFakeShellServer(t *testing.T) *fakeShellServer {
@@ -40,6 +43,16 @@ func newFakeShellServer(t *testing.T) *fakeShellServer {
 // newFakeShellServerWithSftp 创建支持 sftp subsystem 的 fake server。
 func newFakeShellServerWithSftp(t *testing.T) *fakeShellServer {
 	return newFakeShellServerOpt(t, true)
+}
+
+// newFakeShellServerWithEcho 创建模拟真实 PTY ECHO 行为的 fake server。
+// 当 sshmng 在 pty-req 中请求 ECHO=1 时，fake server 会把 stdin 回显到 stdout，
+// 与真实 SSH server 的 tty driver 行为一致。用于复现 detectShell 在 ECHO=1 时
+// 误匹配 sentinel 的 bug。
+func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
+	s := newFakeShellServerOpt(t, false)
+	s.echoPty = true
+	return s
 }
 
 func newFakeShellServerOpt(t *testing.T, enableSftp bool) *fakeShellServer {
@@ -112,18 +125,23 @@ func (s *fakeShellServer) handle(conn net.Conn) {
 
 // handleSession 处理一个 session channel：响应 pty-req / shell / subsystem 请求。
 // subsystem=sftp 时启动 sftp server（需 enableSftp=true，否则拒绝）。
+// echoPty=true 时从 pty-req payload 解析 ECHO mode，传给 fake shell 决定是否回显 stdin。
 func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer s.wg.Done()
 	defer ch.Close()
 	ptyRequested := false
+	echoEnabled := false
 	for req := range reqs {
 		switch req.Type {
 		case "pty-req":
 			ptyRequested = true
+			if s.echoPty {
+				echoEnabled = parseEchoMode(req.Payload)
+			}
 			req.Reply(true, nil)
 		case "shell":
 			req.Reply(true, nil)
-			runFakeShell(ch, ptyRequested)
+			runFakeShell(ch, ptyRequested, echoEnabled)
 			return
 		case "subsystem":
 			if !s.enableSftp {
@@ -141,6 +159,47 @@ func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request
 			req.Reply(false, nil)
 		}
 	}
+}
+
+// parseEchoMode 解析 pty-req payload，返回 ECHO mode 是否为 1。
+// Go SSH library 把 modes 作为 string 编码（4 字节长度前缀 + 数据），数据段格式
+// 见 RFC 4254 §8：byte opcode, uint32 value, ..., byte 0 (TTY_OP_END)。
+// ECHO opcode 用 ssh.ECHO 常量（实际值为 53，不是 POSIX termios 的 10）。
+func parseEchoMode(payload []byte) bool {
+	if len(payload) < 4 {
+		return false
+	}
+	termLen := binary.BigEndian.Uint32(payload[:4])
+	if uint32(len(payload)-4) < termLen {
+		return false
+	}
+	pos := 4 + int(termLen)
+	// 跳过 4 个 uint32：cols / rows / wpix / hpix = 16 字节
+	if pos+16 > len(payload) {
+		return false
+	}
+	pos += 16
+	// 跳过 4 字节 modes 长度前缀（Go SSH library 用 string 编码 modes）
+	if pos+4 > len(payload) {
+		return false
+	}
+	modesLen := binary.BigEndian.Uint32(payload[pos : pos+4])
+	pos += 4
+	if pos+int(modesLen) > len(payload) {
+		return false
+	}
+	for pos+5 <= len(payload) {
+		opcode := payload[pos]
+		if opcode == 0 { // TTY_OP_END
+			break
+		}
+		value := binary.BigEndian.Uint32(payload[pos+1 : pos+5])
+		if opcode == ssh.ECHO {
+			return value == 1
+		}
+		pos += 5
+	}
+	return false
 }
 
 // parseSubsystemPayload 解析 subsystem 请求的 payload：4 字节长度 + 子系统名。
@@ -163,13 +222,19 @@ func runSftpServer(ch ssh.Channel) {
 }
 
 // runFakeShell 实现 fake shell：读行、解析 RC 注入、执行命令、发射 sentinel。
-// 模拟真实 shell 在 RC 注入后的行为。不实现 PTY echo（RC 注入后 stty -echo）。
+// 模拟真实 shell 在 RC 注入后的行为。
+//
+// echoEnabled=true 时（对应 sshmng 在 pty-req 中请求 ECHO=1），每读到一行就先把
+// 原始行回显到 stdout，再交给 shell 处理。这模拟真实 SSH server 的 tty driver
+// 行为：ECHO termios flag 为 1 时，stdin 字节立即回显到 stdout。回显先于 shell
+// 处理发生，因此 sshmng 会在执行结果到达前先看到命令字符串本身（含未展开的 $0
+// 等），容易导致 sentinel 误匹配。
 //
 // 关键时序：sid 从 `export PS1='__P_<sid>__> '` 行提取，但 PS1 sentinel 只在
 // RC 结束（`stty -echo` 行）后才打印——模拟真实 shell 处理完整个 RC 后才提示。
 // 这避免 client 在 RC 还没消费完时看到 PS1 sentinel 就发命令，导致 fake shell
 // 把后续 RC 行当命令执行报语法错误。
-func runFakeShell(ch ssh.Channel, _ bool) {
+func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool) {
 	reader := bufio.NewReader(ch)
 	var sid string
 	rcDone := false
@@ -177,6 +242,11 @@ func runFakeShell(ch ssh.Channel, _ bool) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return
+		}
+		// ECHO=1 时回显原始行（含 \n），模拟 tty driver echo。
+		// 必须在 shell 处理之前回显，让 sshmng 在执行结果到达前先看到命令字符串。
+		if echoEnabled {
+			ch.Write([]byte(line))
 		}
 		line = strings.TrimRight(line, "\r\n")
 
@@ -436,6 +506,52 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 	}
 	if len(out) > 100 {
 		t.Errorf("out should be truncated to 100 bytes, got %d", len(out))
+	}
+}
+
+// TestIntegrationPtyEchoDoesNotBreakShellDetect 验证 sshmng 不会因 PTY ECHO
+// 回显而误判 shell 类型。
+//
+// 真实 SSH server 在 pty-req ECHO=1 时，tty driver 会把 stdin 字节立即回显到
+// stdout。sshmng 的 detectShell 命令字符串里包含 `__DETECT_END_<rand>__` 字面量，
+// 当 ECHO=1 时该字面量会先于 shell 真正执行结果到达 sshmng，readUntilPatternTimeout
+// 在回显字符串里就匹配到 marker 并返回，ParseShellDetect 看到的是未展开的
+// `echo __SHELL_DETECT__:$0:...`（$0 仍是字面量），无法解析出 shell 类型。
+//
+// 修复：sshmng 在 RequestPty 时把 ECHO 显式设为 0，所有 stdin 写入都是 sshmng
+// 主动发起（LoginFlow Send / run_in_session cmd / send_input text），不需要回显。
+func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
+	srv := newFakeShellServerWithEcho(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(DialOptions{
+		Addr: srv.Addr(),
+		User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v (PTY ECHO should be disabled so detectShell waits for real execution result, not echoed command)", err)
+	}
+	defer ptyConn.Close()
+
+	if ptyConn.Shell() != "bash" {
+		t.Errorf("Shell = %q, want bash", ptyConn.Shell())
+	}
+
+	// 完整跑一条命令验证后续流程也正常（RC 注入、sentinel 识别）。
+	output, exitCode, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if !strings.Contains(output, "hello") {
+		t.Errorf("output should contain 'hello', got: %q", output)
 	}
 }
 

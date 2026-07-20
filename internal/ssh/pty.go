@@ -104,8 +104,14 @@ func OpenPtyConn(client *ssh.Client, sid string) (*PtyConn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
 	}
+	// ECHO=0：所有 stdin 写入都是 sshmng 主动发起（LoginFlow Send / run_in_session
+	// cmd / send_input text），不需要 tty driver 回显。若 ECHO=1，detectShell 发送的
+	// 探测命令会先被回显到 stdout，readUntilPattern 在回显字符串里就匹配到
+	// __DETECT_END__，ParseShellDetect 看到的是未展开的 `echo __SHELL_DETECT__:$0:...`
+	// （$0 仍是字面量），无法解析 shell 类型。RC 注入里有 stty -echo 但那是 RC 之后
+	// 才生效，detectShell 在 RC 之前执行，必须在 pty-req 阶段就关闭 ECHO。
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
+		ssh.ECHO:          0,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
