@@ -20,7 +20,7 @@ func newTestService(t *testing.T, seed *config.Config) *Service {
 		t.Fatalf("seed save: %v", err)
 	}
 	knownHosts := ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
-	return NewService(store, knownHosts)
+	return NewService(store, knownHosts, nil)
 }
 
 // resultText 提取 CallToolResult 的第一个 TextContent 文本。

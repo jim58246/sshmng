@@ -58,17 +58,23 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		Proxy: srv.Proxy,
 	})
 	if err != nil {
+		// 不记录凭据；addr/user 在 config 中可见，不算敏感
+		s.sessionLogger(req, "").Warn("login failed: ssh dial",
+			"server", srv.Name, "addr", srv.Addr, "err", err.Error())
 		return errorResult("ssh connect to %s: %v", srv.Addr, err)
 	}
 
 	sid, err := ssh.RandomSID()
 	if err != nil {
 		client.Close()
+		s.sessionLogger(req, "").Warn("login failed: generate sid", "server", srv.Name, "err", err.Error())
 		return errorResult("generate sid: %v", err)
 	}
+	logger := s.sessionLogger(req, sid)
 	ptyConn, err := ssh.NewPtyConn(client, sid)
 	if err != nil {
 		client.Close()
+		logger.Warn("login failed: setup pty", "server", srv.Name, "err", err.Error())
 		return errorResult("setup pty: %v", err)
 	}
 
@@ -76,7 +82,8 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 	if idleTimeout == 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout)
+	s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
+	logger.Info("session created", "server", srv.Name, "addr", srv.Addr, "idle_timeout", idleTimeout.String())
 
 	return textResult(map[string]any{
 		"sid":            sid,
@@ -97,6 +104,10 @@ func (s *Service) RunInSession(ctx context.Context, req *mcp.CallToolRequest, ar
 	if err != nil {
 		return errorResult("%v", err)
 	}
+	if timedOut {
+		s.sessionLogger(req, args.SID).Warn("command timed out",
+			"server", sess.ServerName(), "timeout_ms", args.TimeoutMs, "total_bytes", totalBytes)
+	}
 	return textResult(map[string]any{
 		"output":      output,
 		"exit_code":   exitCode,
@@ -113,9 +124,12 @@ func (s *Service) CloseSession(ctx context.Context, req *mcp.CallToolRequest, ar
 	if err != nil {
 		return errorResult("%v", err)
 	}
+	serverName := sess.ServerName()
 	if err := sess.Close(); err != nil {
+		s.sessionLogger(req, args.SID).Warn("close session failed", "server", serverName, "err", err.Error())
 		return errorResult("close session %q: %v", args.SID, err)
 	}
+	s.sessionLogger(req, args.SID).Info("session closed", "server", serverName)
 	return textResult(map[string]any{"sid": args.SID, "closed": true})
 }
 

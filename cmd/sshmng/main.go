@@ -7,13 +7,18 @@
 //  1. --config <path> 命令行参数
 //  2. $SSHMNG_HOME/config.json
 //  3. $HOME/.sshmng/config.json
+//
+// 日志策略（详见 docs/ssh-session-manager-design.md §3.8）：
+//   - stdout 严禁写日志（JSON-RPC 专用）
+//   - 操作日志通过 MCP notifications/message 推到 client（sessionLogger）
+//   - stderr 仅留 bootstrap 错误与 fatal panic
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,15 +33,22 @@ func main() {
 	configPath := flag.String("config", "", "path to config.json (default: $SSHMNG_HOME/config.json or $HOME/.sshmng/config.json)")
 	flag.Parse()
 
+	// bootstrap 日志走 stderr；MCP server 起来后操作日志走 notifications/message
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	path, err := resolveConfigPath(*configPath)
 	if err != nil {
-		log.Fatalf("resolve config path: %v", err)
+		logger.Error("resolve config path", "err", err)
+		os.Exit(1)
 	}
 
 	store := config.NewStore(path)
 	// 启动时尝试加载一次，提早暴露权限/格式问题。
 	if _, err := store.Load(); err != nil {
-		log.Fatalf("load config from %s: %v\nnote: if the file does not exist it will be created on first update; permission errors must be fixed manually (chmod 0600)", path, err)
+		logger.Error("load config",
+			"path", path, "err", err,
+			"note", "if the file does not exist it will be created on first update; permission errors must be fixed manually (chmod 0600)")
+		os.Exit(1)
 	}
 
 	knownHosts := ssh.NewKnownHostsStore(filepath.Join(filepath.Dir(path), "known_hosts"))
@@ -44,10 +56,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	svc := mcp.NewService(store, knownHosts)
-	log.Printf("sshmng MCP server starting (config: %s)", path)
+	svc := mcp.NewService(store, knownHosts, logger)
+	logger.Info("sshmng MCP server starting", "config", path)
 	if err := svc.Run(ctx); err != nil {
-		log.Fatalf("server: %v", err)
+		logger.Error("server", "err", err)
+		os.Exit(1)
 	}
 }
 

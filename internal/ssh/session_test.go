@@ -99,7 +99,7 @@ func (f *fakeConn) SendSpecial(key string) error {
 
 func TestSessionStartsIdle(t *testing.T) {
 	mgr := NewManager()
-	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute, nil)
 	if got := s.State(); got != StateIdle {
 		t.Errorf("got %v, want StateIdle", got)
 	}
@@ -109,7 +109,7 @@ func TestRunInSessionTransitionsToRunningAndBack(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
 	conn.runResult = fakeRunResult{output: "hello", exitCode: 0}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	// 在 Run 执行前/后检查状态。由于 fakeConn 同步返回，状态转换不可观察；
 	// 改用 runDelay 让 Run 阻塞一小段时间，从而能在执行中观察 running。
@@ -134,7 +134,7 @@ func TestRunInSessionWhileBusyReturnsError(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
 	conn.runDelay = 50 * time.Millisecond
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -156,7 +156,7 @@ func TestRunInSessionWhileBusyReturnsError(t *testing.T) {
 
 func TestSendInputWhileIdleReturnsError(t *testing.T) {
 	mgr := NewManager()
-	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute, nil)
 	err := s.SendInput("text")
 	if err == nil {
 		t.Errorf("expected 'session idle' error")
@@ -168,7 +168,7 @@ func TestSendInputWhileIdleReturnsError(t *testing.T) {
 
 func TestSendSpecialWhileIdleReturnsError(t *testing.T) {
 	mgr := NewManager()
-	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute, nil)
 	err := s.SendSpecial("ctrl-c")
 	if err == nil {
 		t.Errorf("expected 'session idle' error")
@@ -183,7 +183,7 @@ func TestSendSpecialWhileIdleReturnsError(t *testing.T) {
 func TestIdleTimeoutAutoCloses(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
-	s := mgr.newSessionWithConn("sid1", "srv", conn, 50*time.Millisecond)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, 50*time.Millisecond, nil)
 	// 等 idle timeout 触发
 	time.Sleep(150 * time.Millisecond)
 	if got := s.State(); got != StateClosed {
@@ -202,7 +202,7 @@ func TestActivityResetsIdleTimer(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
 	conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, 80*time.Millisecond)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, 80*time.Millisecond, nil)
 
 	// 在 50ms 时跑一次命令（重置 timer）
 	time.Sleep(50 * time.Millisecond)
@@ -226,7 +226,7 @@ func TestRunDuringRunningDoesNotResetIdleTimerPrematurely(t *testing.T) {
 	conn := newFakeConn()
 	conn.runDelay = 100 * time.Millisecond
 	conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, 30*time.Millisecond)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, 30*time.Millisecond, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -245,7 +245,7 @@ func TestRunDuringRunningDoesNotResetIdleTimerPrematurely(t *testing.T) {
 func TestCloseSessionSetsClosedState(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestCloseSessionWhileRunningForceCloses(t *testing.T) {
 	conn := newFakeConn()
 	conn.runDelay = 200 * time.Millisecond
 	conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -281,7 +281,7 @@ func TestCloseSessionWhileRunningForceCloses(t *testing.T) {
 
 func TestRunInSessionAfterCloseReturnsError(t *testing.T) {
 	mgr := NewManager()
-	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute)
+	s := mgr.newSessionWithConn("sid1", "srv", newFakeConn(), time.Minute, nil)
 	s.Close()
 	_, _, _, _, _, err := s.RunInSession("cmd", 1000, 0)
 	if err == nil || !strings.Contains(err.Error(), "closed") {
@@ -302,8 +302,8 @@ func TestManagerStatListsAllSessions(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
 	conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-	mgr.newSessionWithConn("sid1", "srv1", newFakeConn(), time.Minute)
-	mgr.newSessionWithConn("sid2", "srv2", newFakeConn(), time.Minute)
+	mgr.newSessionWithConn("sid1", "srv1", newFakeConn(), time.Minute, nil)
+	mgr.newSessionWithConn("sid2", "srv2", newFakeConn(), time.Minute, nil)
 
 	stats := mgr.Stat()
 	if len(stats) != 2 {
@@ -329,7 +329,7 @@ func TestManagerConcurrentAccess(t *testing.T) {
 			sid := "sid-" + string(rune('a'+i))
 			conn := newFakeConn()
 			conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-			s := mgr.newSessionWithConn(sid, "srv", conn, time.Minute)
+			s := mgr.newSessionWithConn(sid, "srv", conn, time.Minute, nil)
 			_, _, _, _, _, _ = s.RunInSession("cmd", 1000, 0)
 			_ = s.Close()
 			_ = mgr.Stat()

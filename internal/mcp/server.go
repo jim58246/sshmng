@@ -15,7 +15,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
@@ -27,17 +29,46 @@ type Service struct {
 	store      *config.Store
 	knownHosts *ssh.KnownHostsStore
 	manager    *ssh.Manager
+	baseLogger *slog.Logger // stderr 兜底日志；sessionLogger 不可用时退回此 logger
 	mu         sync.Mutex
 }
 
 // NewService 创建一个绑定到 store + knownHosts 的 Service。
+// baseLogger 用于 stderr 兜底（bootstrap / 异步事件无 req.Session 时）；nil 退化为 discard。
 // 内部创建 session Manager。
-func NewService(store *config.Store, knownHosts *ssh.KnownHostsStore) *Service {
+func NewService(store *config.Store, knownHosts *ssh.KnownHostsStore, baseLogger *slog.Logger) *Service {
+	if baseLogger == nil {
+		baseLogger = slog.New(slog.DiscardHandler)
+	}
 	return &Service{
 		store:      store,
 		knownHosts: knownHosts,
 		manager:    ssh.NewManager(),
+		baseLogger: baseLogger,
 	}
+}
+
+// sessionLogger 返回与当前 MCP client session 绑定的 logger。
+// 通过 mcp.NewLoggingHandler 把 slog 记录转成 notifications/message 推到 client。
+// 若 req 或 req.Session 为 nil（如异步回调、测试），退回 baseLogger（stderr）。
+// MinInterval=100ms 限流避免高频日志淹没 client。
+func (s *Service) sessionLogger(req *mcp.CallToolRequest, sid string) *slog.Logger {
+	if req == nil || req.Session == nil {
+		l := s.baseLogger
+		if sid != "" {
+			l = l.With("sid", sid)
+		}
+		return l
+	}
+	h := mcp.NewLoggingHandler(req.Session, &mcp.LoggingHandlerOptions{
+		LoggerName:  "sshmng",
+		MinInterval: 100 * time.Millisecond,
+	})
+	l := slog.New(h)
+	if sid != "" {
+		l = l.With("sid", sid)
+	}
+	return l
 }
 
 // ListArgs 是 list_* 工具的入参。Query 为空时返回全部。

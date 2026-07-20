@@ -712,6 +712,36 @@ echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_<
 - SSH 断开：PTY EOF，Read 返回 0 → session 标记 closed，返回部分输出
 - 远端 `.bashrc` 报错：报错信息进 PTY 流但 sentinel 仍会出现，清洗时保留 sentinel 之前内容作为输出
 
+### 3.8 日志处理
+
+**约束**：MCP 协议规定 **stdout 严禁写日志**（专用于 JSON-RPC）。日志只能走 stderr、文件、或 MCP logging notifications 三选。
+
+**方案：MCP logging notifications + stderr 兜底。**
+
+- **操作日志**：用 `slog` + `mcp.NewLoggingHandler(req.Session, opts)` 创建 session-scoped logger，通过 `notifications/message` 推到 client。client（Claude Code / Desktop）在 MCP debug 视图展示，支持 `logging/setLevel` 控制 level。
+- **stderr**：只留 bootstrap 错误（MCP 还没起来时，如配置加载失败、known_hosts 权限错）和 fatal panic。`cmd/sshmng/main.go` 用 `slog.NewTextHandler(os.Stderr, nil)` 作为 base logger，session 接入前用。
+- **日志文件**：v1 不做。client 已捕获 MCP 日志，`--mcp-debug` 可事后诊断；rotation/权限管理是额外复杂度，收益小。
+
+**Level 约定：**
+
+| Level | 用途 |
+|---|---|
+| Debug | 详细内部状态（sentinel 匹配过程、shell 探测细节） |
+| Info | session 创建/关闭、TOFU host key 新增、login 成功 |
+| Warning | idle timeout 触发、sftp 通道不可用、host key 变更（也是 Error） |
+| Error | login 失败、host key 变更、PTY 建立/RC 注入失败 |
+
+**打什么 / 不打什么：**
+
+- ✅ 打：session 生命周期（create/close/timeout）、TOFU 事件（new/changed）、sftp 可用性、login 失败的 error 类别（不含凭据）、RC 注入失败
+- ❌ 不打：命令输出（已在 `run_in_session` 的 `output` 字段）、密码/passphrase/private_key 内容（敏感）、send_input 文本（可能含密码）、完整 PTY 流（量大且含敏感）
+
+**Rate limit：** `LoggingHandlerOptions.MinInterval = 100ms`，防止高频事件（如命令超时循环）淹没 client。
+
+**为什么不用纯 stderr：** info 级日志会混在 fatal 错误里，且 client 不一定持久化；操作日志走 notifications 让 client 能按 level 过滤、按 session 关联。
+
+**为什么不用纯 MCP notifications：** server 启动失败（MCP 还没起来）时无任何日志可看，debug 困难。stderr 兜底是必须的。
+
 ## 4. 服务端设计（后续迭代）
 
 > v1 阶段不实现服务端。客户端独立运行，本地存储配置。以下保留为后续迭代参考。
@@ -747,5 +777,6 @@ echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_<
 - [x] 技术选型（SSH 库）
 - [x] MCP SDK 具体包选择
 - [x] 资源识别（name 路径 + tags 平列表 + 子串搜索）
+- [x] 日志处理（MCP notifications + stderr 兜底，见 3.8）
 - [ ] .xsh 导入导出格式（v2）
 - [ ] 同步方向（v2）

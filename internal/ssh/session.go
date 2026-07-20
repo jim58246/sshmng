@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -60,7 +61,8 @@ type Session struct {
 	commandsRun  int
 	idleTimeout  time.Duration
 	idleTimer    *time.Timer
-	manager      *Manager // 反向引用，用于 Close 时从 Manager 移除
+	logger       *slog.Logger // 操作日志（idle timeout、异步事件）；nil 时退化为 discard
+	manager      *Manager     // 反向引用，用于 Close 时从 Manager 移除
 	mu           sync.Mutex
 }
 
@@ -77,13 +79,17 @@ func NewManager() *Manager {
 
 // NewSession 是生产代码入口：用已有 Conn 创建 session 并加入 Manager。
 // 调用方负责装配 Conn（Dialer + PtyConn），Manager 只管状态机与 idle timeout。
-func (m *Manager) NewSession(sid, serverName string, conn Conn, idleTimeout time.Duration) *Session {
-	return m.newSessionWithConn(sid, serverName, conn, idleTimeout)
+// logger 用于 idle timeout 等异步事件；nil 退化为 discard。
+func (m *Manager) NewSession(sid, serverName string, conn Conn, idleTimeout time.Duration, logger *slog.Logger) *Session {
+	return m.newSessionWithConn(sid, serverName, conn, idleTimeout, logger)
 }
 
 // newSessionWithConn 用已有 Conn 创建一个 session 并加入 Manager。测试用入口。
 // 真实创建走 Login 方法（dialer + pty 装配 Conn）。
-func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTimeout time.Duration) *Session {
+func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTimeout time.Duration, logger *slog.Logger) *Session {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	s := &Session{
 		sid:          sid,
 		serverName:   serverName,
@@ -92,6 +98,7 @@ func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTime
 		createdAt:    time.Now(),
 		lastActivity: time.Now(),
 		idleTimeout:  idleTimeout,
+		logger:       logger,
 		manager:      m,
 	}
 	if idleTimeout > 0 {
@@ -99,6 +106,7 @@ func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTime
 		// 看到的是已赋值状态（回调也可能在 AfterFunc 返回前就触发）。
 		s.mu.Lock()
 		s.idleTimer = time.AfterFunc(idleTimeout, func() {
+			s.logger.Info("idle timeout fired, closing session", "sid", s.sid, "server", s.serverName, "idle_timeout", s.idleTimeout.String())
 			s.Close()
 		})
 		s.mu.Unlock()

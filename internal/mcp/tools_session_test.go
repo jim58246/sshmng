@@ -299,7 +299,7 @@ func TestIntegrationLoginRunClose(t *testing.T) {
 		},
 	})
 	knownHosts := ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
-	svc := NewService(store, knownHosts)
+	svc := NewService(store, knownHosts, nil)
 
 	// 1. Login
 	res, _, err := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "test"})
@@ -369,7 +369,7 @@ func TestIntegrationRunMultipleCommands(t *testing.T) {
 			{Name: "test", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")))
+	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "test"})
 	sid := parseJSON(t, resultText(t, res)).(map[string]any)["sid"].(string)
@@ -396,7 +396,7 @@ func TestIntegrationLoginAuthFailure(t *testing.T) {
 			{Name: "test", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wrong-password"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")))
+	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "test"})
 	if !res.IsError {
