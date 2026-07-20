@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"sshmng/internal/config"
+	"sshmng/internal/loginflow"
 )
 
 // 默认超时：未指定 timeoutMs 时使用。
@@ -20,6 +22,18 @@ const shellDetectTimeout = 5 * time.Second
 
 // rcInjectTimeout 是 RC 注入后等待首个 PS1 sentinel 的超时。
 const rcInjectTimeout = 5 * time.Second
+
+// loginFlowQuietPeriod 是 LoginFlow Read 在 mustContain 为空时的静默期：
+// 连续无新数据超过此时长即返回，避免无限等待。
+const loginFlowQuietPeriod = 200 * time.Millisecond
+
+// PtyConnOptions 是 NewPtyConn 的可选参数；nil 表示无 LoginFlow（直连场景）。
+type PtyConnOptions struct {
+	LoginFlow       map[string]config.LoginAction // 非空时在 shell detect 后、RC 注入前执行
+	LoginEntry      string                        // LoginFlow 起始 Action 名
+	MaxSteps        int                           // 0 = 默认 50
+	GlobalTimeoutMs int                           // 0 = 默认 60000
+}
 
 // PtyConn 包装 *ssh.Session + PTY，实现 Conn 接口。
 // 注入 sentinel 后即可通过 Run 执行单条命令并自动识别命令边界 + exit code。
@@ -37,12 +51,20 @@ type PtyConn struct {
 	doneCh   chan struct{}
 	closed   bool
 
+	// pushback 缓冲：readUntilPatternTimeout 匹配 pattern 后，pattern 之后的
+	// trailing data 存此，下次 Read 优先消费。避免 detectShell 吃掉 LoginFlow
+	// 阶段 server 自发输出。
+	pushback []byte
+
 	mu sync.Mutex
 }
 
-// NewPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell、探测 shell 类型、注入 RC。
-// 调用者负责在失败时 Close。
-func NewPtyConn(client *ssh.Client, sid string) (*PtyConn, error) {
+// NewPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell、探测 shell 类型、
+// 可选执行 LoginFlow、注入 RC。调用者负责在失败时 Close。
+//
+// opts 为 nil 或 opts.LoginFlow 为空时跳过 LoginFlow（直连场景）；
+// 非空时在 shell detect 后、RC 注入前执行，失败返回 error（含 trace 供诊断）。
+func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions) (*PtyConn, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
@@ -87,6 +109,19 @@ func NewPtyConn(client *ssh.Client, sid string) (*PtyConn, error) {
 		return nil, fmt.Errorf("detect shell: %w", err)
 	}
 	p.shell = shell
+
+	if opts != nil && len(opts.LoginFlow) > 0 {
+		trace, err := loginflow.Run(p, opts.LoginFlow, opts.LoginEntry, loginflow.Options{
+			MaxSteps:       opts.MaxSteps,
+			GlobalTimeout:  time.Duration(opts.GlobalTimeoutMs) * time.Millisecond,
+			DefaultTimeout: 0, // 用 loginflow 包默认值
+		})
+		if err != nil {
+			p.Close()
+			return nil, fmt.Errorf("loginflow: %w; trace=%v", err, trace)
+		}
+	}
+
 	if err := p.injectRC(); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("inject rc: %w", err)
@@ -192,6 +227,81 @@ func (p *PtyConn) SendInput(text string) error {
 	return err
 }
 
+// Read 实现 loginflow.PTY 接口。
+//
+// mustContain 非空时读至 substring 出现或 deadline；为空时用静默期 heuristic
+// （连续 loginFlowQuietPeriod 无新数据即返回），便于 LoginFlow 入口 Action 等远端
+// 自发输出（MOTD / 菜单）。
+//
+// 优先消费 pushback（readUntilPatternTimeout 留下的 trailing data）。
+func (p *PtyConn) Read(deadline time.Time, mustContain string) (string, bool, error) {
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return "", false, errors.New("connection closed")
+	}
+
+	// 先消费 pushback
+	p.mu.Lock()
+	var buf []byte
+	if len(p.pushback) > 0 {
+		buf = append(buf, p.pushback...)
+		p.pushback = nil
+	}
+	p.mu.Unlock()
+
+	if mustContain != "" {
+		// pushback 已含 mustContain：直接返回
+		if bytes.Contains(buf, []byte(mustContain)) {
+			// 与 readUntilPatternTimeout 行为一致：保留 trailing
+			idx := bytes.Index(buf, []byte(mustContain))
+			end := idx + len(mustContain)
+			p.mu.Lock()
+			p.pushback = append([]byte{}, buf[end:]...)
+			p.mu.Unlock()
+			return string(buf[:end]), false, nil
+		}
+		// 否则继续从 stdoutCh 读
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return string(buf), true, nil
+		}
+		out, timedOut := p.readUntilPatternTimeout(mustContain, remaining)
+		// readUntilPatternTimeout 会重新消费 pushback（已被我们清空），所以 out 不含我们已读的 buf
+		// 拼接：buf（已消费的 pushback）+ out（新读到 pattern）
+		return string(buf) + out, timedOut, nil
+	}
+
+	// 空 mustContain：静默期 heuristic
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return string(buf), true, nil
+		}
+		quietTimeout := loginFlowQuietPeriod
+		if remaining < quietTimeout {
+			quietTimeout = remaining
+		}
+		select {
+		case data, ok := <-p.stdoutCh:
+			if !ok {
+				return string(buf), true, nil
+			}
+			buf = append(buf, data...)
+		case <-time.After(quietTimeout):
+			return string(buf), false, nil
+		case <-p.doneCh:
+			return string(buf), true, nil
+		}
+	}
+}
+
+// Send 实现 loginflow.PTY 接口。等价于 SendInput。
+func (p *PtyConn) Send(s string) error {
+	return p.SendInput(s)
+}
+
 // SendSpecial 实现 Conn 接口。把命名控制字符编码为字节写入 PTY stdin。
 // key: "ctrl-c"(\x03) | "ctrl-d"(\x04) | "ctrl-z"(\x1a) | "tab"(\t) | "esc"(\x1b)
 func (p *PtyConn) SendSpecial(key string) error {
@@ -255,10 +365,28 @@ func (p *PtyConn) readUntilPattern(pattern string, timeout time.Duration) (strin
 }
 
 // readUntilPatternTimeout 从 stdoutCh 读取直到 data 包含 pattern 或超时。
-// 返回 (累积输出, 是否超时)。
+// 返回 (累积输出, 是否超时)。pattern 之后的 trailing data 存入 pushback 供下次 Read。
 func (p *PtyConn) readUntilPatternTimeout(pattern string, timeout time.Duration) (string, bool) {
 	deadline := time.Now().Add(timeout)
 	var buf []byte
+
+	// 先消费 pushback
+	p.mu.Lock()
+	if len(p.pushback) > 0 {
+		buf = append(buf, p.pushback...)
+		p.pushback = nil
+	}
+	p.mu.Unlock()
+
+	if idx := bytes.Index(buf, []byte(pattern)); idx >= 0 {
+		// pushback 已包含 pattern：切分，trailing 回存
+		end := idx + len(pattern)
+		p.mu.Lock()
+		p.pushback = append([]byte{}, buf[end:]...)
+		p.mu.Unlock()
+		return string(buf[:end]), false
+	}
+
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -271,8 +399,12 @@ func (p *PtyConn) readUntilPatternTimeout(pattern string, timeout time.Duration)
 				return string(buf), true
 			}
 			buf = append(buf, data...)
-			if bytes.Contains(buf, []byte(pattern)) {
-				return string(buf), false
+			if idx := bytes.Index(buf, []byte(pattern)); idx >= 0 {
+				end := idx + len(pattern)
+				p.mu.Lock()
+				p.pushback = append([]byte{}, buf[end:]...)
+				p.mu.Unlock()
+				return string(buf[:end]), false
 			}
 		case <-time.After(remaining):
 			return string(buf), true

@@ -42,12 +42,9 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		return errorResult("%v", err)
 	}
 
-	// v1 phase 2 限制：只支持直连
+	// v1 phase 3 限制：支持直连 + SSHServer.LoginFlow；jumphost 仍待 phase 4
 	if srv.Via != nil {
-		return errorResult("jumphost via not supported in v1 phase 2 (server %q uses via %q); will be added in phase 4", args.Name, srv.Via.Name)
-	}
-	if srv.LoginFlow != nil {
-		return errorResult("server login_flow not supported in v1 phase 2 (server %q); will be added in phase 3", args.Name)
+		return errorResult("jumphost via not supported yet (server %q uses via %q); will be added in phase 4", args.Name, srv.Via.Name)
 	}
 
 	dialer := ssh.NewDialer(s.knownHosts)
@@ -71,7 +68,12 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		return errorResult("generate sid: %v", err)
 	}
 	logger := s.sessionLogger(req, sid)
-	ptyConn, err := ssh.NewPtyConn(client, sid)
+	ptyConn, err := ssh.NewPtyConn(client, sid, &ssh.PtyConnOptions{
+		LoginFlow:       srv.LoginFlow,
+		LoginEntry:      srv.LoginEntry,
+		MaxSteps:        srv.MaxSteps,
+		GlobalTimeoutMs: srv.GlobalTimeoutMs,
+	})
 	if err != nil {
 		client.Close()
 		logger.Warn("login failed: setup pty", "server", srv.Name, "err", err.Error())

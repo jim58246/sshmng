@@ -216,7 +216,7 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RandomSID: %v", err)
 	}
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestIntegrationRunFailingCommand(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestIntegrationRunTimeout(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestIntegrationSendSpecial(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestIntegrationMultipleCommands(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid)
+	ptyConn, err := NewPtyConn(client, sid, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}

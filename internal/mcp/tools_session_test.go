@@ -68,8 +68,9 @@ func TestLoginRejectsJumphost(t *testing.T) {
 	}
 }
 
-// TestLoginRejectsLoginFlow 校验 v1 phase 2 拒绝带 LoginFlow 的 server。
-func TestLoginRejectsLoginFlow(t *testing.T) {
+// TestLoginAcceptsLoginFlowButFailsOnDial 校验 v1 phase 3 接受带 LoginFlow 的 server
+// （不再以 "not supported" 拒绝），但因为 addr 不可达所以仍返回 IsError=true。
+func TestLoginAcceptsLoginFlowButFailsOnDial(t *testing.T) {
 	svc := newTestService(t, &config.Config{
 		Version: "1",
 		Servers: []*config.SSHServer{
@@ -85,7 +86,11 @@ func TestLoginRejectsLoginFlow(t *testing.T) {
 	})
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "with-flow"})
 	if !res.IsError {
-		t.Errorf("expected IsError=true for server with LoginFlow")
+		t.Errorf("expected IsError=true (dial should fail for unreachable addr)")
+	}
+	// 不能再以 "not supported" 拒绝
+	if msg := resultText(t, res); strings.Contains(msg, "not supported") {
+		t.Errorf("phase 3 should accept LoginFlow; got: %s", msg)
 	}
 }
 

@@ -10,7 +10,7 @@
 |------|------|------|--------|
 | 1 | 项目骨架 + 配置管理 + MCP CRUD 工具 | ✅ 完成 | `34f8311` |
 | 2 | SSH 连接层 + 直连会话（Pattern A，无 LoginFlow） | ✅ 完成 | `96b669a` |
-| 3 | LoginFlow 决策树执行器（Pattern A 下 SSHServer.LoginFlow） | ⏳ 待开始 | — |
+| 3 | LoginFlow 决策树执行器（Pattern A 下 SSHServer.LoginFlow） | ✅ 完成 | （本次提交） |
 | 4 | Pattern B 交互式堡垒机 | ⏳ 待开始 | — |
 | 5 | sftp + send_input/send_special/get_trace + 其余工具 | ⏳ 待开始 | — |
 
@@ -108,7 +108,7 @@ sshmng/
 - 不支持 sftp（`sftp_available` 恒为 false）
 - 不支持 `send_input` / `send_special` / `get_trace` MCP 工具（PtyConn 已实现，但 MCP handler 未注册）
 
-## 阶段 3：LoginFlow 决策树执行器 ⏳
+## 阶段 3：LoginFlow 决策树执行器 ✅
 
 **目标**：支持 `SSHServer.LoginFlow`（target 认证后交互，如 su / 角色选择 / PAM）。Pattern A 下 login 流程：SSH auth → target shell 就绪 → SSHServer.LoginFlow（如有）→ 注入 RC → idle。
 
