@@ -27,13 +27,16 @@ import (
 // enableSftp=true 时同时支持 sftp subsystem（用于 sftp 集成测试）。
 // echoPty=true 时按 pty-req 中的 ECHO mode 决定是否回显 stdin（模拟真实 SSH server
 // 的 tty driver 行为），用于复现 PTY ECHO 导致 detectShell 误匹配 sentinel 的 bug。
+// realisticPrompt=true 时模拟真实 bash 在 RC 期间每行执行后都显示 PS1 的行为
+// （默认 false：sentinel 只在 stty -echo 后才打印，掩盖 BuildRC 多行 RC 的 bug）。
 type fakeShellServer struct {
-	t          *testing.T
-	listener   net.Listener
-	hostKey    ssh.Signer
-	enableSftp bool
-	echoPty    bool
-	wg         sync.WaitGroup
+	t               *testing.T
+	listener        net.Listener
+	hostKey         ssh.Signer
+	enableSftp      bool
+	echoPty         bool
+	realisticPrompt bool
+	wg              sync.WaitGroup
 }
 
 func newFakeShellServer(t *testing.T) *fakeShellServer {
@@ -52,6 +55,17 @@ func newFakeShellServerWithSftp(t *testing.T) *fakeShellServer {
 func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
 	s := newFakeShellServerOpt(t, false)
 	s.echoPty = true
+	return s
+}
+
+// newFakeShellServerWithRealisticPrompt 创建模拟真实 bash prompt 行为的 fake server。
+// 真实 bash 在交互模式下，每行命令执行完都会显示 PS1（先执行 PROMPT_COMMAND）。
+// 这复现 BuildRC 多行 RC 导致 injectRC 提前匹配 sentinel 的 bug：`export PS1=` 在
+// RC 中间，injectRC 等到该行后的 sentinel 就以为 RC 完成，但后续行的 prompt 残留
+// 在 stdoutCh 里被下次 Run 误消费。
+func newFakeShellServerWithRealisticPrompt(t *testing.T) *fakeShellServer {
+	s := newFakeShellServerOpt(t, false)
+	s.realisticPrompt = true
 	return s
 }
 
@@ -141,7 +155,7 @@ func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request
 			req.Reply(true, nil)
 		case "shell":
 			req.Reply(true, nil)
-			runFakeShell(ch, ptyRequested, echoEnabled)
+			runFakeShell(ch, ptyRequested, echoEnabled, s.realisticPrompt)
 			return
 		case "subsystem":
 			if !s.enableSftp {
@@ -230,11 +244,17 @@ func runSftpServer(ch ssh.Channel) {
 // 处理发生，因此 sshmng 会在执行结果到达前先看到命令字符串本身（含未展开的 $0
 // 等），容易导致 sentinel 误匹配。
 //
-// 关键时序：sid 从 `export PS1='__P_<sid>__> '` 行提取，但 PS1 sentinel 只在
-// RC 结束（`stty -echo` 行）后才打印——模拟真实 shell 处理完整个 RC 后才提示。
-// 这避免 client 在 RC 还没消费完时看到 PS1 sentinel 就发命令，导致 fake shell
-// 把后续 RC 行当命令执行报语法错误。
-func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool) {
+// 状态机：detecting（探测 shell）→ rc_injecting（消费 RC 行）→ command（执行命令）。
+// RC 结束标记是 `export PS1='__P_<sid>__> '` 行（BuildRC 把 PS1 export 放最后，
+// 保证 injectRC 等到 sentinel 时 RC 已全部执行完）。rc_injecting 期间所有行忽略
+// 不执行，避免 RC 行被误当命令跑。
+//
+// realisticPrompt=true 时模拟真实 bash 在 RC 期间每行执行后都显示 PS1 的行为，
+// 用于复现 BuildRC 把 `export PS1=` 放在 RC 中间导致 injectRC 提前匹配的 bug：
+// 在 `export PS1=` 行后再额外 emit 若干 `__E_<sid>:0__\r\n__P_<sid>__> ` 模拟
+// 后续 RC 行触发的 prompt。修复后 BuildRC 把 `export PS1=` 放最后，无后续行，
+// 无残留 sentinel。
+func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool) {
 	reader := bufio.NewReader(ch)
 	var sid string
 	rcDone := false
@@ -260,24 +280,23 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool) {
 			continue
 		}
 
-		// RC 注入：从 `export PS1='__P_<sid>__> '` 提取 sid（但暂不打印 sentinel）
-		if sid == "" && strings.Contains(line, "export PS1='__P_") {
-			re := regexp.MustCompile(`__P_([0-9a-f]+)__>`)
-			m := re.FindStringSubmatch(line)
-			if len(m) > 1 {
-				sid = m[1]
-			}
-			continue
-		}
-
-		// sid 已提取但 RC 还没结束：识别 `stty -echo` 作为 RC 结束标记，打印首个 PS1 sentinel
-		if sid != "" && !rcDone {
-			if strings.Contains(line, "stty -echo") {
+		// RC 注入阶段：消费 RC 行直到 `export PS1='__P_<sid>__> '`（BuildRC 最后一行）
+		if !rcDone {
+			if strings.Contains(line, "export PS1='__P_") {
+				re := regexp.MustCompile(`__P_([0-9a-f]+)__>`)
+				m := re.FindStringSubmatch(line)
+				if len(m) > 1 {
+					sid = m[1]
+				}
 				rcDone = true
+				// emit sentinel：PS1 已设置。realisticPrompt 模式下 PROMPT_COMMAND
+				// 已在 export PS1 之前的 if 行设置，会在显示 PS1 前触发，emit exit sentinel。
+				if realisticPrompt {
+					fmt.Fprintf(ch, "__E_%s__:0__\r\n", sid)
+				}
 				fmt.Fprintf(ch, "__P_%s__> ", sid)
-				continue
 			}
-			// 其他 RC 行：忽略
+			// 其他 RC 行：忽略不执行
 			continue
 		}
 
@@ -552,6 +571,57 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	}
 	if !strings.Contains(output, "hello") {
 		t.Errorf("output should contain 'hello', got: %q", output)
+	}
+}
+
+// TestIntegrationRealisticBashPromptsDuringRC 验证 BuildRC 在真实 bash 行为下能正确工作。
+//
+// 真实 bash 在交互模式下，每行 RC 执行完都会显示 PS1（先执行 PROMPT_COMMAND）。
+// 如果 BuildRC 把 `export PS1='__P_<sid>__> '` 放在 RC 中间（第 5 行），injectRC 等
+// 第一个 `__P_<sid>__> ` 时会在该行后立刻匹配，但 RC 还有 if/set/stty 3 行没执行。
+// 后续 3 行的 prompt 输出（`__E_<sid>:0__\r\n__P_<sid>__> `）残留在 stdoutCh，
+// 下次 Run 调用 readUntilPatternTimeout 立刻匹配残留 sentinel，返回空 output +
+// exit_code=0，命令实际未执行。
+//
+// 修复：BuildRC 把 `export PS1=` 移到 RC 最后一行，确保 injectRC 等到 sentinel 时
+// RC 已全部执行完。
+func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
+	srv := newFakeShellServerWithRealisticPrompt(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(DialOptions{
+		Addr: srv.Addr(),
+		User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer ptyConn.Close()
+
+	// 关键断言：Run 必须等到 cmd 真正执行完才返回，output 含 "hello"
+	output, exitCode, timedOut, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if timedOut {
+		t.Errorf("should not time out for echo hello")
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if !strings.Contains(output, "hello") {
+		t.Errorf("output should contain 'hello' (cmd should actually execute), got: %q", output)
+	}
+
+	// 第二条命令验证 session 状态没被残留 sentinel 污染
+	output2, _, _, _, _, _ := ptyConn.Run("echo world", 5000, 0)
+	if !strings.Contains(output2, "world") {
+		t.Errorf("second cmd output should contain 'world', got: %q", output2)
 	}
 }
 

@@ -177,20 +177,17 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 			}
 		}
 
-		// RC 阶段
-		if sid == "" && strings.Contains(line, "export PS1='__P_") {
-			re := shellDetectPS1Re.FindStringSubmatch(line)
-			if len(re) > 1 {
-				sid = re[1]
-			}
-			continue
-		}
-		if sid != "" && !rcDone {
-			if strings.Contains(line, "stty -echo") {
+		// RC 阶段：消费 RC 行直到 `export PS1='__P_<sid>__> '`（BuildRC 最后一行）
+		if !rcDone {
+			if strings.Contains(line, "export PS1='__P_") {
+				re := shellDetectPS1Re.FindStringSubmatch(line)
+				if len(re) > 1 {
+					sid = re[1]
+				}
 				rcDone = true
 				fmt.Fprintf(ch, "__P_%s__> ", sid)
-				continue
 			}
+			// 其他 RC 行：忽略
 			continue
 		}
 

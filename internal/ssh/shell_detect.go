@@ -62,16 +62,22 @@ func classifyShell(shellPath string, bashVer, zshVer string) string {
 //   - dash/ash/未知: 只覆盖 PS1（边界检测，无 exit code）
 //
 // sid 是当前 session 的 8 字节十六进制 ID。
+//
+// 关键：`export PS1=` 必须放在 RC 最后一行。真实 bash 在交互模式下逐行执行 RC，
+// 每行执行完都会显示 PS1。若 `export PS1=` 在 RC 中间（如第 5 行），injectRC 等
+// 第一个 `__P_<sid>__> ` sentinel 时会在该行后立刻匹配，但 RC 后续行（if/set/stty）
+// 还没执行。后续行的 prompt 输出残留在 stdoutCh 里被下次 Run 误消费，导致 Run
+// 立刻匹配残留 sentinel 返回空 output + exit_code=0，命令实际未执行。
+// 把 `export PS1=` 放最后，injectRC 等到 sentinel 时 RC 已全部执行完。
 func BuildRC(shell string, sid string) string {
 	ps1 := fmt.Sprintf("export PS1='__P_%s__> '", sid)
 	exitSentinel := fmt.Sprintf("echo \"__E_%s__:$?__\"", sid)
 
-	common := fmt.Sprintf(`export TERM=dumb
+	common := `export TERM=dumb
 export NO_COLOR=1
 export LANG=C.UTF-8
 stty cols 120 rows 100 2>/dev/null
-%s
-`, ps1)
+`
 
 	switch shell {
 	case "bash":
@@ -82,15 +88,17 @@ else
 fi
 set +o history
 stty -echo 2>/dev/null
-`, exitSentinel, exitSentinel)
+%s
+`, exitSentinel, exitSentinel, ps1)
 	case "zsh":
 		return common + fmt.Sprintf(`function _sshmng_precmd() { %s }
 precmd_functions+=(_sshmng_precmd)
 unset HISTFILE
 stty -echo 2>/dev/null
-`, exitSentinel)
+%s
+`, exitSentinel, ps1)
 	default:
 		// dash/ash/未知：只覆盖 PS1
-		return common + "stty -echo 2>/dev/null\n"
+		return common + fmt.Sprintf("stty -echo 2>/dev/null\n%s\n", ps1)
 	}
 }
