@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
+	"sshmng/internal/ssh"
 )
 
 // newTestService 创建一个用临时 config 文件的 Service，初始内容来自 seed。
@@ -18,7 +19,8 @@ func newTestService(t *testing.T, seed *config.Config) *Service {
 	if err := store.Save(seed); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
-	return NewService(store)
+	knownHosts := ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
+	return NewService(store, knownHosts)
 }
 
 // resultText 提取 CallToolResult 的第一个 TextContent 文本。
@@ -340,7 +342,7 @@ func TestUpdateJumphostHandlerCreate(t *testing.T) {
 
 func TestListProxiesHandler(t *testing.T) {
 	svc := newTestService(t, &config.Config{
-		Version:   "1", IdleTimeoutS: 300,
+		Version: "1", IdleTimeoutS: 300,
 		Jumphosts: []*config.Jumphost{},
 		Proxies: []*config.Proxy{
 			{Name: "p1", Type: config.ProxySOCKS5, Addr: "s:1080"},

@@ -334,6 +334,7 @@ func deleteProxy(items []*Proxy, name string) []*Proxy {
 //   - patch 为顶层 null → 返回 (nil, nil)，调用方据此删除。
 //   - patch 为 object → 递归合并到 original；null 值删除 key，object 递归合并，其他替换。
 //   - patch 非对象非 null → 报错（本工具不允许用整体替换覆盖一个实体）。
+//
 // original 可为空（表示实体不存在），此时合并到空对象，效果等同于用 patch 创建。
 func mergePatch(original []byte, patch json.RawMessage) ([]byte, error) {
 	var patchVal any

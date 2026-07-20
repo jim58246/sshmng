@@ -1,0 +1,191 @@
+package ssh
+
+import (
+	"encoding/base64"
+	"fmt"
+	"net"
+	"os"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/proxy"
+	"sshmng/internal/config"
+)
+
+// Dialer 封装 SSH 拨号逻辑：私钥加载 + auth method 装配 + TOFU host key 校验 + 代理。
+type Dialer struct {
+	knownHosts *KnownHostsStore
+}
+
+// NewDialer 创建一个绑定到 knownHosts store 的 Dialer。
+func NewDialer(knownHosts *KnownHostsStore) *Dialer {
+	return &Dialer{knownHosts: knownHosts}
+}
+
+// DialOptions 是 Dial 的入参。
+type DialOptions struct {
+	Addr  string         // host:port
+	User  string         // SSH 用户名
+	Auth  config.SSHAuth // 认证信息（Password / PrivateKey + Passphrase）
+	Proxy *config.Proxy  // 可选：传输层代理（SOCKS5 / HTTP CONNECT）
+}
+
+// Dial 建立 SSH 连接。
+//   - 加载私钥（校验文件权限 0600 或更严）
+//   - 装配 auth methods（同时配置 Password + PrivateKey 时仅用 PrivateKey）
+//   - TOFU host key 校验（首次记录，变更拒绝）
+//   - 走代理（如有）
+//
+// 失败返回 error，错误信息自解释（含 "permission denied" / "host key changed" / "connection refused" 等）。
+func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
+	authMethods, err := buildAuthMethods(opts.Auth)
+	if err != nil {
+		return nil, err
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User:            opts.User,
+		Auth:            authMethods,
+		HostKeyCallback: d.hostKeyCallback(opts.Addr),
+		Timeout:         10 * time.Second,
+	}
+
+	conn, err := d.dialUnderlying(opts.Addr, opts.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", opts.Addr, err)
+	}
+	// ssh.NewClientConn 成功后接管 conn；失败时关闭兜底。
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, opts.Addr, clientConfig)
+	if err != nil {
+		conn.Close()
+		return nil, translateDialError(err, opts.Addr)
+	}
+	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+// dialUnderlying 建立底层 TCP 连接。无代理时直连；有代理时走 SOCKS5 或 HTTP CONNECT。
+func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) {
+	if p == nil {
+		return net.DialTimeout("tcp", addr, 10*time.Second)
+	}
+	switch p.Type {
+	case config.ProxySOCKS5:
+		var auth *proxy.Auth
+		if p.Auth != nil && p.Auth.User != "" {
+			auth = &proxy.Auth{User: p.Auth.User, Password: p.Auth.Password}
+		}
+		dialer, err := proxy.SOCKS5("tcp", p.Addr, auth, &net.Dialer{Timeout: 10 * time.Second})
+		if err != nil {
+			return nil, fmt.Errorf("socks5 dialer: %w", err)
+		}
+		return dialer.Dial("tcp", addr)
+	case config.ProxyHTTP:
+		return httpConnect(p.Addr, p.Auth, addr, 10*time.Second)
+	default:
+		return nil, fmt.Errorf("unknown proxy type %q", p.Type)
+	}
+}
+
+// hostKeyCallback 返回 ssh.ClientConfig.HostKeyCallback。
+// 通过 knownHosts.Check 实现 TOFU：首次记录、匹配放行、变更拒绝。
+func (d *Dialer) hostKeyCallback(addr string) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		_, err := d.knownHosts.Check(addr, key)
+		return err
+	}
+}
+
+// buildAuthMethods 装配 ssh.AuthMethod 列表。
+//   - PrivateKey 非空：仅用私钥（即使 Password 也配置，也不回退）
+//   - 否则 Password 非空：用密码
+//   - 都空：返回 error
+//
+// 私钥文件权限过宽（group/other 有任何权限）拒绝加载。
+func buildAuthMethods(auth config.SSHAuth) ([]ssh.AuthMethod, error) {
+	if auth.PrivateKey != "" {
+		signer, err := loadPrivateKey(auth.PrivateKey, auth.Passphrase)
+		if err != nil {
+			return nil, err
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	}
+	if auth.Password != "" {
+		return []ssh.AuthMethod{ssh.Password(auth.Password)}, nil
+	}
+	return nil, fmt.Errorf("no auth method available (need password or private_key)")
+}
+
+// loadPrivateKey 从 path 加载私钥。passphrase 为空表示私钥未加密。
+// 文件权限必须 0600 或更严（防止其他用户读取）。
+func loadPrivateKey(path, passphrase string) (ssh.Signer, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat private key %s: %w", path, err)
+	}
+	if perm := info.Mode().Perm(); perm&0077 != 0 {
+		return nil, fmt.Errorf("private key %s permissions too open: %o, want 0600 or stricter (no group/other access)", path, perm)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read private key %s: %w", path, err)
+	}
+	var signer ssh.Signer
+	if passphrase != "" {
+		signer, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(passphrase))
+	} else {
+		signer, err = ssh.ParsePrivateKey(data)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse private key %s: %w", path, err)
+	}
+	return signer, nil
+}
+
+// translateDialError 把 ssh.NewClientConn 的错误翻译成更友好的 message。
+// host key changed 已由 callback 抛出，会原样透传。
+func translateDialError(err error, addr string) error {
+	msg := err.Error()
+	if strings.Contains(msg, "host key changed") {
+		return err
+	}
+	return fmt.Errorf("ssh connect to %s: %w", addr, err)
+}
+
+// httpConnect 实现 HTTP CONNECT 代理隧道。
+// 协议简单：发 `CONNECT host:port HTTP/1.1` + 代理认证（如有），等 200 响应。
+func httpConnect(proxyAddr string, auth *config.ProxyAuth, target string, timeout time.Duration) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial proxy %s: %w", proxyAddr, err)
+	}
+	deadline := time.Now().Add(timeout)
+	if dl, ok := conn.(interface{ SetDeadline(t time.Time) error }); ok {
+		_ = dl.SetDeadline(deadline)
+	}
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
+	if auth != nil && auth.User != "" {
+		cred := base64.StdEncoding.EncodeToString([]byte(auth.User + ":" + auth.Password))
+		req += "Proxy-Authorization: Basic " + cred + "\r\n"
+	}
+	req += "\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write CONNECT: %w", err)
+	}
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read CONNECT response: %w", err)
+	}
+	resp := string(buf[:n])
+	if !strings.HasPrefix(resp, "HTTP/1.1 200") && !strings.HasPrefix(resp, "HTTP/1.0 200") {
+		conn.Close()
+		return nil, fmt.Errorf("proxy CONNECT failed: %s", strings.SplitN(resp, "\r\n", 2)[0])
+	}
+	if dl, ok := conn.(interface{ SetDeadline(t time.Time) error }); ok {
+		_ = dl.SetDeadline(time.Time{})
+	}
+	return conn, nil
+}

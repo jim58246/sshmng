@@ -46,12 +46,12 @@ func TestValidateJumphostSSHJTrueRejectsLoginEntry(t *testing.T) {
 
 func TestValidateJumphostSSHJFalseRequiresLoginFlow(t *testing.T) {
 	jh := &Jumphost{
-		Name:  "jh",
-		Addr:  "h:22",
-		User:  "u",
-		Auth:  SSHAuth{Password: "p"},
-		SSHJ:  false,
-		LoginFlow: nil,
+		Name:       "jh",
+		Addr:       "h:22",
+		User:       "u",
+		Auth:       SSHAuth{Password: "p"},
+		SSHJ:       false,
+		LoginFlow:  nil,
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}

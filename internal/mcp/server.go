@@ -19,17 +19,25 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
+	"sshmng/internal/ssh"
 )
 
-// Service 是工具 handler 的宿主，封装 store 与并发保护。
+// Service 是工具 handler 的宿主，封装 store / session manager / known_hosts 与并发保护。
 type Service struct {
-	store *config.Store
-	mu    sync.Mutex
+	store      *config.Store
+	knownHosts *ssh.KnownHostsStore
+	manager    *ssh.Manager
+	mu         sync.Mutex
 }
 
-// NewService 创建一个绑定到 store 的 Service。
-func NewService(store *config.Store) *Service {
-	return &Service{store: store}
+// NewService 创建一个绑定到 store + knownHosts 的 Service。
+// 内部创建 session Manager。
+func NewService(store *config.Store, knownHosts *ssh.KnownHostsStore) *Service {
+	return &Service{
+		store:      store,
+		knownHosts: knownHosts,
+		manager:    ssh.NewManager(),
+	}
 }
 
 // ListArgs 是 list_* 工具的入参。Query 为空时返回全部。
@@ -88,6 +96,24 @@ func NewServer(svc *Service) *mcp.Server {
 		Name:        "update_proxy",
 		Description: "Apply RFC 7396 JSON Merge Patch to a proxy.",
 	}, svc.UpdateProxy)
+
+	// Session tools (phase 2)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "login",
+		Description: "Establish an interactive SSH session to a server. Returns sid for use with run_in_session / close_session. v1 phase 2: direct connections only (no jumphost, no login_flow).",
+	}, svc.Login)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_in_session",
+		Description: "Run a single command in an existing session. Returns output (cleaned), exit_code, timed_out, truncated, total_bytes. Session must be idle.",
+	}, svc.RunInSession)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "close_session",
+		Description: "Close an SSH session. Forced: closes even if a command is running.",
+	}, svc.CloseSession)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "stat",
+		Description: "List all active sessions with their state (idle/running/closed), last activity, command count, uptime.",
+	}, svc.Stat)
 	return server
 }
 
