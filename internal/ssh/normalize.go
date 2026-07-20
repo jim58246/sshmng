@@ -10,13 +10,18 @@ import (
 	"strings"
 )
 
-// ansiCSI 匹配 ANSI CSI 序列：ESC [ + 参数字节（0x30-0x3F）+ 中间字节（0x20-0x2F）
-// + 终止字节（0x40-0x7E）。常用颜色 / 光标控制 / 清屏都走 CSI。
-var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+// ansiRe 匹配 ANSI CSI 与 OSC 序列：
+//   - CSI: ESC [ + 参数字节 + 中间字节 + 终止字节（颜色 / 光标 / 清屏）
+//   - OSC: ESC ] + 内容 + 终止符（BEL \x07 或 ST = ESC \）。bash/zsh 设置窗口标题走 OSC。
+//
+// OSC 必须剥离，否则窗口标题序列会污染 LoginFlow pattern 匹配（如 [root@host ~]# 前的
+// \x1b]0;root@host:~\x07 让 anchored 正则 ^\[root@ 失败）。sentinel 字面量是纯 ASCII，
+// 不会受影响。
+var ansiRe = regexp.MustCompile("\x1b(?:\\[[0-9;?]*[A-Za-z]|\\][^\x07\x1b]*(?:\x07|\x1b\\\\))")
 
-// StripANSI 剥离 ANSI CSI 转义序列。sentinel 字面量是纯 ASCII，不会受影响。
+// StripANSI 剥离 ANSI CSI / OSC 转义序列。sentinel 字面量是纯 ASCII，不会受影响。
 func StripANSI(s string) string {
-	return ansiCSI.ReplaceAllString(s, "")
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 // CleanOutput 把 PTY 原始流清洗为给用户看的命令输出。

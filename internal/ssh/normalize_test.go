@@ -61,6 +61,32 @@ func TestStripANSIPreservesSentinelsInMixedOutput(t *testing.T) {
 	}
 }
 
+// TestStripANSIRemovesOSCSequences 验证 ANSI OSC 序列被剥离。
+// OSC = \x1b] + 内容 + 终止符（BEL \x07 或 ST = \x1b\\）。
+// bash/zsh 等会发 OSC 0;title 设置窗口标题，若不剥离会污染 LoginFlow pattern 匹配。
+func TestStripANSIRemovesOSCSequences(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"osc with bel", "\x1b]0;root@host:~\x07[root@host ~]# ", "[root@host ~]# "},
+		{"osc with st", "\x1b]0;root@host:~\x1b\\[root@host ~]# ", "[root@host ~]# "},
+		{"osc empty title bel", "before\x1b]0;\x07after", "beforeafter"},
+		{"osc empty title st", "before\x1b]0;\x1b\\after", "beforeafter"},
+		{"osc mixed with csi", "\x1b]0;title\x07\x1b[0;31mred\x1b[0m", "red"},
+		{"multiple osc", "\x1b]0;a\x07\x1b]0;b\x07end", "end"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := StripANSI(c.in)
+			if got != c.want {
+				t.Errorf("StripANSI(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 // TestCleanOutputRemovesSentinelLines 验证 CleanOutput 移除 sentinel 行、PS1 残留、ANSI 转义。
 func TestCleanOutputRemovesSentinelLines(t *testing.T) {
 	sid := "a3f2b1c9"

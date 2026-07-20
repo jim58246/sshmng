@@ -391,18 +391,16 @@ func matchRaw(buf []byte, matchers []*regexp.Regexp) (int, int) {
 	return -1, 0
 }
 
-// ansiCSIRe 匹配 ANSI CSI 序列：ESC [ + 参数字节 + 终止字节。
-var ansiCSIRe = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
-
-// stripANSIWithPos 剥离 ANSI CSI 序列并返回 stripped 输出 + 位置映射。
+// stripANSIWithPos 剥离 ANSI CSI / OSC 序列并返回 stripped 输出 + 位置映射。
 // posMap[i] = stripped 中第 i 字节对应的 raw 字节偏移；posMap[len(stripped)] = len(raw)。
 // 用于在 raw 输出中切分 match 边界（pushback trailing 保留 raw 形式）。
+// 使用包级 ansiRe（定义在 normalize.go，同时匹配 CSI 与 OSC）。
 func stripANSIWithPos(s string) (string, []int) {
 	var stripped strings.Builder
 	posMap := make([]int, 0, len(s)+1)
 	posMap = append(posMap, 0) // posMap[0] = 0: stripped 起点对应 raw 起点偏移 0
 
-	matches := ansiCSIRe.FindAllStringIndex(s, -1)
+	matches := ansiRe.FindAllStringIndex(s, -1)
 	lastEnd := 0
 	for _, m := range matches {
 		// 拷贝 [lastEnd, m[0]) 区间的 raw 字节
@@ -410,7 +408,7 @@ func stripANSIWithPos(s string) (string, []int) {
 			stripped.WriteByte(s[i])
 			posMap = append(posMap, i+1)
 		}
-		// 跳过 [m[0], m[1]) 区间的 CSI 序列
+		// 跳过 [m[0], m[1]) 区间的 ANSI 序列
 		lastEnd = m[1]
 	}
 	// 拷贝尾部 [lastEnd, len(s)) 区间的 raw 字节

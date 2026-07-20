@@ -339,6 +339,28 @@ func TestRunANSIFilterBeforeMatch(t *testing.T) {
 	}
 }
 
+// TestRunOSCFilterBeforeMatch：output 含 OSC 窗口标题序列时不影响 anchored pattern 匹配。
+// 真实 bash 在交互登录时发 \x1b]0;user@host:cwd\x07 设置窗口标题，若不剥离会让
+// anchored 正则 ^\r\n\[root@... 失败（OSC 夹在 \n 和 [root@ 之间）。
+func TestRunOSCFilterBeforeMatch(t *testing.T) {
+	pty := &fakePTY{}
+	pty.queueOut("\r\n\x1b]0;root@host:~\x07\x1b[?2004h[root@host ~]# ")
+	flow := map[string]config.LoginAction{
+		"entry": {
+			Name:    "entry",
+			Expects: []config.Expect{{Pattern: "re:^\\r\\n\\[root@host ~\\]# ", Next: "success"}},
+		},
+	}
+
+	trace, err := Run(pty, flow, "entry", Options{})
+	if err != nil {
+		t.Fatalf("Run: %v (trace=%+v)", err, trace)
+	}
+	if trace[0].Expect != "re:^\\r\\n\\[root@host ~\\]# " {
+		t.Errorf("Expect = %q, want matched pattern", trace[0].Expect)
+	}
+}
+
 // --- trace 结构 ---
 
 // TestRunTraceStructure：多步 flow 的 trace 字段（Time / ElapsedMs / Send / Expect / Output）结构正确。

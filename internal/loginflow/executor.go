@@ -197,13 +197,18 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(b.String())
 }
 
-// ansiCSI 匹配 ANSI CSI 序列：ESC [ + 参数字节 + 中间字节 + 终止字节。
-var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+// ansiRe 匹配 ANSI CSI 与 OSC 序列：
+//   - CSI: ESC [ + 参数字节 + 终止字节（颜色 / 光标 / 清屏）
+//   - OSC: ESC ] + 内容 + 终止符（BEL \x07 或 ST = ESC \）。bash/zsh 设置窗口标题走 OSC。
+//
+// OSC 必须剥离，否则窗口标题序列会让 anchored LoginFlow pattern 失败。sentinel 字面量
+// 是纯 ASCII，不会受影响。与 internal/ssh/normalize.go 同源，独立维护以避免 loginflow → ssh
+// 的循环依赖。
+var ansiRe = regexp.MustCompile("\x1b(?:\\[[0-9;?]*[A-Za-z]|\\][^\x07\x1b]*(?:\x07|\x1b\\\\))")
 
-// stripANSI 剥离 ANSI CSI 转义序列。sentinel 字面量是纯 ASCII，不会受影响。
-// 与 internal/ssh/normalize.go 同源，独立维护以避免 loginflow → ssh 的循环依赖。
+// stripANSI 剥离 ANSI CSI / OSC 转义序列。sentinel 字面量是纯 ASCII，不会受影响。
 func stripANSI(s string) string {
-	return ansiCSI.ReplaceAllString(s, "")
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 // truncateForMsg 把字符串截断到 maxLen 用于错误信息；超长加省略号。
