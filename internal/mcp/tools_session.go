@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
+	"sshmng/internal/loginflow"
 	"sshmng/internal/ssh"
 )
 
@@ -94,6 +97,12 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 	}
 	if err != nil {
 		logger.Warn("login failed", "server", srv.Name, "err", err.Error())
+		// LoginFlow 失败时携带 login_trace 返给 Agent 诊断（设计文档 §3.x）。
+		// SSH auth / detectShell / RC 注入等其他失败仅返回 error 字符串。
+		var lfErr *ssh.LoginFlowError
+		if errors.As(err, &lfErr) {
+			return loginFlowErrorResult(err, lfErr.Trace)
+		}
 		return errorResult("%v", err)
 	}
 
@@ -139,6 +148,9 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *ssh.Dialer, sid str
 // 拨号 jumphost → OpenPtyConn → Jumphost.LoginFlow（菜单就绪）→ SSHServer.LoginFlow
 // （选 target + 凭据）→ InjectRC。两段 LoginFlow 共用同一 PTY，trailing data 通过
 // pushback 在调用间保留。
+//
+// LoginFlow 失败时返回 *ssh.LoginFlowError（携带 trace），供 Login handler 提出
+// login_trace 字段返给 Agent。
 func (s *Service) setupPatternB(srv *config.SSHServer, dialer *ssh.Dialer, sid string, logger *slog.Logger) (*ssh.PtyConn, error) {
 	jump := srv.Via
 	client, err := dialer.Dial(ssh.DialOptions{
@@ -155,19 +167,19 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *ssh.Dialer, sid s
 		client.Close()
 		return nil, fmt.Errorf("setup pty: %w", err)
 	}
-	if _, err := ptyConn.RunLoginFlow(jump.LoginFlow, jump.LoginEntry, ssh.LoginFlowOptions{
+	if trace, err := ptyConn.RunLoginFlow(jump.LoginFlow, jump.LoginEntry, ssh.LoginFlowOptions{
 		MaxSteps:        jump.MaxSteps,
 		GlobalTimeoutMs: jump.GlobalTimeoutMs,
 	}); err != nil {
 		ptyConn.Close()
-		return nil, fmt.Errorf("jumphost loginflow: %w", err)
+		return nil, fmt.Errorf("jumphost: %w", &ssh.LoginFlowError{Stage: "jumphost", Trace: trace, Err: err})
 	}
-	if _, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, ssh.LoginFlowOptions{
+	if trace, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, ssh.LoginFlowOptions{
 		MaxSteps:        srv.MaxSteps,
 		GlobalTimeoutMs: srv.GlobalTimeoutMs,
 	}); err != nil {
 		ptyConn.Close()
-		return nil, fmt.Errorf("target loginflow: %w", err)
+		return nil, fmt.Errorf("target: %w", &ssh.LoginFlowError{Stage: "target", Trace: trace, Err: err})
 	}
 	if err := ptyConn.InjectRC(); err != nil {
 		ptyConn.Close()
@@ -182,6 +194,23 @@ func viaDesc(srv *config.SSHServer) string {
 		return ""
 	}
 	return srv.Via.Name
+}
+
+// loginFlowErrorResult 把 LoginFlow 失败的 error + trace 包成 IsError=true 的 JSON 响应。
+// trace 含每步的 send / expect / output，Agent 据此诊断失败原因（pattern 不匹配 /
+// 超时 / 输出与预期不符）、修配置重试。设计文档 §3.x "LoginFlow 失败 error + login_trace"。
+func loginFlowErrorResult(err error, trace []loginflow.TraceEntry) (*mcp.CallToolResult, any, error) {
+	data, err := json.MarshalIndent(map[string]any{
+		"error":       err.Error(),
+		"login_trace": trace,
+	}, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal login_trace: %w", err)
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+		IsError: true,
+	}, nil, nil
 }
 
 // RunInSession 在指定 session 中执行一条命令。

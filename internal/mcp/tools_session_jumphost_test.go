@@ -316,7 +316,7 @@ func TestIntegrationPatternBEndToEnd(t *testing.T) {
 }
 
 // TestIntegrationPatternBJumphostFlowFailure: Jumphost.LoginFlow 失败（pattern 不匹配）时
-// login 报错，error 含 loginflow / no expect matched 供诊断。
+// login 报错，error 含 loginflow / no expect matched 供诊断，且响应包含 login_trace。
 func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 	srv := newFakeJumphostServerForMCP(t)
 	dir := t.TempDir()
@@ -325,9 +325,10 @@ func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 	// 故意配不匹配的 pattern：fake server emit "Select target:" 但我们等 "Choose target:"
 	jumphostFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
-			Send:    "",
-			Expects: []config.Expect{{Pattern: "Choose target:*", Next: "success"}},
+			Name:      "entry",
+			Send:      "",
+			Expects:   []config.Expect{{Pattern: "Choose target:*", Next: "success"}},
+			TimeoutMs: 500,
 		},
 	}
 	serverFlow := map[string]config.LoginAction{
@@ -365,8 +366,84 @@ func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected IsError=true for jumphost flow failure")
 	}
-	text := resultText(t, res)
-	if !strings.Contains(text, "loginflow") && !strings.Contains(text, "no expect matched") {
-		t.Errorf("err = %q, want contains 'loginflow' or 'no expect matched'", text)
+	r := parseJSON(t, resultText(t, res)).(map[string]any)
+	errMsg, _ := r["error"].(string)
+	if !strings.Contains(errMsg, "loginflow") && !strings.Contains(errMsg, "no expect matched") {
+		t.Errorf("err = %q, want contains 'loginflow' or 'no expect matched'", errMsg)
+	}
+	trace, ok := r["login_trace"].([]any)
+	if !ok || len(trace) == 0 {
+		t.Errorf("response should include non-empty login_trace, got: %v", r["login_trace"])
+	}
+}
+
+// TestIntegrationPatternBTargetFlowFailureReturnsTrace: Pattern B target LoginFlow 失败时
+// 响应包含 login_trace。fake jumphost menu 正常通过，但 SSHServer.LoginFlow 等不匹配的
+// pattern，应在 target 阶段超时并返回 trace。
+func TestIntegrationPatternBTargetFlowFailureReturnsTrace(t *testing.T) {
+	srv := newFakeJumphostServerForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+
+	// jumphost flow 正常匹配 fake server 的菜单
+	jumphostFlow := map[string]config.LoginAction{
+		"entry": {
+			Name:    "entry",
+			Send:    "",
+			Expects: []config.Expect{{Pattern: "Select target:", Next: "success"}},
+		},
+	}
+	// target flow 故意配不匹配的 pattern + 短超时
+	serverFlow := map[string]config.LoginAction{
+		"entry": {
+			Name:      "entry",
+			Send:      "1\n",
+			Expects:   []config.Expect{{Pattern: "NEVER_MATCHES_THIS", Next: "success"}},
+			TimeoutMs: 500,
+		},
+	}
+
+	jumphost := &config.Jumphost{
+		Name:       "jump",
+		Addr:       srv.Addr(),
+		User:       "alice",
+		Auth:       config.SSHAuth{Password: "wonderland"},
+		SSHJ:       false,
+		LoginFlow:  jumphostFlow,
+		LoginEntry: "entry",
+	}
+	server := &config.SSHServer{
+		Name:       "prod-db",
+		LoginFlow:  serverFlow,
+		LoginEntry: "entry",
+	}
+	server.Via = jumphost
+
+	store.Save(&config.Config{
+		Version:   "1",
+		Jumphosts: []*config.Jumphost{jumphost},
+		Servers:   []*config.SSHServer{server},
+	})
+	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+
+	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
+	if !res.IsError {
+		t.Fatalf("expected IsError=true for target flow failure")
+	}
+	r := parseJSON(t, resultText(t, res)).(map[string]any)
+	errMsg, _ := r["error"].(string)
+	if !strings.Contains(errMsg, "target") {
+		t.Errorf("err should mention 'target' stage, got: %s", errMsg)
+	}
+	trace, ok := r["login_trace"].([]any)
+	if !ok || len(trace) == 0 {
+		t.Fatalf("response should include non-empty login_trace, got: %v", r["login_trace"])
+	}
+	first, ok := trace[0].(map[string]any)
+	if !ok {
+		t.Fatalf("login_trace[0] should be object, got: %T", trace[0])
+	}
+	if first["send"] != "1\n" {
+		t.Errorf("login_trace[0].send = %q, want '1\\n'", first["send"])
 	}
 }

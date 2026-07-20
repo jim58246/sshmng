@@ -456,3 +456,57 @@ func TestIntegrationLoginAuthFailure(t *testing.T) {
 		t.Errorf("error should mention permission denied or handshake, got: %s", text)
 	}
 }
+
+// TestLoginDirectLoginFlowFailureReturnsTrace: Pattern A 直连 + LoginFlow 失败时，
+// login 响应必须包含 login_trace 字段供 Agent 诊断（设计文档 §3.x "LoginFlow 失败
+// error + login_trace"）。trace 含 send / expect / output，Agent 据此修配置重试。
+//
+// 此处配置一个永不匹配的 pattern + 短 TimeoutMs，让 entry action 快速超时。
+// Send 用 echo test（不会 hang），fake shell 会回 output 但不含 "Password:"。
+func TestLoginDirectLoginFlowFailureReturnsTrace(t *testing.T) {
+	srv := newFakeShellServerForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+	flow := map[string]config.LoginAction{
+		"entry": {
+			Name:      "entry",
+			Send:      "echo test\n",
+			Expects:   []config.Expect{{Pattern: "Password:", Next: "success"}},
+			TimeoutMs: 500,
+		},
+	}
+	store.Save(&config.Config{
+		Version: "1",
+		Servers: []*config.SSHServer{
+			{
+				Name:       "s",
+				Addr:       srv.Addr(),
+				User:       "alice",
+				Auth:       config.SSHAuth{Password: "wonderland"},
+				LoginFlow:  flow,
+				LoginEntry: "entry",
+			},
+		},
+	})
+	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+
+	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
+	if !res.IsError {
+		t.Fatalf("expected IsError=true for LoginFlow failure")
+	}
+	r := parseJSON(t, resultText(t, res)).(map[string]any)
+	if _, ok := r["login_trace"]; !ok {
+		t.Fatalf("response should include login_trace for LoginFlow failure, got: %s", resultText(t, res))
+	}
+	trace, ok := r["login_trace"].([]any)
+	if !ok || len(trace) == 0 {
+		t.Fatalf("login_trace should be non-empty array, got: %v", r["login_trace"])
+	}
+	first, ok := trace[0].(map[string]any)
+	if !ok {
+		t.Fatalf("login_trace[0] should be object, got: %T", trace[0])
+	}
+	if first["send"] != "echo test\n" {
+		t.Errorf("login_trace[0].send = %q, want 'echo test\\n'", first["send"])
+	}
+}

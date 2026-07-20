@@ -29,6 +29,21 @@ const rcInjectTimeout = 5 * time.Second
 // 连续无新数据超过此时长即返回，避免无限等待。
 const loginFlowQuietPeriod = 200 * time.Millisecond
 
+// LoginFlowError 携带 LoginFlow 失败时的 trace，供 MCP handler 在 error 响应中
+// 一并返回 login_trace 字段供 Agent 诊断（设计文档 §3.x "LoginFlow 失败 error +
+// login_trace"）。trace 含每步的 send / expect / output，Agent 据此修配置重试。
+//
+// Stage 标识失败发生在哪段 flow（"direct" / "jumphost" / "target"），仅用于日志，
+// 不影响 Error() 输出——Err 本身已含足够上下文。
+type LoginFlowError struct {
+	Stage string
+	Trace []loginflow.TraceEntry
+	Err   error
+}
+
+func (e *LoginFlowError) Error() string { return e.Err.Error() }
+func (e *LoginFlowError) Unwrap() error { return e.Err }
+
 // PtyConnOptions 是 NewPtyConn 的可选参数；nil 表示无 LoginFlow（直连场景）。
 type PtyConnOptions struct {
 	LoginFlow       map[string]config.LoginAction // 非空时在 shell detect 后、RC 注入前执行
@@ -71,18 +86,22 @@ type PtyConn struct {
 // + InjectRC，以便在 jumphost flow 与 server flow 之间切分 PTY 流。
 //
 // opts 为 nil 或 opts.LoginFlow 为空时跳过 LoginFlow（纯直连）。
+//
+// LoginFlow 失败时返回 *LoginFlowError（携带 trace）；其他失败（detectShell / RC
+// 注入）返回普通 error。调用方可用 errors.As 提取 trace 返给 Agent 诊断。
 func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions) (*PtyConn, error) {
 	p, err := OpenPtyConn(client, sid)
 	if err != nil {
 		return nil, err
 	}
 	if opts != nil && len(opts.LoginFlow) > 0 {
-		if _, err := p.RunLoginFlow(opts.LoginFlow, opts.LoginEntry, LoginFlowOptions{
+		trace, err := p.RunLoginFlow(opts.LoginFlow, opts.LoginEntry, LoginFlowOptions{
 			MaxSteps:        opts.MaxSteps,
 			GlobalTimeoutMs: opts.GlobalTimeoutMs,
-		}); err != nil {
+		})
+		if err != nil {
 			p.Close()
-			return nil, fmt.Errorf("loginflow: %w", err)
+			return nil, &LoginFlowError{Stage: "direct", Trace: trace, Err: err}
 		}
 	}
 	if err := p.InjectRC(); err != nil {
