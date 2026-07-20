@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
 	"sshmng/internal/loginflow"
@@ -45,6 +46,9 @@ type PtyConn struct {
 	stdout  io.Reader
 	sid     string
 	shell   string
+
+	// sftpClient 在 OpenPtyConn 时尝试建立，5s 超时；失败留空，SftpAvailable()=false。
+	sftpClient *sftp.Client
 
 	// 单 reader goroutine：所有读取通过 stdoutCh 序列化，避免多个 goroutine 竞争
 	// 同一 SSH channel 的 Read。
@@ -140,6 +144,11 @@ func OpenPtyConn(client *ssh.Client, sid string) (*PtyConn, error) {
 		return nil, fmt.Errorf("detect shell: %w", err)
 	}
 	p.shell = shell
+
+	// 尝试建立 sftp 通道；失败不影响 login，仅影响 upload/download 可用性。
+	if sc, err := newSftpClient(client); err == nil {
+		p.sftpClient = sc
+	}
 	return p, nil
 }
 
@@ -419,7 +428,7 @@ func encodeSpecial(key string) (byte, bool) {
 	}
 }
 
-// Close 实现 Conn 接口。关闭 session 与底层 SSH client。
+// Close 实现 Conn 接口。关闭 sftp 通道、session 与底层 SSH client。
 // 重复调用是 no-op。
 func (p *PtyConn) Close() error {
 	p.mu.Lock()
@@ -428,10 +437,17 @@ func (p *PtyConn) Close() error {
 		return nil
 	}
 	p.closed = true
+	sftpClient := p.sftpClient
+	p.sftpClient = nil
 	p.mu.Unlock()
 
 	close(p.doneCh)
 	var errs []string
+	if sftpClient != nil {
+		if err := sftpClient.Close(); err != nil {
+			errs = append(errs, fmt.Sprintf("sftp: %v", err))
+		}
+	}
 	if err := p.session.Close(); err != nil {
 		errs = append(errs, fmt.Sprintf("session: %v", err))
 	}

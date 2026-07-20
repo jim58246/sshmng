@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
 	"sshmng/internal/ssh"
@@ -137,14 +139,25 @@ func TestStatEmpty(t *testing.T) {
 
 // fakeShellServerForMCP 是 mcp 测试用的 fake SSH server。
 // 与 internal/ssh 包中的 fakeShellServer 实现等价（duplication 为避免循环依赖）。
+// enableSftp=true 时同时支持 sftp subsystem。
 type fakeShellServerForMCP struct {
-	t        *testing.T
-	listener net.Listener
-	hostKey  cryptossh.Signer
-	wg       sync.WaitGroup
+	t          *testing.T
+	listener   net.Listener
+	hostKey    cryptossh.Signer
+	enableSftp bool
+	wg         sync.WaitGroup
 }
 
 func newFakeShellServerForMCP(t *testing.T) *fakeShellServerForMCP {
+	return newFakeShellServerForMCPOpt(t, false)
+}
+
+// newFakeShellServerWithSftpForMCP 创建支持 sftp subsystem 的 fake server。
+func newFakeShellServerWithSftpForMCP(t *testing.T) *fakeShellServerForMCP {
+	return newFakeShellServerForMCPOpt(t, true)
+}
+
+func newFakeShellServerForMCPOpt(t *testing.T, enableSftp bool) *fakeShellServerForMCP {
 	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -158,7 +171,7 @@ func newFakeShellServerForMCP(t *testing.T) *fakeShellServerForMCP {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeShellServerForMCP{t: t, listener: l, hostKey: signer}
+	s := &fakeShellServerForMCP{t: t, listener: l, hostKey: signer, enableSftp: enableSftp}
 	s.wg.Add(1)
 	go s.serve()
 	t.Cleanup(func() {
@@ -223,10 +236,40 @@ func (s *fakeShellServerForMCP) handleSession(ch cryptossh.Channel, reqs <-chan 
 			req.Reply(true, nil)
 			runFakeShellForMCP(ch)
 			return
+		case "subsystem":
+			if !s.enableSftp {
+				req.Reply(false, nil)
+				continue
+			}
+			if parseSubsystemPayloadMCP(req.Payload) == "sftp" {
+				req.Reply(true, nil)
+				runSftpServerForMCP(ch)
+				return
+			}
+			req.Reply(false, nil)
 		default:
 			req.Reply(false, nil)
 		}
 	}
+}
+
+// parseSubsystemPayloadMCP 解析 subsystem 请求 payload：4 字节长度 + 子系统名。
+func parseSubsystemPayloadMCP(payload []byte) string {
+	if len(payload) < 4 {
+		return ""
+	}
+	n := binary.BigEndian.Uint32(payload[:4])
+	if uint32(len(payload)-4) < n {
+		return ""
+	}
+	return string(payload[4 : 4+n])
+}
+
+// runSftpServerForMCP 在 SSH channel 上启动 sftp server（InMemHandler 后端）。
+func runSftpServerForMCP(ch cryptossh.Channel) {
+	srv := sftp.NewRequestServer(ch, sftp.InMemHandler())
+	defer srv.Close()
+	_ = srv.Serve()
 }
 
 func runFakeShellForMCP(ch cryptossh.Channel) {

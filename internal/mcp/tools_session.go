@@ -32,6 +32,27 @@ type CloseSessionArgs struct {
 // StatArgs 是 stat 工具的入参（空）。
 type StatArgs struct{}
 
+// SendInputArgs 是 send_input 工具的入参。
+type SendInputArgs struct {
+	SID  string `json:"sid"`
+	Text string `json:"text" jsonschema:"raw text to write to PTY stdin (e.g. answers to prompts, here-doc content)"`
+}
+
+// SendSpecialArgs 是 send_special 工具的入参。
+// Key ∈ {"ctrl-c", "ctrl-d", "ctrl-z", "tab", "esc"}.
+type SendSpecialArgs struct {
+	SID string `json:"sid"`
+	Key string `json:"key" jsonschema:"one of: ctrl-c | ctrl-d | ctrl-z | tab | esc"`
+}
+
+// GetTraceArgs 是 get_trace 工具的入参。
+// LastN=0 返回全部；TruncOutput=0 不截断（>0 截断每条 Output 到该长度）。
+type GetTraceArgs struct {
+	SID         string `json:"sid"`
+	LastN       int    `json:"last_n,omitempty" jsonschema:"optional, return only the last N traces; 0 = all"`
+	TruncOutput int    `json:"trunc_output,omitempty" jsonschema:"optional, truncate each Output to this many chars; 0 = no truncation"`
+}
+
 // Login 拨通指定 SSH server，建立 PTY session。
 //
 // 支持三种形态：
@@ -80,13 +101,13 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 	if idleTimeout == 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
-	logger.Info("session created", "server", srv.Name, "via", viaDesc(srv), "idle_timeout", idleTimeout.String())
+	sess := s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
+	logger.Info("session created", "server", srv.Name, "via", viaDesc(srv), "idle_timeout", idleTimeout.String(), "sftp_available", sess.SftpAvailable())
 
 	return textResult(map[string]any{
 		"sid":            sid,
 		"server_name":    srv.Name,
-		"sftp_available": false, // v1 phase 5 加入
+		"sftp_available": sess.SftpAvailable(),
 	})
 }
 
@@ -207,4 +228,40 @@ func (s *Service) CloseSession(ctx context.Context, req *mcp.CallToolRequest, ar
 // Stat 返回所有活跃 session 的摘要。
 func (s *Service) Stat(ctx context.Context, req *mcp.CallToolRequest, args StatArgs) (*mcp.CallToolResult, any, error) {
 	return textResult(s.manager.Stat())
+}
+
+// SendInput 在 running 状态下向 PTY stdin 写入任意文本（如回答交互提示、here-doc 内容）。
+// idle / closed 状态下报错。text 也会记入当前 trace 的 Inputs 供 get_trace 诊断。
+func (s *Service) SendInput(ctx context.Context, req *mcp.CallToolRequest, args SendInputArgs) (*mcp.CallToolResult, any, error) {
+	sess, err := s.manager.Get(args.SID)
+	if err != nil {
+		return errorResult("%v", err)
+	}
+	if err := sess.SendInput(args.Text); err != nil {
+		return errorResult("%v", err)
+	}
+	return textResult(map[string]any{"sid": args.SID, "sent": true})
+}
+
+// SendSpecial 在 running 状态下发送命名控制字符（ctrl-c / ctrl-d / ctrl-z / tab / esc）。
+// idle / closed 状态下报错；未知 key 报错。
+func (s *Service) SendSpecial(ctx context.Context, req *mcp.CallToolRequest, args SendSpecialArgs) (*mcp.CallToolResult, any, error) {
+	sess, err := s.manager.Get(args.SID)
+	if err != nil {
+		return errorResult("%v", err)
+	}
+	if err := sess.SendSpecial(args.Key); err != nil {
+		return errorResult("%v", err)
+	}
+	return textResult(map[string]any{"sid": args.SID, "sent": true})
+}
+
+// GetTrace 返回指定 session 的命令 trace（cmd / output / exit_code / timed_out / inputs）。
+// 活 session 与已关闭 session（10min TTL）均可查。last_n / trunc_output 可选。
+func (s *Service) GetTrace(ctx context.Context, req *mcp.CallToolRequest, args GetTraceArgs) (*mcp.CallToolResult, any, error) {
+	traces, err := s.manager.GetTrace(args.SID, args.LastN, args.TruncOutput)
+	if err != nil {
+		return errorResult("%v", err)
+	}
+	return textResult(traces)
 }

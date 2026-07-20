@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +94,18 @@ func (f *fakeConn) SendSpecial(key string) error {
 		}
 	}
 	return nil
+}
+
+// SftpAvailable 默认返回 false（fakeConn 不模拟 sftp）。
+func (f *fakeConn) SftpAvailable() bool { return false }
+
+// Upload / Download 在 fakeConn 中不支持 sftp，返回 errSftpUnavailable。
+func (f *fakeConn) Upload(io.Reader, string, int) (int, bool, error) {
+	return 0, false, errSftpUnavailable
+}
+
+func (f *fakeConn) Download(string, io.Writer, int) (int, bool, error) {
+	return 0, false, errSftpUnavailable
 }
 
 // --- 状态机基本转换 ---

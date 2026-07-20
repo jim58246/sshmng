@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
 )
@@ -21,14 +23,26 @@ import (
 // fakeShellServer 是一个用于集成测试的 SSH server。
 // 它接受 SSH 连接、分配 session、在 session 中跑一个 Go 实现的 fake shell。
 // fake shell 模拟真实 shell 在 RC 注入后的行为：执行命令、发射 exit/PS1 sentinel。
+//
+// enableSftp=true 时同时支持 sftp subsystem（用于 sftp 集成测试）。
 type fakeShellServer struct {
-	t        *testing.T
-	listener net.Listener
-	hostKey  ssh.Signer
-	wg       sync.WaitGroup
+	t           *testing.T
+	listener    net.Listener
+	hostKey     ssh.Signer
+	enableSftp  bool
+	wg          sync.WaitGroup
 }
 
 func newFakeShellServer(t *testing.T) *fakeShellServer {
+	return newFakeShellServerOpt(t, false)
+}
+
+// newFakeShellServerWithSftp 创建支持 sftp subsystem 的 fake server。
+func newFakeShellServerWithSftp(t *testing.T) *fakeShellServer {
+	return newFakeShellServerOpt(t, true)
+}
+
+func newFakeShellServerOpt(t *testing.T, enableSftp bool) *fakeShellServer {
 	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -42,7 +56,7 @@ func newFakeShellServer(t *testing.T) *fakeShellServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeShellServer{t: t, listener: l, hostKey: signer}
+	s := &fakeShellServer{t: t, listener: l, hostKey: signer, enableSftp: enableSftp}
 	s.wg.Add(1)
 	go s.serve()
 	t.Cleanup(func() {
@@ -96,7 +110,8 @@ func (s *fakeShellServer) handle(conn net.Conn) {
 	}
 }
 
-// handleSession 处理一个 session channel：响应 pty-req / shell 请求，启动 fake shell。
+// handleSession 处理一个 session channel：响应 pty-req / shell / subsystem 请求。
+// subsystem=sftp 时启动 sftp server（需 enableSftp=true，否则拒绝）。
 func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer s.wg.Done()
 	defer ch.Close()
@@ -110,10 +125,41 @@ func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request
 			req.Reply(true, nil)
 			runFakeShell(ch, ptyRequested)
 			return
+		case "subsystem":
+			if !s.enableSftp {
+				req.Reply(false, nil)
+				continue
+			}
+			name := parseSubsystemPayload(req.Payload)
+			if name == "sftp" {
+				req.Reply(true, nil)
+				runSftpServer(ch)
+				return
+			}
+			req.Reply(false, nil)
 		default:
 			req.Reply(false, nil)
 		}
 	}
+}
+
+// parseSubsystemPayload 解析 subsystem 请求的 payload：4 字节长度 + 子系统名。
+func parseSubsystemPayload(payload []byte) string {
+	if len(payload) < 4 {
+		return ""
+	}
+	n := binary.BigEndian.Uint32(payload[:4])
+	if uint32(len(payload)-4) < n {
+		return ""
+	}
+	return string(payload[4 : 4+n])
+}
+
+// runSftpServer 在 SSH channel 上启动 sftp server（用 InMemHandler 后端）。
+func runSftpServer(ch ssh.Channel) {
+	srv := sftp.NewRequestServer(ch, sftp.InMemHandler())
+	defer srv.Close()
+	_ = srv.Serve()
 }
 
 // runFakeShell 实现 fake shell：读行、解析 RC 注入、执行命令、发射 sentinel。

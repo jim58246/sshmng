@@ -145,6 +145,28 @@ func NewServer(svc *Service) *mcp.Server {
 		Name:        "stat",
 		Description: "List all active sessions with their state (idle/running/closed), last activity, command count, uptime.",
 	}, svc.Stat)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "send_input",
+		Description: "Write raw text to an idle session's PTY stdin. Use when a command prompts for input (e.g. password, y/n). Session must be in running state; use run_in_session first to start a command.",
+	}, svc.SendInput)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "send_special",
+		Description: "Send a named control character to a running session's PTY. Keys: ctrl-c (SIGINT), ctrl-d (EOF), ctrl-z (SIGTSTP), tab, esc. Use to interrupt or signal the foreground command.",
+	}, svc.SendSpecial)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_trace",
+		Description: "Retrieve command trace for a session (alive or closed within last 10min). Returns cmd/output/exit_code/timed_out/inputs per command. Use last_n to limit count, trunc_output to cap each Output length.",
+	}, svc.GetTrace)
+
+	// File transfer tools (phase 5)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "upload",
+		Description: "Upload a local file to the remote host via sftp. Requires sftp_available=true on the session (see stat). Returns bytes transferred; timed_out=true if timeout hit.",
+	}, svc.Upload)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "download",
+		Description: "Download a remote file to local via sftp. Requires sftp_available=true on the session. Returns bytes transferred; timed_out=true if timeout hit.",
+	}, svc.Download)
 	return server
 }
 

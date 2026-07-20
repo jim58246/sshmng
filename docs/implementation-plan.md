@@ -11,8 +11,8 @@
 | 1 | 项目骨架 + 配置管理 + MCP CRUD 工具 | ✅ 完成 | `34f8311` |
 | 2 | SSH 连接层 + 直连会话（Pattern A，无 LoginFlow） | ✅ 完成 | `96b669a` |
 | 3 | LoginFlow 决策树执行器（Pattern A 下 SSHServer.LoginFlow） | ✅ 完成 | `7fe6a2d` |
-| 4 | Pattern B 交互式堡垒机 | ✅ 完成 | （本次提交） |
-| 5 | sftp + send_input/send_special/get_trace + 其余工具 | ⏳ 待开始 | — |
+| 4 | Pattern B 交互式堡垒机 | ✅ 完成 | `56ba3dd` |
+| 5 | sftp + send_input/send_special/get_trace + 其余工具 | ✅ 完成 | （本次提交） |
 
 ## 项目结构
 
@@ -166,7 +166,7 @@ sshmng/
 
 **关键文件**：`internal/loginflow/executor.go`（PTY 接口）、`internal/ssh/pty.go`（OpenPtyConn/RunLoginFlow/InjectRC + pushback 切分）、`internal/mcp/tools_session.go`（setupDirect/setupPatternB 分支）
 
-## 阶段 5：sftp + 其余工具 ⏳
+## 阶段 5：sftp + 其余工具 ✅
 
 **目标**：补齐 `upload` / `download` / `send_input` / `send_special` / `get_trace`，完成 v1 全部 MCP 工具。
 

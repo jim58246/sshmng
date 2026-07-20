@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -29,24 +30,28 @@ func (s SessionState) String() string {
 	return "unknown"
 }
 
-// Conn 抽象 SSH 连接的命令执行能力，便于测试用 fake 替身。
+// Conn 抽象 SSH 连接的命令执行 + sftp 文件传输能力，便于测试用 fake 替身。
 // 真实实现是 ptyConn（dialer.go + pty.go 组合）。
 type Conn interface {
 	Close() error
 	Run(cmd string, timeoutMs int, maxOutputBytes int) (output string, exitCode int, timedOut bool, truncated bool, totalBytes int, err error)
 	SendInput(text string) error
 	SendSpecial(key string) error
+	SftpAvailable() bool
+	Upload(src io.Reader, remotePath string, timeoutMs int) (bytes int, timedOut bool, err error)
+	Download(remotePath string, dst io.Writer, timeoutMs int) (bytes int, timedOut bool, err error)
 }
 
 // SessionStat 是 stat() 工具返回的单条 session 摘要。
+// JSON tag 与设计文档 §3.3 stat() 返回字段名一致。
 type SessionStat struct {
-	SID          string
-	ServerName   string
-	State        string
-	SftpAvail    bool
-	LastActivity time.Time
-	CommandsRun  int
-	UptimeS      int
+	SID          string    `json:"sid"`
+	ServerName   string    `json:"name"`
+	State        string    `json:"state"`
+	SftpAvail    bool      `json:"sftp_available"`
+	LastActivity time.Time `json:"last_activity"`
+	CommandsRun  int       `json:"commands_run"`
+	UptimeS      int       `json:"uptime_s"`
 }
 
 // Session 是单个 SSH 连接的状态机。
@@ -63,18 +68,31 @@ type Session struct {
 	idleTimer    *time.Timer
 	logger       *slog.Logger // 操作日志（idle timeout、异步事件）；nil 时退化为 discard
 	manager      *Manager     // 反向引用，用于 Close 时从 Manager 移除
+	traces       []CommandTrace
+	currentTrace *CommandTrace // Running 期间非 nil，SendInput 追加 Inputs
 	mu           sync.Mutex
 }
 
 // Manager 持有所有活跃 session。
 type Manager struct {
-	sessions map[string]*Session
-	mu       sync.Mutex
+	sessions  map[string]*Session
+	graveyard map[string]graveEntry // close_session 后的 trace 存储，TTL = graveTTL
+	nowFunc   func() time.Time      // 测试用 fake clock；nil = time.Now
+	mu        sync.Mutex
+}
+
+// graveEntry 是已关闭 session 的 trace 记录。
+type graveEntry struct {
+	traces   []CommandTrace
+	closedAt time.Time
 }
 
 // NewManager 创建空 Manager。
 func NewManager() *Manager {
-	return &Manager{sessions: make(map[string]*Session)}
+	return &Manager{
+		sessions:  make(map[string]*Session),
+		graveyard: make(map[string]graveEntry),
+	}
 }
 
 // NewSession 是生产代码入口：用已有 Conn 创建 session 并加入 Manager。
@@ -95,6 +113,7 @@ func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTime
 		serverName:   serverName,
 		state:        StateIdle,
 		conn:         conn,
+		sftpAvail:    conn.SftpAvailable(),
 		createdAt:    time.Now(),
 		lastActivity: time.Now(),
 		idleTimeout:  idleTimeout,
@@ -173,6 +192,7 @@ func (s *Session) ServerName() string { return s.serverName }
 //   - 当前非 idle：返回 "session busy" / "session closed" 错误
 //   - 命令执行期间不算空闲，idle timer 不会触发
 //   - 执行完毕后重置 idle timer
+//   - 命令的 cmd / output / exit_code / timed_out / send_input 调用记入 traces，供 get_trace 取用
 func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (string, int, bool, bool, int, error) {
 	s.mu.Lock()
 	if s.state == StateClosed {
@@ -185,22 +205,29 @@ func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (s
 	}
 	s.state = StateRunning
 	s.stopIdleTimer()
+	tr := &CommandTrace{Time: time.Now(), Cmd: cmd}
+	s.currentTrace = tr
 	s.mu.Unlock()
 
 	output, exitCode, timedOut, truncated, totalBytes, err := s.conn.Run(cmd, timeoutMs, maxOutputBytes)
 
 	s.mu.Lock()
+	tr.Output = output
+	tr.ExitCode = exitCode
+	tr.TimedOut = timedOut
 	s.commandsRun++
 	s.lastActivity = time.Now()
 	if s.state != StateClosed {
 		s.state = StateIdle
 		s.resetIdleTimer()
+		s.traces = append(s.traces, *tr)
 	}
+	s.currentTrace = nil
 	s.mu.Unlock()
 	return output, exitCode, timedOut, truncated, totalBytes, err
 }
 
-// SendInput 在 running 状态下向 PTY 发送任意文本。
+// SendInput 在 running 状态下向 PTY 发送任意文本，并记入当前 trace 的 Inputs。
 // idle / closed 状态下报错。
 func (s *Session) SendInput(text string) error {
 	s.mu.Lock()
@@ -213,7 +240,17 @@ func (s *Session) SendInput(text string) error {
 		return errors.New("session idle, use run_in_session")
 	}
 	s.mu.Unlock()
-	return s.conn.SendInput(text)
+
+	if err := s.conn.SendInput(text); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.state == StateRunning && s.currentTrace != nil {
+		s.currentTrace.Inputs = append(s.currentTrace.Inputs, text)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // SendSpecial 在 running 状态下发送控制字符。
@@ -232,7 +269,26 @@ func (s *Session) SendSpecial(key string) error {
 	return s.conn.SendSpecial(key)
 }
 
+// SftpAvailable 返回 login 时 sftp 通道是否建立成功。
+func (s *Session) SftpAvailable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sftpAvail
+}
+
+// Upload 把 src 上传到远端 remotePath。透传到底层 Conn；session 不存在或已关闭时
+// manager.Get 已返回 error。
+func (s *Session) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
+	return s.conn.Upload(src, remotePath, timeoutMs)
+}
+
+// Download 把远端 remotePath 下载到 dst。
+func (s *Session) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
+	return s.conn.Download(remotePath, dst, timeoutMs)
+}
+
 // Close 强制关闭 session，无论状态。停止 idle timer、关闭 conn、从 Manager 移除。
+// trace 复制到 Manager.graveyard 保留 10min 供 get_trace 诊断。
 // 重复调用是 no-op。
 func (s *Session) Close() error {
 	s.mu.Lock()
@@ -242,11 +298,13 @@ func (s *Session) Close() error {
 	}
 	s.state = StateClosed
 	s.stopIdleTimer()
+	tracesCopy := append([]CommandTrace(nil), s.traces...)
 	s.mu.Unlock()
 
 	err := s.conn.Close()
 	if s.manager != nil {
 		s.manager.removeSession(s.sid)
+		s.manager.buryTraces(s.sid, tracesCopy)
 	}
 	return err
 }
