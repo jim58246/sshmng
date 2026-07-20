@@ -19,12 +19,17 @@ import (
 
 // PTY 是执行器依赖的 PTY 抽象，便于测试用 fake 替身。
 //
-// Read 读取 PTY 输出，直到 mustContain 出现（非空时）或 deadline 到达。
-// mustContain 为空时由实现自行决定停止条件（如"静默期"：一段时间无新数据）。
-// 返回累积输出与是否超时。
+// Read 读取 PTY 输出，直到任意 matcher 命中或 deadline 到达。
+// matchers 为空时按静默期 heuristic 返回（用于无 Expects 的 Action，理论上不应出现）。
+// 命中时返回截至 match 末尾的 output（含 ANSI，供 trace 记录原始数据）；
+// trailing data 由实现内部 pushback 保留，下次 Read 优先消费——这点对 Pattern B
+// 两段式 LoginFlow 至关重要：第一段流的最后一次 Read 不能吞掉第二段流要等的 prompt。
+//
+// 返回 (output, matchedIdx, timedOut, err)。matchedIdx=-1 表示未命中
+// （matchers 为空的静默期返回，或 deadline 到达的超时返回）。
 type PTY interface {
 	Send(s string) error
-	Read(deadline time.Time, mustContain string) (output string, timedOut bool, err error)
+	Read(deadline time.Time, matchers []*regexp.Regexp) (output string, matchedIdx int, timedOut bool, err error)
 }
 
 // TraceEntry 是单步执行记录，与设计文档 §3.2 trace 结构一致。
@@ -91,6 +96,18 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 			}
 		}
 
+		// 编译本步 matchers：PTY.Read 命中即停，trailing 留 pushback。
+		// 这避免 Pattern B 第二段流等不到 prompt——第一段流的最后一次 Read 不能
+		// 把 server 自发输出（如 target 的 "login:"）一并吞掉。
+		matchers := make([]*regexp.Regexp, len(action.Expects))
+		for i, exp := range action.Expects {
+			re, err := compilePattern(exp.Pattern)
+			if err != nil {
+				return trace, fmt.Errorf("loginflow: action %q: invalid pattern %q: %w", currentName, exp.Pattern, err)
+			}
+			matchers[i] = re
+		}
+
 		timeout := defaultTimeout
 		if action.TimeoutMs > 0 {
 			timeout = time.Duration(action.TimeoutMs) * time.Millisecond
@@ -100,22 +117,16 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 			deadline = globalDeadline
 		}
 
-		output, timedOut, err := pty.Read(deadline, "")
+		output, matchedIdx, timedOut, err := pty.Read(deadline, matchers)
 		if err != nil {
 			return trace, fmt.Errorf("loginflow: read at %q: %w", currentName, err)
 		}
 
-		stripped := stripANSI(output)
 		matchedPattern := ""
 		next := ""
-		matched := false
-		for _, exp := range action.Expects {
-			if matchPattern(exp.Pattern, stripped) {
-				matchedPattern = exp.Pattern
-				next = exp.Next
-				matched = true
-				break
-			}
+		if matchedIdx >= 0 {
+			matchedPattern = action.Expects[matchedIdx].Pattern
+			next = action.Expects[matchedIdx].Next
 		}
 
 		trace = append(trace, TraceEntry{
@@ -129,7 +140,7 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 		if timedOut {
 			return trace, fmt.Errorf("loginflow: action %q timed out after %s", currentName, timeout)
 		}
-		if !matched {
+		if matchedIdx < 0 {
 			return trace, fmt.Errorf("loginflow: action %q: no expect matched (output: %q)", currentName, truncateForMsg(output, 200))
 		}
 		if next == success {
@@ -141,24 +152,17 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 	return trace, fmt.Errorf("loginflow: max steps (%d) exceeded", maxSteps)
 }
 
-// matchPattern 匹配 pattern：无前缀 = glob（"contains" 语义，pattern 匹配 s 任意子串），
-// "re:" 前缀 = 正则（regexp.MatchString，本身就是 contains 语义）。
+// compilePattern 把 LoginFlow pattern 编译成正则：
+//   - "re:" 前缀：去掉前缀后直接编译
+//   - 无前缀：glob → 正则（contains 语义，未锚定）
 //
 // "contains" 而非 "full match"：PTY 输出常带前导 \r\n / MOTD / 颜色码残留，
 // 用户写 "login:*" 期望匹配 "...login: " 中的 "login: " 子串，而非要求整行以 "login:" 开头。
-func matchPattern(pattern, s string) bool {
+func compilePattern(pattern string) (*regexp.Regexp, error) {
 	if strings.HasPrefix(pattern, "re:") {
-		re, err := regexp.Compile(pattern[3:])
-		if err != nil {
-			return false
-		}
-		return re.MatchString(s)
+		return regexp.Compile(pattern[3:])
 	}
-	re, err := globToRegex(pattern)
-	if err != nil {
-		return false
-	}
-	return re.MatchString(s)
+	return globToRegex(pattern)
 }
 
 // globToRegex 把 glob pattern 转成未锚定正则（contains 语义）。

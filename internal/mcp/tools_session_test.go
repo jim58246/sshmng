@@ -38,8 +38,9 @@ func TestLoginUnknownServer(t *testing.T) {
 	}
 }
 
-// TestLoginRejectsJumphost 校验 v1 phase 2 拒绝带 Via 的 server。
-func TestLoginRejectsJumphost(t *testing.T) {
+// TestLoginRejectsPatternA 校验 v1 phase 4 拒绝 Pattern A（SSHJ=true 的 jumphost），
+// 该形态留 v1.x 实现。Pattern B（SSHJ=false）由 TestIntegrationPatternBEndToEnd 覆盖。
+func TestLoginRejectsPatternA(t *testing.T) {
 	jumphost := &config.Jumphost{Name: "j1", Addr: "1.1.1.1:22", User: "u", SSHJ: true}
 	svc := newTestService(t, &config.Config{
 		Version:   "1",
@@ -60,7 +61,7 @@ func TestLoginRejectsJumphost(t *testing.T) {
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "via-jump"})
 	if !res.IsError {
-		t.Errorf("expected IsError=true for server with Via (jumphost not supported in phase 2)")
+		t.Errorf("expected IsError=true for Pattern A (SSHJ=true not yet supported)")
 	}
 	text := resultText(t, res)
 	if !strings.Contains(text, "jumphost") {

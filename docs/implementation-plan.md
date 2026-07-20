@@ -10,8 +10,8 @@
 |------|------|------|--------|
 | 1 | 项目骨架 + 配置管理 + MCP CRUD 工具 | ✅ 完成 | `34f8311` |
 | 2 | SSH 连接层 + 直连会话（Pattern A，无 LoginFlow） | ✅ 完成 | `96b669a` |
-| 3 | LoginFlow 决策树执行器（Pattern A 下 SSHServer.LoginFlow） | ✅ 完成 | （本次提交） |
-| 4 | Pattern B 交互式堡垒机 | ⏳ 待开始 | — |
+| 3 | LoginFlow 决策树执行器（Pattern A 下 SSHServer.LoginFlow） | ✅ 完成 | `7fe6a2d` |
+| 4 | Pattern B 交互式堡垒机 | ✅ 完成 | （本次提交） |
 | 5 | sftp + send_input/send_special/get_trace + 其余工具 | ⏳ 待开始 | — |
 
 ## 项目结构
@@ -142,29 +142,29 @@ sshmng/
 
 **关键文件**：`internal/loginflow/{executor,trace}.go`、`internal/ssh/session.go`（集成）
 
-## 阶段 4：Pattern B 交互式堡垒机 ⏳
+## 阶段 4：Pattern B 交互式堡垒机 ✅
 
 **目标**：支持 `Jumphost.SSHJ=false`。两段式 LoginFlow：Jumphost.LoginFlow 准备到主菜单就绪 → SSHServer.LoginFlow 接管登录 target。
 
 **TDD 测试用例**：
 
-`internal/ssh/dialer_jumphost_test.go`
-- Pattern A（`Via.SSHJ=true`，留 v1.x 实现）：客户端经 jumphost 的 direct-tcpip 通道 SSH auth 到 target —— 本阶段只测连通性骨架，不深做
-- Pattern B（`Via.SSHJ=false`）：
-  - mock 堡垒机（带菜单的 SSH server）：登录后输出菜单 → Jumphost.LoginFlow 选择 → SSHServer.LoginFlow 输入 target 凭据 → 拿到 target shell
-  - 同一 jumphost 配多个 SSHServer，复用 jumphost.LoginFlow 配置
-  - Pattern B 下 `SSHServer.Auth` 非空 → 启动校验拒绝（已在阶段 1 覆盖，此处补集成测试）
+`internal/mcp/tools_session_jumphost_test.go`
+- Pattern B 端到端：login → run_in_session → close_session。fake jumphost server 模拟菜单 → target 选择 → target 凭据 → target shell 全流程，全程同一 SSH session
+- Jumphost.LoginFlow 失败（pattern 不匹配）→ login 报错，error 含 "loginflow" / "no expect matched"
+- Pattern A (`Via.SSHJ=true`) → login 拒绝（"pattern A via ssh-j jumphost not yet supported"，留 v1.x 实现）
 
 **实现要点**：
-- `dialer.go` 扩展 Pattern B 分支：SSH auth 到 jumphost → 走 `Jumphost.LoginFlow` → 走 `SSHServer.LoginFlow` → 拿到 target shell（同一 PTY）
-- 关键：Pattern B 下 target shell 与 jumphost shell 共用同一 PTY，不需要再拨号；只是 LoginFlow 执行完后 PTY 流来自 target
-- mock 堡垒机：用 `golang.org/x/crypto/ssh` 起 server，shell 启动后输出菜单，根据输入选择分支
+- **PTY 接口重设计**（关键）：`loginflow.PTY.Read` 从 `(deadline, mustContain string)` 改为 `(deadline, matchers []*regexp.Regexp) (output, matchedIdx, timedOut, err)`。matcher 命中即停，trailing data 留 pushback。这是 Pattern B 的关键——第一段流的最后一次 Read 不能吞掉第二段流要等的 prompt
+- **NewPtyConn 拆分**：`OpenPtyConn`（detect only）+ `RunLoginFlow`（可链式调用）+ `InjectRC`。原有 `NewPtyConn` 保留为直连场景的便捷构造器
+- **stripANSIWithPos**：剥离 ANSI 同时返回位置映射，用于把 stripped 中的 match 末尾映射回 raw 字节位置切分 pushback
+- **Login handler 分支**：`srv.Via == nil` → 直连；`srv.Via.SSHJ=true` → 拒绝（v1.x）；`srv.Via.SSHJ=false` → setupPatternB（拨号 jumphost → OpenPtyConn → RunLoginFlow(jump) → RunLoginFlow(server) → InjectRC）
+- 两段 LoginFlow 共用同一 PTY，trailing data 通过 pushback 在调用间保留
 
 **验证**：
-- `go test ./internal/ssh/... -run Jumphost` 全绿
-- MCP Inspector 连接 mock 堡垒机 + mock target，跑通 Pattern B 端到端
+- `go test -race ./...` 全绿（含 Pattern B 端到端 + jumphost flow 失败 + Pattern A 拒绝）
+- MCP Inspector 待真实环境验收（mock 已覆盖核心路径）
 
-**关键文件**：`internal/ssh/dialer.go`（扩展）、`internal/ssh/session.go`（两段 LoginFlow 串联）
+**关键文件**：`internal/loginflow/executor.go`（PTY 接口）、`internal/ssh/pty.go`（OpenPtyConn/RunLoginFlow/InjectRC + pushback 切分）、`internal/mcp/tools_session.go`（setupDirect/setupPatternB 分支）
 
 ## 阶段 5：sftp + 其余工具 ⏳
 

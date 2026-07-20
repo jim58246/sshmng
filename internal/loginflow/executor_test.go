@@ -1,6 +1,7 @@
 package loginflow
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -8,8 +9,8 @@ import (
 	"sshmng/internal/config"
 )
 
-// fakePTY 是测试用的 PTY 替身：Send 累积输入；Read 返回已队列化的输出。
-// 命中 mustContain 时 timedOut=false；否则 timedOut=true（模拟等不到 pattern）。
+// fakePTY 是测试用的 PTY 替身：Send 累积输入；Read 把队列化输出投递给 matchers。
+// 命中第一个 matcher 时返回 (out, idx, false, nil)；全部不命中返回 (out, -1, false, nil)。
 // forceTimeout=true 时 Read 总是返回 timedOut=true，用于测超时分支。
 type fakePTY struct {
 	sent         []string
@@ -22,14 +23,22 @@ func (f *fakePTY) Send(s string) error {
 	return nil
 }
 
-func (f *fakePTY) Read(deadline time.Time, mustContain string) (string, bool, error) {
+func (f *fakePTY) Read(deadline time.Time, matchers []*regexp.Regexp) (string, int, bool, error) {
 	out := f.queuedOut
 	f.queuedOut = ""
 	if f.forceTimeout {
-		return out, true, nil
+		return out, -1, true, nil
 	}
-	timedOut := mustContain != "" && !strings.Contains(out, mustContain)
-	return out, timedOut, nil
+	if len(matchers) == 0 {
+		return out, -1, false, nil
+	}
+	stripped := stripANSI(out)
+	for idx, m := range matchers {
+		if m.MatchString(stripped) {
+			return out, idx, false, nil
+		}
+	}
+	return out, -1, false, nil
 }
 
 // queueOut 把一段输出加入队列，供下次 Read 返回。
@@ -232,8 +241,15 @@ func (p *loopPTY) Send(s string) error {
 	p.sent = append(p.sent, s)
 	return nil
 }
-func (p *loopPTY) Read(deadline time.Time, mustContain string) (string, bool, error) {
-	return "loop output", false, nil
+func (p *loopPTY) Read(deadline time.Time, matchers []*regexp.Regexp) (string, int, bool, error) {
+	out := "loop output"
+	stripped := stripANSI(out)
+	for idx, m := range matchers {
+		if m.MatchString(stripped) {
+			return out, idx, false, nil
+		}
+	}
+	return out, -1, false, nil
 }
 
 // --- GlobalTimeout 超限 ---

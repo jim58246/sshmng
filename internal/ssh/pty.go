@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -59,12 +60,42 @@ type PtyConn struct {
 	mu sync.Mutex
 }
 
-// NewPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell、探测 shell 类型、
-// 可选执行 LoginFlow、注入 RC。调用者负责在失败时 Close。
+// NewPtyConn 是直连场景的便捷构造器：OpenPtyConn + 可选单段 LoginFlow + InjectRC。
+// 返回 ready-to-use 的 PtyConn。
 //
-// opts 为 nil 或 opts.LoginFlow 为空时跳过 LoginFlow（直连场景）；
-// 非空时在 shell detect 后、RC 注入前执行，失败返回 error（含 trace 供诊断）。
+// Pattern B（两段式 LoginFlow）不要用此构造器——改用 OpenPtyConn + 多次 RunLoginFlow
+// + InjectRC，以便在 jumphost flow 与 server flow 之间切分 PTY 流。
+//
+// opts 为 nil 或 opts.LoginFlow 为空时跳过 LoginFlow（纯直连）。
 func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions) (*PtyConn, error) {
+	p, err := OpenPtyConn(client, sid)
+	if err != nil {
+		return nil, err
+	}
+	if opts != nil && len(opts.LoginFlow) > 0 {
+		if _, err := p.RunLoginFlow(opts.LoginFlow, opts.LoginEntry, LoginFlowOptions{
+			MaxSteps:        opts.MaxSteps,
+			GlobalTimeoutMs: opts.GlobalTimeoutMs,
+		}); err != nil {
+			p.Close()
+			return nil, fmt.Errorf("loginflow: %w", err)
+		}
+	}
+	if err := p.InjectRC(); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("inject rc: %w", err)
+	}
+	return p, nil
+}
+
+// OpenPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell、探测 shell 类型。
+// 不执行 LoginFlow、不注入 RC——调用方负责后续装配：
+//   - 直连：直接 InjectRC
+//   - SSHServer.LoginFlow：RunLoginFlow → InjectRC
+//   - Pattern B：RunLoginFlow(jumphost) → RunLoginFlow(server) → InjectRC
+//
+// 调用者负责在失败时 Close。
+func OpenPtyConn(client *ssh.Client, sid string) (*PtyConn, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
@@ -109,24 +140,36 @@ func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions) (*PtyConn,
 		return nil, fmt.Errorf("detect shell: %w", err)
 	}
 	p.shell = shell
-
-	if opts != nil && len(opts.LoginFlow) > 0 {
-		trace, err := loginflow.Run(p, opts.LoginFlow, opts.LoginEntry, loginflow.Options{
-			MaxSteps:       opts.MaxSteps,
-			GlobalTimeout:  time.Duration(opts.GlobalTimeoutMs) * time.Millisecond,
-			DefaultTimeout: 0, // 用 loginflow 包默认值
-		})
-		if err != nil {
-			p.Close()
-			return nil, fmt.Errorf("loginflow: %w; trace=%v", err, trace)
-		}
-	}
-
-	if err := p.injectRC(); err != nil {
-		p.Close()
-		return nil, fmt.Errorf("inject rc: %w", err)
-	}
 	return p, nil
+}
+
+// LoginFlowOptions 是 RunLoginFlow 的可选参数；零值使用 loginflow 包默认值。
+type LoginFlowOptions struct {
+	MaxSteps        int
+	GlobalTimeoutMs int
+}
+
+// RunLoginFlow 在 PTY 上执行一段 LoginFlow 决策树。
+// 多次调用可串联（Pattern B：先 jumphost flow 再 server flow），trailing data 通过
+// pushback 在调用间保留——前段流的最后 Read 不会吞掉后段流要等的 prompt。
+//
+// flow 为空时直接返回（无操作），便于调用方无条件调用。
+// 返回 trace 供诊断（如 MCP handler 在失败时返回 login_trace）。
+func (p *PtyConn) RunLoginFlow(flow map[string]config.LoginAction, entry string, opts LoginFlowOptions) ([]loginflow.TraceEntry, error) {
+	if len(flow) == 0 {
+		return nil, nil
+	}
+	return loginflow.Run(p, flow, entry, loginflow.Options{
+		MaxSteps:       opts.MaxSteps,
+		GlobalTimeout:  time.Duration(opts.GlobalTimeoutMs) * time.Millisecond,
+		DefaultTimeout: 0, // 用 loginflow 包默认值
+	})
+}
+
+// InjectRC 注入 RC 脚本并等待首个 PS1 sentinel 出现。
+// 在所有 LoginFlow（如有）执行完后调用。
+func (p *PtyConn) InjectRC() error {
+	return p.injectRC()
 }
 
 // readLoop 单 goroutine 持续读 stdout，把数据投递到 stdoutCh。
@@ -229,17 +272,22 @@ func (p *PtyConn) SendInput(text string) error {
 
 // Read 实现 loginflow.PTY 接口。
 //
-// mustContain 非空时读至 substring 出现或 deadline；为空时用静默期 heuristic
-// （连续 loginFlowQuietPeriod 无新数据即返回），便于 LoginFlow 入口 Action 等远端
-// 自发输出（MOTD / 菜单）。
+// matchers 非空时持续累积 PTY 输出，每收到新数据就用所有 matchers（针对 ANSI
+// 过滤后的输出）试匹配；命中即返回截至 match 末尾的 raw output，trailing 留 pushback
+// 供下次 Read。这是 Pattern B 两段式 LoginFlow 的关键：第一段流的最后一次 Read 不能
+// 把 target shell 的 prompt（如 "login: "）一并吞掉——否则第二段流入口 Action 等不到
+// 任何输出。
 //
-// 优先消费 pushback（readUntilPatternTimeout 留下的 trailing data）。
-func (p *PtyConn) Read(deadline time.Time, mustContain string) (string, bool, error) {
+// matchers 为空时按静默期 heuristic（连续 loginFlowQuietPeriod 无新数据即返回），
+// 用于无 Expects 的 Action 等远端自发输出（MOTD / 菜单）。
+//
+// 优先消费 pushback（前次 Read 留下的 trailing data）。
+func (p *PtyConn) Read(deadline time.Time, matchers []*regexp.Regexp) (string, int, bool, error) {
 	p.mu.Lock()
 	closed := p.closed
 	p.mu.Unlock()
 	if closed {
-		return "", false, errors.New("connection closed")
+		return "", -1, false, errors.New("connection closed")
 	}
 
 	// 先消费 pushback
@@ -251,50 +299,92 @@ func (p *PtyConn) Read(deadline time.Time, mustContain string) (string, bool, er
 	}
 	p.mu.Unlock()
 
-	if mustContain != "" {
-		// pushback 已含 mustContain：直接返回
-		if bytes.Contains(buf, []byte(mustContain)) {
-			// 与 readUntilPatternTimeout 行为一致：保留 trailing
-			idx := bytes.Index(buf, []byte(mustContain))
-			end := idx + len(mustContain)
-			p.mu.Lock()
-			p.pushback = append([]byte{}, buf[end:]...)
-			p.mu.Unlock()
-			return string(buf[:end]), false, nil
-		}
-		// 否则继续从 stdoutCh 读
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return string(buf), true, nil
-		}
-		out, timedOut := p.readUntilPatternTimeout(mustContain, remaining)
-		// readUntilPatternTimeout 会重新消费 pushback（已被我们清空），所以 out 不含我们已读的 buf
-		// 拼接：buf（已消费的 pushback）+ out（新读到 pattern）
-		return string(buf) + out, timedOut, nil
+	// pushback 已含匹配：直接返回
+	if idx, rawEnd := matchRaw(buf, matchers); idx >= 0 {
+		p.mu.Lock()
+		p.pushback = append([]byte{}, buf[rawEnd:]...)
+		p.mu.Unlock()
+		return string(buf[:rawEnd]), idx, false, nil
 	}
 
-	// 空 mustContain：静默期 heuristic
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return string(buf), true, nil
+			return string(buf), -1, true, nil
 		}
-		quietTimeout := loginFlowQuietPeriod
-		if remaining < quietTimeout {
-			quietTimeout = remaining
+		timeout := remaining
+		// matchers 为空时按静默期返回；否则等到 deadline
+		if len(matchers) == 0 && timeout > loginFlowQuietPeriod {
+			timeout = loginFlowQuietPeriod
 		}
 		select {
 		case data, ok := <-p.stdoutCh:
 			if !ok {
-				return string(buf), true, nil
+				return string(buf), -1, true, nil
 			}
 			buf = append(buf, data...)
-		case <-time.After(quietTimeout):
-			return string(buf), false, nil
+			if idx, rawEnd := matchRaw(buf, matchers); idx >= 0 {
+				p.mu.Lock()
+				p.pushback = append([]byte{}, buf[rawEnd:]...)
+				p.mu.Unlock()
+				return string(buf[:rawEnd]), idx, false, nil
+			}
+			// matchers 为空时继续 select 等下一个 quiet period
+		case <-time.After(timeout):
+			if len(matchers) == 0 {
+				return string(buf), -1, false, nil
+			}
+			return string(buf), -1, true, nil
 		case <-p.doneCh:
-			return string(buf), true, nil
+			return string(buf), -1, true, nil
 		}
 	}
+}
+
+// matchRaw 在 raw 输出（含 ANSI）中尝试每个 matcher（针对 stripped 输出）。
+// 返回 (matchedIdx, rawEndPos)；matchedIdx=-1 表示未命中。
+// rawEndPos 是 match 末尾在 raw 中的字节位置，用于切分 pushback。
+func matchRaw(buf []byte, matchers []*regexp.Regexp) (int, int) {
+	if len(matchers) == 0 {
+		return -1, 0
+	}
+	stripped, posMap := stripANSIWithPos(string(buf))
+	for idx, m := range matchers {
+		if loc := m.FindStringIndex(stripped); loc != nil {
+			return idx, posMap[loc[1]]
+		}
+	}
+	return -1, 0
+}
+
+// ansiCSIRe 匹配 ANSI CSI 序列：ESC [ + 参数字节 + 终止字节。
+var ansiCSIRe = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+
+// stripANSIWithPos 剥离 ANSI CSI 序列并返回 stripped 输出 + 位置映射。
+// posMap[i] = stripped 中第 i 字节对应的 raw 字节偏移；posMap[len(stripped)] = len(raw)。
+// 用于在 raw 输出中切分 match 边界（pushback trailing 保留 raw 形式）。
+func stripANSIWithPos(s string) (string, []int) {
+	var stripped strings.Builder
+	posMap := make([]int, 0, len(s)+1)
+	posMap = append(posMap, 0) // posMap[0] = 0: stripped 起点对应 raw 起点偏移 0
+
+	matches := ansiCSIRe.FindAllStringIndex(s, -1)
+	lastEnd := 0
+	for _, m := range matches {
+		// 拷贝 [lastEnd, m[0]) 区间的 raw 字节
+		for i := lastEnd; i < m[0]; i++ {
+			stripped.WriteByte(s[i])
+			posMap = append(posMap, i+1)
+		}
+		// 跳过 [m[0], m[1]) 区间的 CSI 序列
+		lastEnd = m[1]
+	}
+	// 拷贝尾部 [lastEnd, len(s)) 区间的 raw 字节
+	for i := lastEnd; i < len(s); i++ {
+		stripped.WriteByte(s[i])
+		posMap = append(posMap, i+1)
+	}
+	return stripped.String(), posMap
 }
 
 // Send 实现 loginflow.PTY 接口。等价于 SendInput。

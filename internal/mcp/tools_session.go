@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"sshmng/internal/config"
 	"sshmng/internal/ssh"
 )
 
@@ -30,8 +33,15 @@ type CloseSessionArgs struct {
 type StatArgs struct{}
 
 // Login 拨通指定 SSH server，建立 PTY session。
-// v1 phase 2 仅支持直连（Via 为空、无 LoginFlow）；jumphost / login_flow 在后续阶段支持。
-// 成功返回 sid；失败返回 IsError=true 的结果（不含 login_trace，因为 SSH 层错误自解释）。
+//
+// 支持三种形态：
+//   - 直连：srv.Via 为空，直接 SSH 拨号到 srv.Addr；可选 SSHServer.LoginFlow（target 认证后交互）
+//   - Pattern A (srv.Via.SSHJ=true)：经 jumphost 的 direct-tcpip 通道 SSH 到 target（v1.x 实现，当前拒绝）
+//   - Pattern B (srv.Via.SSHJ=false)：交互式堡垒机。拨号到 jumphost → Jumphost.LoginFlow（菜单就绪）
+//     → SSHServer.LoginFlow（选 target + 输入凭据）→ 注入 RC。两段 LoginFlow 共用同一 PTY。
+//
+// 成功返回 sid；失败返回 IsError=true 的结果。SSH auth 失败仅 error 字符串；
+// LoginFlow 失败 error 含 "loginflow" / "no expect matched" 供 Agent 诊断。
 func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args LoginArgs) (*mcp.CallToolResult, any, error) {
 	cfg, err := s.store.Load()
 	if err != nil {
@@ -42,12 +52,46 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		return errorResult("%v", err)
 	}
 
-	// v1 phase 3 限制：支持直连 + SSHServer.LoginFlow；jumphost 仍待 phase 4
-	if srv.Via != nil {
-		return errorResult("jumphost via not supported yet (server %q uses via %q); will be added in phase 4", args.Name, srv.Via.Name)
+	if srv.Via != nil && srv.Via.SSHJ {
+		// Pattern A (ssh -J 语义) 留 v1.x 实现
+		return errorResult("pattern A via ssh-j jumphost %q not yet supported (server %q); deferred to v1.x", srv.Via.Name, args.Name)
 	}
 
+	sid, err := ssh.RandomSID()
+	if err != nil {
+		s.sessionLogger(req, "").Warn("login failed: generate sid", "server", srv.Name, "err", err.Error())
+		return errorResult("generate sid: %v", err)
+	}
+	logger := s.sessionLogger(req, sid)
 	dialer := ssh.NewDialer(s.knownHosts)
+
+	var ptyConn *ssh.PtyConn
+	if srv.Via != nil {
+		ptyConn, err = s.setupPatternB(srv, dialer, sid, logger)
+	} else {
+		ptyConn, err = s.setupDirect(srv, dialer, sid, logger)
+	}
+	if err != nil {
+		logger.Warn("login failed", "server", srv.Name, "err", err.Error())
+		return errorResult("%v", err)
+	}
+
+	idleTimeout := time.Duration(cfg.IdleTimeoutS) * time.Second
+	if idleTimeout == 0 {
+		idleTimeout = 5 * time.Minute
+	}
+	s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
+	logger.Info("session created", "server", srv.Name, "via", viaDesc(srv), "idle_timeout", idleTimeout.String())
+
+	return textResult(map[string]any{
+		"sid":            sid,
+		"server_name":    srv.Name,
+		"sftp_available": false, // v1 phase 5 加入
+	})
+}
+
+// setupDirect 处理直连场景：SSH 拨号到 srv.Addr + 可选单段 LoginFlow + RC 注入。
+func (s *Service) setupDirect(srv *config.SSHServer, dialer *ssh.Dialer, sid string, logger *slog.Logger) (*ssh.PtyConn, error) {
 	client, err := dialer.Dial(ssh.DialOptions{
 		Addr:  srv.Addr,
 		User:  srv.User,
@@ -55,19 +99,8 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		Proxy: srv.Proxy,
 	})
 	if err != nil {
-		// 不记录凭据；addr/user 在 config 中可见，不算敏感
-		s.sessionLogger(req, "").Warn("login failed: ssh dial",
-			"server", srv.Name, "addr", srv.Addr, "err", err.Error())
-		return errorResult("ssh connect to %s: %v", srv.Addr, err)
+		return nil, fmt.Errorf("ssh connect to %s: %w", srv.Addr, err)
 	}
-
-	sid, err := ssh.RandomSID()
-	if err != nil {
-		client.Close()
-		s.sessionLogger(req, "").Warn("login failed: generate sid", "server", srv.Name, "err", err.Error())
-		return errorResult("generate sid: %v", err)
-	}
-	logger := s.sessionLogger(req, sid)
 	ptyConn, err := ssh.NewPtyConn(client, sid, &ssh.PtyConnOptions{
 		LoginFlow:       srv.LoginFlow,
 		LoginEntry:      srv.LoginEntry,
@@ -76,22 +109,58 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 	})
 	if err != nil {
 		client.Close()
-		logger.Warn("login failed: setup pty", "server", srv.Name, "err", err.Error())
-		return errorResult("setup pty: %v", err)
+		return nil, fmt.Errorf("setup pty: %w", err)
 	}
+	return ptyConn, nil
+}
 
-	idleTimeout := time.Duration(cfg.IdleTimeoutS) * time.Second
-	if idleTimeout == 0 {
-		idleTimeout = 5 * time.Minute
-	}
-	s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
-	logger.Info("session created", "server", srv.Name, "addr", srv.Addr, "idle_timeout", idleTimeout.String())
-
-	return textResult(map[string]any{
-		"sid":            sid,
-		"server_name":    srv.Name,
-		"sftp_available": false, // v1 phase 2 doesn't support sftp; added in phase 5
+// setupPatternB 处理 Pattern B 交互式堡垒机场景：
+// 拨号 jumphost → OpenPtyConn → Jumphost.LoginFlow（菜单就绪）→ SSHServer.LoginFlow
+// （选 target + 凭据）→ InjectRC。两段 LoginFlow 共用同一 PTY，trailing data 通过
+// pushback 在调用间保留。
+func (s *Service) setupPatternB(srv *config.SSHServer, dialer *ssh.Dialer, sid string, logger *slog.Logger) (*ssh.PtyConn, error) {
+	jump := srv.Via
+	client, err := dialer.Dial(ssh.DialOptions{
+		Addr:  jump.Addr,
+		User:  jump.User,
+		Auth:  jump.Auth,
+		Proxy: jump.Proxy,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("ssh connect to jumphost %s: %w", jump.Addr, err)
+	}
+	ptyConn, err := ssh.OpenPtyConn(client, sid)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("setup pty: %w", err)
+	}
+	if _, err := ptyConn.RunLoginFlow(jump.LoginFlow, jump.LoginEntry, ssh.LoginFlowOptions{
+		MaxSteps:        jump.MaxSteps,
+		GlobalTimeoutMs: jump.GlobalTimeoutMs,
+	}); err != nil {
+		ptyConn.Close()
+		return nil, fmt.Errorf("jumphost loginflow: %w", err)
+	}
+	if _, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, ssh.LoginFlowOptions{
+		MaxSteps:        srv.MaxSteps,
+		GlobalTimeoutMs: srv.GlobalTimeoutMs,
+	}); err != nil {
+		ptyConn.Close()
+		return nil, fmt.Errorf("target loginflow: %w", err)
+	}
+	if err := ptyConn.InjectRC(); err != nil {
+		ptyConn.Close()
+		return nil, fmt.Errorf("inject rc: %w", err)
+	}
+	return ptyConn, nil
+}
+
+// viaDesc 返回 server 的 via 描述，用于日志。无 via 时返回空字符串。
+func viaDesc(srv *config.SSHServer) string {
+	if srv.Via == nil {
+		return ""
+	}
+	return srv.Via.Name
 }
 
 // RunInSession 在指定 session 中执行一条命令。
