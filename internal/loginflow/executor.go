@@ -10,6 +10,7 @@ package loginflow
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type Options struct {
 	MaxSteps       int           // 0 = 50
 	GlobalTimeout  time.Duration // 0 = 60s
 	DefaultTimeout time.Duration // 0 = 10s（Action.TimeoutMs=0 时用）
+	Logger         *slog.Logger  // nil 退化为 discard；每步 send/read/match 走 Debug
 }
 
 const (
@@ -60,7 +62,16 @@ const (
 // 入口为 entry 指向的 LoginAction；每个 Action 顺序：Send（可空）→ Read → 按 Expects
 // 顺序匹配 → 命中则跳转 Next（"success" 表示成功）；任何一步失败（无匹配 / 超时 / 步数
 // 超限）返回 error + 截至失败点的 trace。
+//
+// 每步的 send / read / match 结果通过 opts.Logger 以 Debug 级别输出，便于在 MCP
+// Inspector 日志面板看到 LoginFlow 详细交互过程；失败点以 Warn 输出。nil logger 退化
+// 为 discard handler。
 func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options) ([]TraceEntry, error) {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	maxSteps := opts.MaxSteps
 	if maxSteps == 0 {
 		maxSteps = defaultMaxSteps
@@ -81,17 +92,28 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 
 	for step := 0; step < maxSteps; step++ {
 		if time.Now().After(globalDeadline) {
+			logger.Warn("loginflow failed",
+				"step", step, "action", currentName,
+				"err", "global timeout exceeded", "trace_len", len(trace))
 			return trace, fmt.Errorf("loginflow: global timeout exceeded (%s) at step %d (%q)", globalTimeout, step, currentName)
 		}
 
 		action, ok := flow[currentName]
 		if !ok {
+			logger.Warn("loginflow failed",
+				"step", step, "action", currentName,
+				"err", "action not found", "trace_len", len(trace))
 			return trace, fmt.Errorf("loginflow: action %q not found in flow", currentName)
 		}
 
+		logger.Debug("loginflow step", "step", step, "action", currentName, "send", action.Send)
 		stepStart := time.Now()
 		if action.Send != "" {
+			logger.Debug("loginflow send", "step", step, "action", currentName, "send", action.Send)
 			if err := pty.Send(action.Send); err != nil {
+				logger.Warn("loginflow failed",
+					"step", step, "action", currentName,
+					"err", err.Error(), "trace_len", len(trace))
 				return trace, fmt.Errorf("loginflow: send at %q: %w", currentName, err)
 			}
 		}
@@ -103,6 +125,9 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 		for i, exp := range action.Expects {
 			re, err := compilePattern(exp.Pattern)
 			if err != nil {
+				logger.Warn("loginflow failed",
+					"step", step, "action", currentName,
+					"err", "invalid pattern: "+err.Error(), "trace_len", len(trace))
 				return trace, fmt.Errorf("loginflow: action %q: invalid pattern %q: %w", currentName, exp.Pattern, err)
 			}
 			matchers[i] = re
@@ -119,6 +144,9 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 
 		output, matchedIdx, timedOut, err := pty.Read(deadline, matchers)
 		if err != nil {
+			logger.Warn("loginflow failed",
+				"step", step, "action", currentName,
+				"err", err.Error(), "trace_len", len(trace))
 			return trace, fmt.Errorf("loginflow: read at %q: %w", currentName, err)
 		}
 
@@ -128,6 +156,11 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 			matchedPattern = action.Expects[matchedIdx].Pattern
 			next = action.Expects[matchedIdx].Next
 		}
+		logger.Debug("loginflow read",
+			"step", step, "action", currentName,
+			"matched_idx", matchedIdx, "matched_pattern", matchedPattern,
+			"timed_out", timedOut, "next", next,
+			"output", output)
 
 		trace = append(trace, TraceEntry{
 			Time:      stepStart.Format("2006-01-02 15:04:05.000"),
@@ -138,17 +171,26 @@ func Run(pty PTY, flow map[string]config.LoginAction, entry string, opts Options
 		})
 
 		if timedOut {
+			logger.Warn("loginflow failed",
+				"step", step, "action", currentName,
+				"err", "timed out", "timeout", timeout.String(), "trace_len", len(trace))
 			return trace, fmt.Errorf("loginflow: action %q timed out after %s", currentName, timeout)
 		}
 		if matchedIdx < 0 {
+			logger.Warn("loginflow failed",
+				"step", step, "action", currentName,
+				"err", "no expect matched", "trace_len", len(trace))
 			return trace, fmt.Errorf("loginflow: action %q: no expect matched (output: %q)", currentName, truncateForMsg(output, 200))
 		}
 		if next == success {
+			logger.Debug("loginflow success", "step", step, "action", currentName, "total_steps", step+1)
 			return trace, nil
 		}
 		currentName = next
 	}
 
+	logger.Warn("loginflow failed", "step", maxSteps, "action", currentName,
+		"err", "max steps exceeded", "trace_len", len(trace))
 	return trace, fmt.Errorf("loginflow: max steps (%d) exceeded", maxSteps)
 }
 

@@ -1,8 +1,9 @@
-package ssh
+package conn
 
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -16,19 +17,26 @@ import (
 // Dialer 封装 SSH 拨号逻辑：私钥加载 + auth method 装配 + TOFU host key 校验 + 代理。
 type Dialer struct {
 	knownHosts *KnownHostsStore
+	logger     *slog.Logger
 }
 
 // NewDialer 创建一个绑定到 knownHosts store 的 Dialer。
-func NewDialer(knownHosts *KnownHostsStore) *Dialer {
-	return &Dialer{knownHosts: knownHosts}
+// logger 用于 DEBUG 级别的拨号过程日志（dialing / host key verified / auth method / proxy）；
+// nil 退化为 discard handler。
+func NewDialer(knownHosts *KnownHostsStore, logger *slog.Logger) *Dialer {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &Dialer{knownHosts: knownHosts, logger: logger}
 }
 
 // DialOptions 是 Dial 的入参。
 type DialOptions struct {
-	Addr  string         // host:port
-	User  string         // SSH 用户名
-	Auth  config.SSHAuth // 认证信息（Password / PrivateKey + Passphrase）
-	Proxy *config.Proxy  // 可选：传输层代理（SOCKS5 / HTTP CONNECT）
+	Addr       string         // host:port
+	User       string         // SSH 用户名
+	Auth       config.SSHAuth // 认证信息（Password / PrivateKey + Passphrase）
+	Proxy      *config.Proxy  // 可选：传输层代理（SOCKS5 / HTTP CONNECT）
+	ServerName string         // 可选：仅用于日志关联（dialing / host key verified 等）
 }
 
 // Dial 建立 SSH 连接。
@@ -39,6 +47,18 @@ type DialOptions struct {
 //
 // 失败返回 error，错误信息自解释（含 "permission denied" / "host key changed" / "connection refused" 等）。
 func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
+	authMethod := "password"
+	if opts.Auth.PrivateKey != "" {
+		authMethod = "private_key"
+	}
+	d.logger.Debug("dialing",
+		"server", opts.ServerName,
+		"addr", opts.Addr,
+		"user", opts.User,
+		"auth_method", authMethod,
+		"via_proxy", opts.Proxy != nil,
+	)
+
 	authMethods, err := buildAuthMethods(opts.Auth)
 	if err != nil {
 		return nil, err
@@ -47,7 +67,7 @@ func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
 	clientConfig := &ssh.ClientConfig{
 		User:            opts.User,
 		Auth:            authMethods,
-		HostKeyCallback: d.hostKeyCallback(opts.Addr),
+		HostKeyCallback: d.hostKeyCallback(opts.Addr, opts.ServerName),
 		Timeout:         10 * time.Second,
 	}
 
@@ -61,6 +81,7 @@ func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
 		conn.Close()
 		return nil, translateDialError(err, opts.Addr)
 	}
+	d.logger.Debug("ssh connected", "server", opts.ServerName, "addr", opts.Addr)
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
@@ -89,10 +110,18 @@ func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) 
 
 // hostKeyCallback 返回 ssh.ClientConfig.HostKeyCallback。
 // 通过 knownHosts.Check 实现 TOFU：首次记录、匹配放行、变更拒绝。
-func (d *Dialer) hostKeyCallback(addr string) ssh.HostKeyCallback {
+// serverName 仅用于日志关联。
+func (d *Dialer) hostKeyCallback(addr, serverName string) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		_, err := d.knownHosts.Check(addr, key)
-		return err
+		fingerprint, err := d.knownHosts.Check(addr, key)
+		if err != nil {
+			d.logger.Warn("host key check failed",
+				"server", serverName, "addr", addr, "err", err.Error())
+			return err
+		}
+		d.logger.Debug("host key verified",
+			"server", serverName, "addr", addr, "fingerprint", fingerprint)
+		return nil
 	}
 }
 

@@ -1,4 +1,4 @@
-package ssh
+package session
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"sshmng/internal/loginflow"
 )
 
 // SessionState 表示 session 的当前状态。
@@ -34,9 +36,10 @@ func (s SessionState) String() string {
 // 真实实现是 ptyConn（dialer.go + pty.go 组合）。
 type Conn interface {
 	Close() error
-	Run(cmd string, timeoutMs int, maxOutputBytes int) (output string, exitCode int, timedOut bool, truncated bool, totalBytes int, err error)
-	SendInput(text string) error
-	SendSpecial(key string) error
+	// Run 执行命令。connUnusable=true 表示 conn 在 Run 过程中变得不可用（drain
+	// 超时、setup token 超时等），调用方（Session）应据此调 s.Close()——close
+	// 决策在状态机层，不在传输层。PtyConn 自己不 Close。
+	Run(cmd string, timeoutMs int, maxOutputBytes int) (output string, rawOutput string, exitCode int, timedOut bool, ctrlCSent bool, truncated bool, totalBytes int, connUnusable bool, err error)
 	SftpAvailable() bool
 	Upload(src io.Reader, remotePath string, timeoutMs int) (bytes int, timedOut bool, err error)
 	Download(remotePath string, dst io.Writer, timeoutMs int) (bytes int, timedOut bool, err error)
@@ -69,8 +72,9 @@ type Session struct {
 	logger       *slog.Logger // 操作日志（idle timeout、异步事件）；nil 时退化为 discard
 	manager      *Manager     // 反向引用，用于 Close 时从 Manager 移除
 	traces       []CommandTrace
-	currentTrace *CommandTrace // Running 期间非 nil，SendInput 追加 Inputs
-	mu           sync.Mutex
+	loginFlowTrace []loginflow.TraceEntry // login 阶段 LoginFlow 每步 trace；成功时由 Login handler 注入
+	currentTrace   *CommandTrace          // Running 期间非 nil，记录当前命令 trace
+	mu             sync.Mutex
 }
 
 // Manager 持有所有活跃 session。
@@ -192,7 +196,7 @@ func (s *Session) ServerName() string { return s.serverName }
 //   - 当前非 idle：返回 "session busy" / "session closed" 错误
 //   - 命令执行期间不算空闲，idle timer 不会触发
 //   - 执行完毕后重置 idle timer
-//   - 命令的 cmd / output / exit_code / timed_out / send_input 调用记入 traces，供 get_trace 取用
+//   - 命令的 cmd / output / exit_code / timed_out / ctrl_c_sent 记入 traces，供 get_trace 取用
 func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (string, int, bool, bool, int, error) {
 	s.mu.Lock()
 	if s.state == StateClosed {
@@ -209,64 +213,47 @@ func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (s
 	s.currentTrace = tr
 	s.mu.Unlock()
 
-	output, exitCode, timedOut, truncated, totalBytes, err := s.conn.Run(cmd, timeoutMs, maxOutputBytes)
+	s.logger.Debug("run_in_session start",
+		"sid", s.sid, "server", s.serverName,
+		"cmd", cmd, "timeout_ms", timeoutMs, "max_output_bytes", maxOutputBytes)
+	output, rawOutput, exitCode, timedOut, ctrlCSent, truncated, totalBytes, connUnusable, err := s.conn.Run(cmd, timeoutMs, maxOutputBytes)
 
 	s.mu.Lock()
 	tr.Output = output
+	tr.RawOutput = rawOutput
 	tr.ExitCode = exitCode
 	tr.TimedOut = timedOut
+	tr.CtrlCSent = ctrlCSent
 	s.commandsRun++
 	s.lastActivity = time.Now()
+	needClose := false
 	if s.state != StateClosed {
-		s.state = StateIdle
-		s.resetIdleTimer()
+		// connUnusable=true：Run 过程中 conn 不可用（drain 超时 / setup token 超时）。
+		// close 决策在 Session 层——不转回 Idle，标记需要 Close，解锁后调 s.Close()。
+		// 先把当前 trace 入栈，s.Close() 会把 traces 复制到 graveyard 供 get_trace 诊断。
 		s.traces = append(s.traces, *tr)
+		if connUnusable {
+			needClose = true
+		} else {
+			s.state = StateIdle
+			s.resetIdleTimer()
+		}
 	}
 	s.currentTrace = nil
 	s.mu.Unlock()
+
+	if needClose {
+		s.logger.Warn("conn unusable after Run, closing session",
+			"sid", s.sid, "server", s.serverName, "cmd", cmd,
+			"timed_out", timedOut, "ctrl_c_sent", ctrlCSent)
+		s.Close()
+	}
+	s.logger.Debug("run_in_session done",
+		"sid", s.sid, "server", s.serverName,
+		"exit_code", exitCode, "timed_out", timedOut, "ctrl_c_sent", ctrlCSent,
+		"truncated", truncated, "total_bytes", totalBytes,
+		"output_len", len(output), "raw_output_len", len(rawOutput))
 	return output, exitCode, timedOut, truncated, totalBytes, err
-}
-
-// SendInput 在 running 状态下向 PTY 发送任意文本，并记入当前 trace 的 Inputs。
-// idle / closed 状态下报错。
-func (s *Session) SendInput(text string) error {
-	s.mu.Lock()
-	if s.state == StateClosed {
-		s.mu.Unlock()
-		return errors.New("session closed")
-	}
-	if s.state != StateRunning {
-		s.mu.Unlock()
-		return errors.New("session idle, use run_in_session")
-	}
-	s.mu.Unlock()
-
-	if err := s.conn.SendInput(text); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	if s.state == StateRunning && s.currentTrace != nil {
-		s.currentTrace.Inputs = append(s.currentTrace.Inputs, text)
-	}
-	s.mu.Unlock()
-	return nil
-}
-
-// SendSpecial 在 running 状态下发送控制字符。
-// idle / closed 状态下报错。
-func (s *Session) SendSpecial(key string) error {
-	s.mu.Lock()
-	if s.state == StateClosed {
-		s.mu.Unlock()
-		return errors.New("session closed")
-	}
-	if s.state != StateRunning {
-		s.mu.Unlock()
-		return errors.New("session idle, use run_in_session")
-	}
-	s.mu.Unlock()
-	return s.conn.SendSpecial(key)
 }
 
 // SftpAvailable 返回 login 时 sftp 通道是否建立成功。
@@ -274,6 +261,31 @@ func (s *Session) SftpAvailable() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sftpAvail
+}
+
+// SetLoginFlowTrace 把 login 阶段的 LoginFlow trace 存入 session，供 get_trace 返回。
+// 由 Login handler 在 login 成功后调用。nil 或空切片清空字段。
+// Pattern B 两段 trace 由调用方拼接后传入（jumphost 在前 target 在后）。
+func (s *Session) SetLoginFlowTrace(trace []loginflow.TraceEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if trace == nil {
+		s.loginFlowTrace = nil
+		return
+	}
+	s.loginFlowTrace = append([]loginflow.TraceEntry(nil), trace...)
+}
+
+// LoginFlowTrace 返回 login 阶段的 LoginFlow trace 副本。
+func (s *Session) LoginFlowTrace() []loginflow.TraceEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.loginFlowTrace) == 0 {
+		return []loginflow.TraceEntry{}
+	}
+	out := make([]loginflow.TraceEntry, len(s.loginFlowTrace))
+	copy(out, s.loginFlowTrace)
+	return out
 }
 
 // Upload 把 src 上传到远端 remotePath。透传到底层 Conn；session 不存在或已关闭时

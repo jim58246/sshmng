@@ -10,3 +10,6 @@ coverage.txt
 .DS_Store
 .idea/
 .vscode/
+
+# Codegraph index (tool-generated)
+.codegraph/

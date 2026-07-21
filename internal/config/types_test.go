@@ -148,7 +148,7 @@ func TestConfigRoundTrip(t *testing.T) {
 				User:       "ops",
 				Auth:       SSHAuth{Password: "secret"},
 				SSHJ:       false,
-				LoginFlow:  map[string]LoginAction{"wait": {Name: "wait", Expects: []Expect{{Pattern: "menu", Next: "success"}}}},
+				LoginFlow:  map[string]LoginAction{"wait": {Expects: []Expect{{Pattern: "menu", Next: "success"}}}},
 				LoginEntry: "wait",
 				Proxy:      nil,
 				Tags:       []string{"生产", "华东"},

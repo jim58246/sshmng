@@ -1,4 +1,4 @@
-package ssh
+package session
 
 import (
 	"fmt"
@@ -8,12 +8,13 @@ import (
 // CommandTrace 是单条命令的执行记录，供 get_trace 工具诊断用。
 // 字段与设计文档 §3.2 trace 结构一致。
 type CommandTrace struct {
-	Time     time.Time `json:"time"`
-	Cmd      string    `json:"cmd"`
-	Output   string    `json:"output"`
-	ExitCode int       `json:"exit_code"`
-	TimedOut bool      `json:"timed_out"`
-	Inputs   []string  `json:"inputs,omitempty"` // 命令执行期间的 send_input 调用
+	Time      time.Time `json:"time"`
+	Cmd       string    `json:"cmd"`
+	Output    string    `json:"output"`
+	RawOutput string    `json:"raw_output"` // 清洗前的原始 PTY 字节（含 ANSI / sentinel / \r\n），供调试
+	ExitCode  int       `json:"exit_code"`
+	TimedOut  bool      `json:"timed_out"`
+	CtrlCSent bool      `json:"ctrl_c_sent"` // Run 超时后是否发送了 Ctrl-C 中断远程命令
 }
 
 // graveTTL 是 close_session 后 trace 在 graveyard 中保留的时长。
@@ -33,7 +34,7 @@ func (s *Session) GetTrace(lastN, truncOutput int) []CommandTrace {
 	return truncateTraces(s.traces, lastN, truncOutput)
 }
 
-// truncateTraces 复制 traces，按 lastN 截取 + truncOutput 截断 Output。
+// truncateTraces 复制 traces，按 lastN 截取 + truncOutput 截断 Output 和 RawOutput。
 // 输入切片不会被修改。
 func truncateTraces(traces []CommandTrace, lastN, truncOutput int) []CommandTrace {
 	if len(traces) == 0 {
@@ -45,8 +46,13 @@ func truncateTraces(traces []CommandTrace, lastN, truncOutput int) []CommandTrac
 	}
 	out := make([]CommandTrace, len(src))
 	for i, tr := range src {
-		if truncOutput > 0 && len(tr.Output) > truncOutput {
-			tr.Output = tr.Output[:truncOutput]
+		if truncOutput > 0 {
+			if len(tr.Output) > truncOutput {
+				tr.Output = tr.Output[:truncOutput]
+			}
+			if len(tr.RawOutput) > truncOutput {
+				tr.RawOutput = tr.RawOutput[:truncOutput]
+			}
 		}
 		out[i] = tr
 	}

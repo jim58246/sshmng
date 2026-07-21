@@ -19,7 +19,7 @@ import (
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
 )
 
 // --- 错误路径单元测试（不需要真实 SSH server） ---
@@ -82,7 +82,7 @@ func TestLoginAcceptsLoginFlowButFailsOnDial(t *testing.T) {
 				Addr:       "2.2.2.2:22",
 				User:       "u",
 				Auth:       config.SSHAuth{Password: "p"},
-				LoginFlow:  map[string]config.LoginAction{"start": {Name: "start", Send: "x", Expects: []config.Expect{{Pattern: "y", Next: "success"}}}},
+				LoginFlow:  map[string]config.LoginAction{"start": {Send: "x", Expects: []config.Expect{{Pattern: "y", Next: "success"}}}},
 				LoginEntry: "start",
 			},
 		},
@@ -275,6 +275,7 @@ func runSftpServerForMCP(ch cryptossh.Channel) {
 func runFakeShellForMCP(ch cryptossh.Channel) {
 	reader := bufio.NewReader(ch)
 	var sid string
+	var tok string
 	rcDone := false
 	for {
 		line, err := reader.ReadString('\n')
@@ -304,6 +305,17 @@ func runFakeShellForMCP(ch cryptossh.Channel) {
 			// 其他 RC 行：忽略
 			continue
 		}
+		// setup token 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '`
+		// 记录 token，emit setup sentinel（含 token）。不当作正常命令执行。
+		if strings.HasPrefix(line, "__sshmng_tok=") {
+			re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+			m := re.FindStringSubmatch(line)
+			if len(m) > 1 {
+				tok = m[1]
+			}
+			fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+			continue
+		}
 		cmd := exec.Command("sh", "-c", line)
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
@@ -317,8 +329,11 @@ func runFakeShellForMCP(ch cryptossh.Channel) {
 				exitCode = 127
 			}
 		}
-		fmt.Fprintf(ch, "__E_%s__:%d__\r\n", sid, exitCode)
-		fmt.Fprintf(ch, "__P_%s__> ", sid)
+		if tok != "" {
+			fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, exitCode, sid, tok)
+		} else {
+			fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, exitCode, sid)
+		}
 	}
 }
 
@@ -345,7 +360,7 @@ func TestIntegrationLoginRunClose(t *testing.T) {
 			{Name: "test", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	knownHosts := ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
+	knownHosts := conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
 	svc := NewService(store, knownHosts, nil)
 
 	// 1. Login
@@ -416,7 +431,7 @@ func TestIntegrationRunMultipleCommands(t *testing.T) {
 			{Name: "test", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "test"})
 	sid := parseJSON(t, resultText(t, res)).(map[string]any)["sid"].(string)
@@ -443,7 +458,7 @@ func TestIntegrationLoginAuthFailure(t *testing.T) {
 			{Name: "test", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wrong-password"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "test"})
 	if !res.IsError {
@@ -467,7 +482,6 @@ func TestLoginDirectLoginFlowFailureReturnsTrace(t *testing.T) {
 	store := config.NewStore(filepath.Join(dir, "config.json"))
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:      "entry",
 			Send:      "echo test\n",
 			Expects:   []config.Expect{{Pattern: "Password:", Next: "success"}},
 			TimeoutMs: 500,
@@ -486,7 +500,7 @@ func TestLoginDirectLoginFlowFailureReturnsTrace(t *testing.T) {
 			},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	if !res.IsError {

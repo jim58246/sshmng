@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// ListSSHServers 返回匹配 query 的 server 列表。query 为空返回全部。
-// query 大小写不敏感地子串匹配 name / addr / 任一 tag。
+// ListSSHServers 返回匹配 query 的 server 列表。query 为空（或纯空白）返回全部。
+// query 按空白分词为多关键字，AND 语义：每个关键字都需命中 name / addr / 任一 tag
+// （大小写不敏感的子串匹配）。例：query="prod web" 只返回同时含 "prod" 和 "web" 的 server。
 func (c *Config) ListSSHServers(query string) []*SSHServer {
 	q := strings.ToLower(query)
 	out := []*SSHServer{}
 	for _, s := range c.Servers {
-		if q == "" || matchesQuery(q, s.Name, s.Addr, s.Tags) {
+		if matchesQuery(q, s.Name, s.Addr, s.Tags) {
 			out = append(out, s)
 		}
 	}
@@ -25,7 +26,7 @@ func (c *Config) ListJumphosts(query string) []*Jumphost {
 	q := strings.ToLower(query)
 	out := []*Jumphost{}
 	for _, j := range c.Jumphosts {
-		if q == "" || matchesQuery(q, j.Name, j.Addr, j.Tags) {
+		if matchesQuery(q, j.Name, j.Addr, j.Tags) {
 			out = append(out, j)
 		}
 	}
@@ -37,27 +38,40 @@ func (c *Config) ListProxies(query string) []*Proxy {
 	q := strings.ToLower(query)
 	out := []*Proxy{}
 	for _, p := range c.Proxies {
-		if q == "" || matchesQuery(q, p.Name, p.Addr, p.Tags) {
+		if matchesQuery(q, p.Name, p.Addr, p.Tags) {
 			out = append(out, p)
 		}
 	}
 	return out
 }
 
-// matchesQuery 判断 q（已小写化）是否为 name/addr/任一 tag（小写化后）的子串。
+// matchesQuery 判断 q（已小写化）是否多关键字 AND 命中 name / addr / 任一 tag。
+// q 按空白分词（strings.Fields，自动压缩多余空格 / 前后空格），无关键字时返回 true
+// （即空 query 或纯空白 query 匹配所有）。
+// 每个关键字独立匹配 name / addr / 任一 tag 的子串（大小写不敏感），全部命中才返回 true。
 func matchesQuery(q, name, addr string, tags []string) bool {
-	if strings.Contains(strings.ToLower(name), q) {
+	keywords := strings.Fields(q)
+	if len(keywords) == 0 {
 		return true
 	}
-	if strings.Contains(strings.ToLower(addr), q) {
-		return true
-	}
-	for _, tag := range tags {
-		if strings.Contains(strings.ToLower(tag), q) {
-			return true
+	name = strings.ToLower(name)
+	addr = strings.ToLower(addr)
+	for _, kw := range keywords {
+		if strings.Contains(name, kw) || strings.Contains(addr, kw) {
+			continue
+		}
+		matched := false
+		for _, tag := range tags {
+			if strings.Contains(strings.ToLower(tag), kw) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // GetSSHServer 返回指定 name 的 server 指针，不存在返回 error。

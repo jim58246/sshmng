@@ -132,3 +132,65 @@ func TestSaveOverwritePreservesPermissions(t *testing.T) {
 		t.Errorf("file perm = %o, want 0600 preserved", perm)
 	}
 }
+
+// TestLoadRejectsUnknownLogLevel 验证 log_level 配错时 Load 报错。
+// 用户配 "trace" / "verbose" 等不支持的级别，必须报错不能静默 fallback。
+func TestLoadRejectsUnknownLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":"1","log_level":"trace"}`), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewStore(path)
+	_, err := s.Load()
+	if err == nil {
+		t.Fatalf("expected error for unknown log_level \"trace\"")
+	}
+}
+
+// TestLoadAcceptsValidLogLevel 验证合法 log_level 能 Load，且字段值保留。
+func TestLoadAcceptsValidLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":"1","log_level":"debug"}`), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewStore(path)
+	cfg, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want \"debug\"", cfg.LogLevel)
+	}
+}
+
+// TestLoadAcceptsLogLevelAbbreviation 验证缩写能 Load。
+func TestLoadAcceptsLogLevelAbbreviation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":"1","log_level":"dbg"}`), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewStore(path)
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("Load with abbreviation \"dbg\": %v", err)
+	}
+}
+
+// TestLoadAcceptsEmptyLogLevel 验证 log_level 省略时 Load 成功（走默认 info）。
+func TestLoadAcceptsEmptyLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":"1"}`), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewStore(path)
+	cfg, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "" {
+		t.Errorf("LogLevel = %q, want \"\" (empty, will default to info)", cfg.LogLevel)
+	}
+}

@@ -1,4 +1,4 @@
-package ssh
+package pty
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sshmng/internal/config"
+	"sshmng/internal/ssh/conn"
 )
 
 // --- sftp 通道建立 ---
@@ -16,7 +17,7 @@ import (
 func TestSftpEstablishedAtLogin(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -24,8 +25,8 @@ func TestSftpEstablishedAtLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestSftpEstablishedAtLogin(t *testing.T) {
 func TestSftpUnavailableWhenSubsystemRejected(t *testing.T) {
 	srv := newFakeShellServer(t) // 默认 enableSftp=false
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -47,8 +48,8 @@ func TestSftpUnavailableWhenSubsystemRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestSftpUnavailableWhenSubsystemRejected(t *testing.T) {
 func TestUploadNormalPath(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -72,8 +73,8 @@ func TestUploadNormalPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestUploadNormalPath(t *testing.T) {
 func TestUploadSftpUnavailable(t *testing.T) {
 	srv := newFakeShellServer(t) // 不支持 sftp
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -118,8 +119,8 @@ func TestUploadSftpUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestUploadSftpUnavailable(t *testing.T) {
 func TestUploadTimeout(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -146,8 +147,8 @@ func TestUploadTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestUploadTimeout(t *testing.T) {
 func TestDownloadNormalPath(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -179,8 +180,8 @@ func TestDownloadNormalPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestDownloadNormalPath(t *testing.T) {
 func TestDownloadSftpUnavailable(t *testing.T) {
 	srv := newFakeShellServer(t) // 不支持 sftp
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -219,8 +220,8 @@ func TestDownloadSftpUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestDownloadSftpUnavailable(t *testing.T) {
 func TestDownloadTimeout(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -248,8 +249,8 @@ func TestDownloadTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	p, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}

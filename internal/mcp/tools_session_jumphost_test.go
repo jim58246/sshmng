@@ -17,7 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	cryptossh "golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
 )
 
 // fakeJumphostServerForMCP 是 Pattern B 测试用的 fake SSH server。
@@ -30,13 +30,24 @@ import (
 //  5. 接受 password (wonderland) → emit "Welcome to prod-db!" → 转入 target shell
 //  6. RC 注入 + 命令执行（同 fakeShellServerForMCP）
 type fakeJumphostServerForMCP struct {
-	t        *testing.T
-	listener net.Listener
-	hostKey  cryptossh.Signer
-	wg       sync.WaitGroup
+	t          *testing.T
+	listener   net.Listener
+	hostKey    cryptossh.Signer
+	enableSftp bool
+	wg         sync.WaitGroup
 }
 
 func newFakeJumphostServerForMCP(t *testing.T) *fakeJumphostServerForMCP {
+	return newFakeJumphostServerForMCPOpt(t, false)
+}
+
+// newFakeJumphostServerWithSftpForMCP 创建支持 sftp subsystem 的 jumphost fake server。
+// 用于验证 Pattern B 不应探测 SFTP（即便 jumphost 自己有 SFTP）。
+func newFakeJumphostServerWithSftpForMCP(t *testing.T) *fakeJumphostServerForMCP {
+	return newFakeJumphostServerForMCPOpt(t, true)
+}
+
+func newFakeJumphostServerForMCPOpt(t *testing.T, enableSftp bool) *fakeJumphostServerForMCP {
 	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -50,7 +61,7 @@ func newFakeJumphostServerForMCP(t *testing.T) *fakeJumphostServerForMCP {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeJumphostServerForMCP{t: t, listener: l, hostKey: signer}
+	s := &fakeJumphostServerForMCP{t: t, listener: l, hostKey: signer, enableSftp: enableSftp}
 	s.wg.Add(1)
 	go s.serve()
 	t.Cleanup(func() {
@@ -115,6 +126,17 @@ func (s *fakeJumphostServerForMCP) handleSession(ch cryptossh.Channel, reqs <-ch
 			req.Reply(true, nil)
 			runFakeJumphostShellForMCP(ch)
 			return
+		case "subsystem":
+			if !s.enableSftp {
+				req.Reply(false, nil)
+				continue
+			}
+			if parseSubsystemPayloadMCP(req.Payload) == "sftp" {
+				req.Reply(true, nil)
+				runSftpServerForMCP(ch)
+				return
+			}
+			req.Reply(false, nil)
 		default:
 			req.Reply(false, nil)
 		}
@@ -130,6 +152,7 @@ func (s *fakeJumphostServerForMCP) handleSession(ch cryptossh.Channel, reqs <-ch
 func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 	reader := bufio.NewReader(ch)
 	var sid string
+	var tok string
 	rcDone := false
 	phase := "menu"
 
@@ -190,6 +213,16 @@ func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 				// 其他 RC 行：忽略
 				continue
 			}
+			// setup token 命令：记录 token，emit setup sentinel（含 token）
+			if strings.HasPrefix(line, "__sshmng_tok=") {
+				re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+				m := re.FindStringSubmatch(line)
+				if len(m) > 1 {
+					tok = m[1]
+				}
+				fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+				continue
+			}
 			cmd := exec.Command("sh", "-c", line)
 			output, err := cmd.CombinedOutput()
 			if len(output) > 0 {
@@ -203,8 +236,11 @@ func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 					exitCode = 127
 				}
 			}
-			fmt.Fprintf(ch, "__E_%s__:%d__\r\n", sid, exitCode)
-			fmt.Fprintf(ch, "__P_%s__> ", sid)
+			if tok != "" {
+				fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, exitCode, sid, tok)
+			} else {
+				fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, exitCode, sid)
+			}
 		}
 	}
 }
@@ -222,24 +258,20 @@ func TestIntegrationPatternBEndToEnd(t *testing.T) {
 
 	jumphostFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "",
 			Expects: []config.Expect{{Pattern: "Select target:*", Next: "success"}},
 		},
 	}
 	serverFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "1\n",
 			Expects: []config.Expect{{Pattern: "login:*", Next: "send_user"}},
 		},
 		"send_user": {
-			Name:    "send_user",
 			Send:    "alice\n",
 			Expects: []config.Expect{{Pattern: "Password:*", Next: "send_pwd"}},
 		},
 		"send_pwd": {
-			Name:    "send_pwd",
 			Send:    "wonderland\n",
 			Expects: []config.Expect{{Pattern: "Welcome to*", Next: "success"}},
 		},
@@ -268,7 +300,7 @@ func TestIntegrationPatternBEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	// 1. Login (Pattern B)
 	res, _, err := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
@@ -313,6 +345,77 @@ func TestIntegrationPatternBEndToEnd(t *testing.T) {
 	}
 }
 
+// TestPatternBDoesNotProbeSftp: Pattern B 下即便 jumphost 自己支持 sftp，
+// 也不应探测 sftp（因为 sftp 通道是到 jumphost 的，不是到 target 的）。
+// 期望 sftp_available=false；sftp 探测若发生会成功（jumphost 支持），导致断言失败。
+func TestPatternBDoesNotProbeSftp(t *testing.T) {
+	srv := newFakeJumphostServerWithSftpForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+
+	jumphostFlow := map[string]config.LoginAction{
+		"entry": {
+			Send:    "",
+			Expects: []config.Expect{{Pattern: "Select target:*", Next: "success"}},
+		},
+	}
+	serverFlow := map[string]config.LoginAction{
+		"entry": {
+			Send:    "1\n",
+			Expects: []config.Expect{{Pattern: "login:*", Next: "send_user"}},
+		},
+		"send_user": {
+			Send:    "alice\n",
+			Expects: []config.Expect{{Pattern: "Password:*", Next: "send_pwd"}},
+		},
+		"send_pwd": {
+			Send:    "wonderland\n",
+			Expects: []config.Expect{{Pattern: "Welcome to*", Next: "success"}},
+		},
+	}
+
+	jumphost := &config.Jumphost{
+		Name:       "jump",
+		Addr:       srv.Addr(),
+		User:       "alice",
+		Auth:       config.SSHAuth{Password: "wonderland"},
+		SSHJ:       false,
+		LoginFlow:  jumphostFlow,
+		LoginEntry: "entry",
+	}
+	server := &config.SSHServer{
+		Name:       "prod-db",
+		LoginFlow:  serverFlow,
+		LoginEntry: "entry",
+	}
+	server.Via = jumphost
+
+	if err := store.Save(&config.Config{
+		Version:   "1",
+		Jumphosts: []*config.Jumphost{jumphost},
+		Servers:   []*config.SSHServer{server},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+
+	res, _, err := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("Login failed: %s", resultText(t, res))
+	}
+	loginResult := parseJSON(t, resultText(t, res)).(map[string]any)
+	sid, _ := loginResult["sid"].(string)
+	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
+
+	if loginResult["sftp_available"] != false {
+		t.Errorf("Pattern B sftp_available = %v, want false (SFTP must not be probed; SFTP goes to jumphost not target)",
+			loginResult["sftp_available"])
+	}
+}
+
 // TestIntegrationPatternBJumphostFlowFailure: Jumphost.LoginFlow 失败（pattern 不匹配）时
 // login 报错，error 含 loginflow / no expect matched 供诊断，且响应包含 login_trace。
 func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
@@ -323,7 +426,6 @@ func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 	// 故意配不匹配的 pattern：fake server emit "Select target:" 但我们等 "Choose target:"
 	jumphostFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:      "entry",
 			Send:      "",
 			Expects:   []config.Expect{{Pattern: "Choose target:*", Next: "success"}},
 			TimeoutMs: 500,
@@ -331,7 +433,6 @@ func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 	}
 	serverFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "1\n",
 			Expects: []config.Expect{{Pattern: "login:*", Next: "success"}},
 		},
@@ -358,7 +459,7 @@ func TestIntegrationPatternBJumphostFlowFailure(t *testing.T) {
 		Jumphosts: []*config.Jumphost{jumphost},
 		Servers:   []*config.SSHServer{server},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
 	if !res.IsError {
@@ -386,7 +487,6 @@ func TestIntegrationPatternBTargetFlowFailureReturnsTrace(t *testing.T) {
 	// jumphost flow 正常匹配 fake server 的菜单
 	jumphostFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "",
 			Expects: []config.Expect{{Pattern: "Select target:", Next: "success"}},
 		},
@@ -394,7 +494,6 @@ func TestIntegrationPatternBTargetFlowFailureReturnsTrace(t *testing.T) {
 	// target flow 故意配不匹配的 pattern + 短超时
 	serverFlow := map[string]config.LoginAction{
 		"entry": {
-			Name:      "entry",
 			Send:      "1\n",
 			Expects:   []config.Expect{{Pattern: "NEVER_MATCHES_THIS", Next: "success"}},
 			TimeoutMs: 500,
@@ -422,7 +521,7 @@ func TestIntegrationPatternBTargetFlowFailureReturnsTrace(t *testing.T) {
 		Jumphosts: []*config.Jumphost{jumphost},
 		Servers:   []*config.SSHServer{server},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
 	if !res.IsError {
@@ -443,5 +542,101 @@ func TestIntegrationPatternBTargetFlowFailureReturnsTrace(t *testing.T) {
 	}
 	if first["send"] != "1\n" {
 		t.Errorf("login_trace[0].send = %q, want '1\\n'", first["send"])
+	}
+}
+
+// TestIntegrationPatternBLoginFlowTracePersisted: login 成功后 get_trace 返回 login_flow
+// 字段，含 jumphost + target 两段 LoginFlow 的所有 trace entry（成功路径持久化）。
+// 失败路径已由 TestIntegrationPatternBJumphostFlowFailure /
+// TestIntegrationPatternBTargetFlowFailureReturnsTrace 覆盖（响应直接返 login_trace）。
+func TestIntegrationPatternBLoginFlowTracePersisted(t *testing.T) {
+	srv := newFakeJumphostServerForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+
+	jumphostFlow := map[string]config.LoginAction{
+		"entry": {
+			Send:    "",
+			Expects: []config.Expect{{Pattern: "Select target:*", Next: "success"}},
+		},
+	}
+	serverFlow := map[string]config.LoginAction{
+		"entry": {
+			Send:    "1\n",
+			Expects: []config.Expect{{Pattern: "login:*", Next: "send_user"}},
+		},
+		"send_user": {
+			Send:    "alice\n",
+			Expects: []config.Expect{{Pattern: "Password:*", Next: "send_pwd"}},
+		},
+		"send_pwd": {
+			Send:    "wonderland\n",
+			Expects: []config.Expect{{Pattern: "Welcome to*", Next: "success"}},
+		},
+	}
+
+	jumphost := &config.Jumphost{
+		Name:       "jump",
+		Addr:       srv.Addr(),
+		User:       "alice",
+		Auth:       config.SSHAuth{Password: "wonderland"},
+		SSHJ:       false,
+		LoginFlow:  jumphostFlow,
+		LoginEntry: "entry",
+	}
+	server := &config.SSHServer{
+		Name:       "prod-db",
+		LoginFlow:  serverFlow,
+		LoginEntry: "entry",
+	}
+	server.Via = jumphost
+
+	store.Save(&config.Config{
+		Version:   "1",
+		Jumphosts: []*config.Jumphost{jumphost},
+		Servers:   []*config.SSHServer{server},
+	})
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+
+	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "prod-db"})
+	if loginRes.IsError {
+		t.Fatalf("Login failed: %s", resultText(t, loginRes))
+	}
+	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
+	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
+
+	traceRes, _, err := svc.GetTrace(context.Background(), &mcp.CallToolRequest{}, GetTraceArgs{SID: sid})
+	if err != nil {
+		t.Fatalf("GetTrace: %v", err)
+	}
+	if traceRes.IsError {
+		t.Fatalf("GetTrace failed: %s", resultText(t, traceRes))
+	}
+	r := parseJSON(t, resultText(t, traceRes)).(map[string]any)
+
+	// commands 应为空（login 后还没跑命令）
+	if cmds, _ := r["commands"].([]any); len(cmds) != 0 {
+		t.Errorf("commands should be empty before run_in_session, got %d entries", len(cmds))
+	}
+
+	// login_flow 应含 4 条 entry：1 jumphost + 3 target
+	flow, ok := r["login_flow"].([]any)
+	if !ok {
+		t.Fatalf("login_flow should be array, got %T", r["login_flow"])
+	}
+	if len(flow) != 4 {
+		t.Fatalf("login_flow should have 4 entries (1 jumphost + 3 target), got %d", len(flow))
+	}
+
+	// 校验每条 entry 的 send 值，按顺序应为："" / "1\n" / "alice\n" / "wonderland\n"
+	expectedSends := []string{"", "1\n", "alice\n", "wonderland\n"}
+	for i, want := range expectedSends {
+		entry, ok := flow[i].(map[string]any)
+		if !ok {
+			t.Fatalf("login_flow[%d] should be object, got %T", i, flow[i])
+		}
+		if got, _ := entry["send"].(string); got != want {
+			t.Errorf("login_flow[%d].send = %q, want %q", i, got, want)
+		}
 	}
 }

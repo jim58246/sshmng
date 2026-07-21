@@ -1,4 +1,4 @@
-package ssh
+package conn
 
 import (
 	"crypto/rand"
@@ -152,7 +152,7 @@ func writePrivateKeyFile(t *testing.T, perm os.FileMode) (string, ssh.Signer, ss
 // newDialerWithTempKnownHosts 创建一个用临时 known_hosts 文件的 Dialer。
 func newDialerWithTempKnownHosts(t *testing.T) *Dialer {
 	t.Helper()
-	return NewDialer(NewKnownHostsStore(filepath.Join(t.TempDir(), "known_hosts")))
+	return NewDialer(NewKnownHostsStore(filepath.Join(t.TempDir(), "known_hosts")), nil)
 }
 
 // --- 密码认证 ---

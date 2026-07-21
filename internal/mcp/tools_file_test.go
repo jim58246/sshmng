@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
 )
 
 // helper: 登录到 fake sftp server，返回 sid + svc + 清理函数。
@@ -25,7 +25,7 @@ func loginToSftpServer(t *testing.T) (*Service, string) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	if loginRes.IsError {
 		t.Fatalf("login failed: %s", resultText(t, loginRes))
@@ -46,7 +46,7 @@ func loginToNoSftpServer(t *testing.T) (*Service, string) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	if loginRes.IsError {
 		t.Fatalf("login failed: %s", resultText(t, loginRes))
@@ -269,7 +269,7 @@ func TestLoginReturnsSftpAvailable(t *testing.T) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	if res.IsError {
@@ -295,7 +295,7 @@ func TestLoginReturnsSftpUnavailable(t *testing.T) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	if res.IsError {

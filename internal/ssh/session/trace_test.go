@@ -1,4 +1,4 @@
-package ssh
+package session
 
 import (
 	"strings"
@@ -132,64 +132,6 @@ func TestGetTraceTruncOutput(t *testing.T) {
 	traces = s.GetTrace(0, 200)
 	if len(traces[0].Output) != 200 {
 		t.Errorf("Output len = %d, want 200 (default)", len(traces[0].Output))
-	}
-}
-
-// --- send_input 记入 trace ---
-
-// TestSendInputRecordedInTrace: Running 状态下 SendInput 的 text 记入当前 trace 的 Inputs。
-func TestSendInputRecordedInTrace(t *testing.T) {
-	mgr := NewManager()
-	conn := newFakeConn()
-	conn.runBlocking = true // Run 阻塞直到 SendSpecial 中断
-	conn.runResult = fakeRunResult{output: "interrupted", exitCode: 130, timedOut: false}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
-
-	done := make(chan struct{})
-	go func() {
-		s.RunInSession("long cmd", 30000, 0)
-		close(done)
-	}()
-	// 等 Run 进入 Running
-	time.Sleep(20 * time.Millisecond)
-
-	if err := s.SendInput("y\n"); err != nil {
-		t.Fatalf("SendInput: %v", err)
-	}
-	// 用 ctrl-c 中断 Run
-	s.SendSpecial("ctrl-c")
-	<-done
-
-	traces := s.GetTrace(0, 0)
-	if len(traces) != 1 {
-		t.Fatalf("got %d traces, want 1", len(traces))
-	}
-	if len(traces[0].Inputs) != 1 {
-		t.Errorf("Inputs len = %d, want 1", len(traces[0].Inputs))
-	}
-	if traces[0].Inputs[0] != "y\n" {
-		t.Errorf("Inputs[0] = %q, want %q", traces[0].Inputs[0], "y\n")
-	}
-}
-
-// TestSendInputIdleNotRecorded: Idle 状态下 SendInput 失败，不记入任何 trace。
-func TestSendInputIdleNotRecorded(t *testing.T) {
-	mgr := NewManager()
-	conn := newFakeConn()
-	conn.runResult = fakeRunResult{output: "ok", exitCode: 0}
-	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
-
-	s.RunInSession("echo hello", 1000, 0)
-	// 现在 idle，SendInput 应报错
-	if err := s.SendInput("text"); err == nil {
-		t.Errorf("expected idle error")
-	}
-	traces := s.GetTrace(0, 0)
-	if len(traces) != 1 {
-		t.Fatalf("got %d traces, want 1", len(traces))
-	}
-	if len(traces[0].Inputs) != 0 {
-		t.Errorf("Inputs should be empty, got %v", traces[0].Inputs)
 	}
 }
 

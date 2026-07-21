@@ -48,8 +48,8 @@ type Expect struct {
 }
 
 // LoginAction 是决策树节点：一条 Send + 多个 Expects（按顺序尝试匹配）。
+// Name 由 map key 承担（LoginFlow 是 map[string]LoginAction），struct 内不重复。
 type LoginAction struct {
-	Name      string   `json:"name"`
 	Send      string   `json:"send,omitempty"` // 直接字符串，支持转义 \n \r \t；不支持变量引用
 	Expects   []Expect `json:"expects"`
 	TimeoutMs int      `json:"timeout_ms,omitempty"` // 0 = 默认 10000
@@ -104,6 +104,8 @@ type SSHServer struct {
 type Config struct {
 	Version      string       `json:"version"`
 	IdleTimeoutS int          `json:"idle_timeout_s"` // 0 = 默认 300
+	LogLevel     string       `json:"log_level,omitempty"` // debug/info/warn/error + 缩写；空 = 默认 info；配错 Load 报错
+	LogPath      string       `json:"log_path,omitempty"`  // 日志目录；空 = 不打日志；非空 = <LogPath>/sshmng.log（10MB 轮转，5 文件）
 	Jumphosts    []*Jumphost  `json:"jumphosts"`
 	Proxies      []*Proxy     `json:"proxies"`
 	Servers      []*SSHServer `json:"servers"`

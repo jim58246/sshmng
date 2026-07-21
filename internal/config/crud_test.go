@@ -90,6 +90,79 @@ func TestListSSHServersQueryNoMatch(t *testing.T) {
 	}
 }
 
+// --- 多关键字 AND 搜索 ---
+
+// 多关键字全部命中才返回（AND 语义）。
+func TestListSSHServersMultiKeywordAND(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "web-prod-01", Addr: "10.0.0.1:22", User: "u", Auth: SSHAuth{Password: "p"}, Tags: []string{"prod", "web"}},
+		&SSHServer{Name: "db-prod-01", Addr: "10.0.0.2:22", User: "u", Auth: SSHAuth{Password: "p"}, Tags: []string{"prod"}},
+		&SSHServer{Name: "web-cache-01", Addr: "10.0.0.3:22", User: "u", Auth: SSHAuth{Password: "p"}, Tags: []string{"web"}},
+	)
+	got := cfg.ListSSHServers("prod web")
+	if len(got) != 1 || got[0].Name != "web-prod-01" {
+		t.Errorf("got %v, want [web-prod-01]", serverNames(got))
+	}
+}
+
+// 关键字跨字段匹配：一个命中 tag、一个命中 addr。
+func TestListSSHServersMultiKeywordAcrossFields(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "s1", Addr: "10.0.0.1:22", User: "u", Auth: SSHAuth{Password: "p"}, Tags: []string{"prod"}},
+		&SSHServer{Name: "s2", Addr: "192.168.0.1:22", User: "u", Auth: SSHAuth{Password: "p"}, Tags: []string{"prod"}},
+	)
+	got := cfg.ListSSHServers("prod 10.0")
+	if len(got) != 1 || got[0].Name != "s1" {
+		t.Errorf("got %v, want [s1]", serverNames(got))
+	}
+}
+
+// 多关键字大小写不敏感。
+func TestListSSHServersMultiKeywordCaseInsensitive(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "web-prod-01", Addr: "1.1.1.1:22", User: "u", Auth: SSHAuth{Password: "p"}},
+	)
+	got := cfg.ListSSHServers("PROD WEB")
+	if len(got) != 1 {
+		t.Errorf("got %v, want [web-prod-01] (case-insensitive)", serverNames(got))
+	}
+}
+
+// 多余空格 / 前后空格应被压缩，等价单空格。
+func TestListSSHServersMultiKeywordExtraSpaces(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "web-prod-01", Addr: "1.1.1.1:22", User: "u", Auth: SSHAuth{Password: "p"}},
+		&SSHServer{Name: "db-prod-01", Addr: "2.2.2.2:22", User: "u", Auth: SSHAuth{Password: "p"}},
+	)
+	got := cfg.ListSSHServers("  prod   web  ")
+	if len(got) != 1 || got[0].Name != "web-prod-01" {
+		t.Errorf("got %v, want [web-prod-01] (extra spaces collapsed)", serverNames(got))
+	}
+}
+
+// 任一关键字未命中 → 整体不匹配。
+func TestListSSHServersMultiKeywordNoMatch(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "web-prod-01", Addr: "1.1.1.1:22", User: "u", Auth: SSHAuth{Password: "p"}},
+	)
+	got := cfg.ListSSHServers("prod web db")
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] (no server has all 3 keywords)", serverNames(got))
+	}
+}
+
+// 纯空白 query 视为空，返回全部。
+func TestListSSHServersWhitespaceOnlyQueryReturnsAll(t *testing.T) {
+	cfg := makeConfig(
+		&SSHServer{Name: "s1", Addr: "1.1.1.1:22", User: "u", Auth: SSHAuth{Password: "p"}},
+		&SSHServer{Name: "s2", Addr: "2.2.2.2:22", User: "u", Auth: SSHAuth{Password: "p"}},
+	)
+	got := cfg.ListSSHServers("   ")
+	if len(got) != 2 {
+		t.Errorf("got %d, want 2 (whitespace-only query = return all)", len(got))
+	}
+}
+
 // --- ListJumphosts / ListProxies ---
 
 func TestListJumphostsQuery(t *testing.T) {
@@ -242,11 +315,11 @@ func TestUpdateSSHServerMapMergeByKeys(t *testing.T) {
 	cfg := makeConfig(&SSHServer{
 		Name: "s", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"},
 		LoginFlow: map[string]LoginAction{
-			"a": {Name: "a", Expects: []Expect{{Pattern: "x", Next: "success"}}},
+			"a": {Expects: []Expect{{Pattern: "x", Next: "success"}}},
 		},
 		LoginEntry: "a",
 	})
-	patch := json.RawMessage(`{"login_flow":{"b":{"name":"b","expects":[{"pattern":"y","next":"success"}]}}}`)
+	patch := json.RawMessage(`{"login_flow":{"b":{"expects":[{"pattern":"y","next":"success"}]}}}`)
 	if err := cfg.UpdateSSHServer("s", patch); err != nil {
 		t.Fatalf("UpdateSSHServer: %v", err)
 	}
@@ -267,11 +340,11 @@ func TestUpdateSSHServerMapReplaceKey(t *testing.T) {
 	cfg := makeConfig(&SSHServer{
 		Name: "s", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"},
 		LoginFlow: map[string]LoginAction{
-			"a": {Name: "a", Expects: []Expect{{Pattern: "x", Next: "success"}}},
+			"a": {Expects: []Expect{{Pattern: "x", Next: "success"}}},
 		},
 		LoginEntry: "a",
 	})
-	patch := json.RawMessage(`{"login_flow":{"a":{"name":"a","expects":[{"pattern":"z","next":"success"}]}}}`)
+	patch := json.RawMessage(`{"login_flow":{"a":{"expects":[{"pattern":"z","next":"success"}]}}}`)
 	if err := cfg.UpdateSSHServer("s", patch); err != nil {
 		t.Fatalf("UpdateSSHServer: %v", err)
 	}

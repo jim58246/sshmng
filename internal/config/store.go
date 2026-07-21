@@ -106,6 +106,10 @@ func unmarshalConfig(data []byte) (*Config, error) {
 	if cfg.IdleTimeoutS == 0 {
 		cfg.IdleTimeoutS = 300
 	}
+	// log_level 必须是支持的级别（或空=默认 info）。配错报错，不静默 fallback。
+	if _, err := ParseLogLevel(cfg.LogLevel); err != nil {
+		return nil, err
+	}
 	if cfg.Jumphosts == nil {
 		cfg.Jumphosts = []*Jumphost{}
 	}

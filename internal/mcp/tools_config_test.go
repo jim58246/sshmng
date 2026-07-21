@@ -8,7 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
 )
 
 // newTestService 创建一个用临时 config 文件的 Service，初始内容来自 seed。
@@ -19,7 +19,7 @@ func newTestService(t *testing.T, seed *config.Config) *Service {
 	if err := store.Save(seed); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
-	knownHosts := ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
+	knownHosts := conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts"))
 	return NewService(store, knownHosts, nil)
 }
 

@@ -11,20 +11,21 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
 	"sshmng/internal/loginflow"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
+	"sshmng/internal/ssh/pty"
 )
 
 // LoginArgs 是 login 工具的入参。
 type LoginArgs struct {
-	Name string `json:"name" jsonschema:"SSH server name (use list_ssh_servers to find)"`
+	Name string `json:"name" jsonschema:"SSH server name; supports name/addr/tag substring match (use list_ssh_servers to find)"`
 }
 
 // RunInSessionArgs 是 run_in_session 工具的入参。
 type RunInSessionArgs struct {
 	SID            string `json:"sid"`
 	Cmd            string `json:"cmd"`
-	TimeoutMs      int    `json:"timeout_ms,omitempty" jsonschema:"optional, default 30000; command timeout in milliseconds"`
-	MaxOutputBytes int    `json:"max_output_bytes,omitempty" jsonschema:"optional, 0 = no truncation"`
+	TimeoutMs      int    `json:"timeout_ms,omitempty" jsonschema:"optional, default 30000 (30s). On timeout: auto Ctrl-C + 3s drain, partial output returned"`
+	MaxOutputBytes int    `json:"max_output_bytes,omitempty" jsonschema:"optional, 0 = no truncation. If exceeded: output truncated, truncated=true returned (use tail/grep or redirect+download for large output)"`
 }
 
 // CloseSessionArgs 是 close_session 工具的入参。
@@ -35,25 +36,12 @@ type CloseSessionArgs struct {
 // StatArgs 是 stat 工具的入参（空）。
 type StatArgs struct{}
 
-// SendInputArgs 是 send_input 工具的入参。
-type SendInputArgs struct {
-	SID  string `json:"sid"`
-	Text string `json:"text" jsonschema:"raw text to write to PTY stdin (e.g. answers to prompts, here-doc content)"`
-}
-
-// SendSpecialArgs 是 send_special 工具的入参。
-// Key ∈ {"ctrl-c", "ctrl-d", "ctrl-z", "tab", "esc"}.
-type SendSpecialArgs struct {
-	SID string `json:"sid"`
-	Key string `json:"key" jsonschema:"one of: ctrl-c | ctrl-d | ctrl-z | tab | esc"`
-}
-
 // GetTraceArgs 是 get_trace 工具的入参。
-// LastN=0 返回全部；TruncOutput=0 不截断（>0 截断每条 Output 到该长度）。
+// LastN=0 返回全部；TruncOutput=0 不截断（取完整 raw_output 含 ANSI/sentinel 原始字节）。
 type GetTraceArgs struct {
 	SID         string `json:"sid"`
-	LastN       int    `json:"last_n,omitempty" jsonschema:"optional, return only the last N traces; 0 = all"`
-	TruncOutput int    `json:"trunc_output,omitempty" jsonschema:"optional, truncate each Output to this many chars; 0 = no truncation"`
+	LastN       int    `json:"last_n,omitempty" jsonschema:"optional, return only the last N traces; 0 = all (default)"`
+	TruncOutput int    `json:"trunc_output,omitempty" jsonschema:"optional, truncate each Output and raw_output to this many chars; default 200, 0 = no truncation (full raw PTY bytes for debugging)"`
 }
 
 // Login 拨通指定 SSH server，建立 PTY session。
@@ -81,28 +69,34 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		return errorResult("pattern A via ssh-j jumphost %q not yet supported (server %q); deferred to v1.x", srv.Via.Name, args.Name)
 	}
 
-	sid, err := ssh.RandomSID()
+	sid, err := conn.RandomSID()
 	if err != nil {
 		s.sessionLogger(req, "").Warn("login failed: generate sid", "server", srv.Name, "err", err.Error())
 		return errorResult("generate sid: %v", err)
 	}
 	logger := s.sessionLogger(req, sid)
-	dialer := ssh.NewDialer(s.knownHosts)
+	logger.Debug("login start", "server", srv.Name, "via", viaDesc(srv))
+	dialer := conn.NewDialer(s.knownHosts, logger)
 
-	var ptyConn *ssh.PtyConn
+	var ptyConn *pty.PtyConn
+	var loginTrace []loginflow.TraceEntry
 	if srv.Via != nil {
-		ptyConn, err = s.setupPatternB(srv, dialer, sid, logger)
+		ptyConn, loginTrace, err = s.setupPatternB(srv, dialer, sid, logger)
 	} else {
-		ptyConn, err = s.setupDirect(srv, dialer, sid, logger)
+		ptyConn, loginTrace, err = s.setupDirect(srv, dialer, sid, logger)
 	}
 	if err != nil {
-		logger.Warn("login failed", "server", srv.Name, "err", err.Error())
 		// LoginFlow 失败时携带 login_trace 返给 Agent 诊断（设计文档 §3.x）。
 		// SSH auth / detectShell / RC 注入等其他失败仅返回 error 字符串。
-		var lfErr *ssh.LoginFlowError
-		if errors.As(err, &lfErr) {
+		var lfErr *pty.LoginFlowError
+		if errors.As(err, &lfErr) && len(lfErr.Trace) > 0 {
+			last := lfErr.Trace[len(lfErr.Trace)-1]
+			logger.Warn("login failed",
+				"server", srv.Name, "err", err.Error(),
+				"stage", lfErr.Stage, "steps", len(lfErr.Trace), "last_action", last.Send)
 			return loginFlowErrorResult(err, lfErr.Trace)
 		}
+		logger.Warn("login failed", "server", srv.Name, "err", err.Error())
 		return errorResult("%v", err)
 	}
 
@@ -111,6 +105,9 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		idleTimeout = 5 * time.Minute
 	}
 	sess := s.manager.NewSession(sid, srv.Name, ptyConn, idleTimeout, logger)
+	if len(loginTrace) > 0 {
+		sess.SetLoginFlowTrace(loginTrace)
+	}
 	logger.Info("session created", "server", srv.Name, "via", viaDesc(srv), "idle_timeout", idleTimeout.String(), "sftp_available", sess.SftpAvailable())
 
 	return textResult(map[string]any{
@@ -121,27 +118,47 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 }
 
 // setupDirect 处理直连场景：SSH 拨号到 srv.Addr + 可选单段 LoginFlow + RC 注入。
-func (s *Service) setupDirect(srv *config.SSHServer, dialer *ssh.Dialer, sid string, logger *slog.Logger) (*ssh.PtyConn, error) {
-	client, err := dialer.Dial(ssh.DialOptions{
-		Addr:  srv.Addr,
-		User:  srv.User,
-		Auth:  srv.Auth,
-		Proxy: srv.Proxy,
+// 成功返回 ptyConn + LoginFlow trace（若 srv.LoginFlow 为空则 trace 为 nil）。
+// LoginFlow 失败返回 *pty.LoginFlowError（携带 trace），供 Login handler 提取
+// login_trace 字段返给 Agent。
+func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, []loginflow.TraceEntry, error) {
+	client, err := dialer.Dial(conn.DialOptions{
+		Addr:       srv.Addr,
+		User:       srv.User,
+		Auth:       srv.Auth,
+		Proxy:      srv.Proxy,
+		ServerName: srv.Name,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ssh connect to %s: %w", srv.Addr, err)
+		return nil, nil, fmt.Errorf("ssh connect to %s: %w", srv.Addr, err)
 	}
-	ptyConn, err := ssh.NewPtyConn(client, sid, &ssh.PtyConnOptions{
-		LoginFlow:       srv.LoginFlow,
-		LoginEntry:      srv.LoginEntry,
-		MaxSteps:        srv.MaxSteps,
-		GlobalTimeoutMs: srv.GlobalTimeoutMs,
-	})
+	ptyConn, err := pty.OpenPtyConnWithTimeout(client, sid, logger, 0)
 	if err != nil {
 		client.Close()
-		return nil, fmt.Errorf("setup pty: %w", err)
+		return nil, nil, fmt.Errorf("setup pty: %w", err)
 	}
-	return ptyConn, nil
+	var trace []loginflow.TraceEntry
+	if len(srv.LoginFlow) > 0 {
+		trace, err = ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, pty.LoginFlowOptions{
+			MaxSteps:        srv.MaxSteps,
+			GlobalTimeoutMs: srv.GlobalTimeoutMs,
+		})
+		if err != nil {
+			ptyConn.Close()
+			return nil, trace, fmt.Errorf("direct: %w", &pty.LoginFlowError{Stage: "direct", Trace: trace, Err: err})
+		}
+		logger.Debug("loginflow phase done", "phase", "direct", "steps", len(trace))
+	}
+	if err := ptyConn.InjectRC(); err != nil {
+		ptyConn.Close()
+		return nil, trace, fmt.Errorf("inject rc: %w", err)
+	}
+	// 直连：SFTP 通道是到 target 的，探测启用。
+	ptyConn.TryEnableSftp()
+	logger.Debug("setup done",
+		"sid", sid, "server", srv.Name,
+		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
+	return ptyConn, trace, nil
 }
 
 // setupPatternB 处理 Pattern B 交互式堡垒机场景：
@@ -149,46 +166,59 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *ssh.Dialer, sid str
 // （选 target + 凭据）→ InjectRC。两段 LoginFlow 共用同一 PTY，trailing data 通过
 // pushback 在调用间保留。
 //
-// LoginFlow 失败时返回 *ssh.LoginFlowError（携带 trace），供 Login handler 提出
+// 成功返回 ptyConn + 两段 LoginFlow 拼接的 trace（jumphost 在前 target 在后）。
+// LoginFlow 失败返回 *pty.LoginFlowError（携带 trace），供 Login handler 提取
 // login_trace 字段返给 Agent。
-func (s *Service) setupPatternB(srv *config.SSHServer, dialer *ssh.Dialer, sid string, logger *slog.Logger) (*ssh.PtyConn, error) {
+func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, []loginflow.TraceEntry, error) {
 	jump := srv.Via
-	client, err := dialer.Dial(ssh.DialOptions{
-		Addr:  jump.Addr,
-		User:  jump.User,
-		Auth:  jump.Auth,
-		Proxy: jump.Proxy,
+	client, err := dialer.Dial(conn.DialOptions{
+		Addr:       jump.Addr,
+		User:       jump.User,
+		Auth:       jump.Auth,
+		Proxy:      jump.Proxy,
+		ServerName: jump.Name,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ssh connect to jumphost %s: %w", jump.Addr, err)
+		return nil, nil, fmt.Errorf("ssh connect to jumphost %s: %w", jump.Addr, err)
 	}
-	ptyConn, err := ssh.OpenPtyConn(client, sid)
+	ptyConn, err := pty.OpenPtyConnWithTimeout(client, sid, logger, 0)
 	if err != nil {
 		client.Close()
-		return nil, fmt.Errorf("setup pty: %w", err)
+		return nil, nil, fmt.Errorf("setup pty: %w", err)
 	}
-	if trace, err := ptyConn.RunLoginFlow(jump.LoginFlow, jump.LoginEntry, ssh.LoginFlowOptions{
+	var trace []loginflow.TraceEntry
+	if t, err := ptyConn.RunLoginFlow(jump.LoginFlow, jump.LoginEntry, pty.LoginFlowOptions{
 		MaxSteps:        jump.MaxSteps,
 		GlobalTimeoutMs: jump.GlobalTimeoutMs,
 	}); err != nil {
 		ptyConn.Close()
-		return nil, fmt.Errorf("jumphost: %w", &ssh.LoginFlowError{Stage: "jumphost", Trace: trace, Err: err})
+		return nil, trace, fmt.Errorf("jumphost: %w", &pty.LoginFlowError{Stage: "jumphost", Trace: t, Err: err})
+	} else {
+		trace = append(trace, t...)
+		logger.Debug("loginflow phase done", "phase", "jumphost", "steps", len(t))
 	}
-	if trace, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, ssh.LoginFlowOptions{
+	if t, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, pty.LoginFlowOptions{
 		MaxSteps:        srv.MaxSteps,
 		GlobalTimeoutMs: srv.GlobalTimeoutMs,
 	}); err != nil {
 		ptyConn.Close()
-		return nil, fmt.Errorf("target: %w", &ssh.LoginFlowError{Stage: "target", Trace: trace, Err: err})
+		return nil, trace, fmt.Errorf("target: %w", &pty.LoginFlowError{Stage: "target", Trace: t, Err: err})
+	} else {
+		trace = append(trace, t...)
+		logger.Debug("loginflow phase done", "phase", "target", "steps", len(t))
 	}
 	if err := ptyConn.InjectRC(); err != nil {
 		ptyConn.Close()
-		return nil, fmt.Errorf("inject rc: %w", err)
+		return nil, trace, fmt.Errorf("inject rc: %w", err)
 	}
-	return ptyConn, nil
+	// Pattern B：SSH client 是到 jumphost 的，SFTP 通道只会到 jumphost 而非 target，
+	// 探测成功反而误导（用户以为能 upload 到 target，实际落到 jumphost）。
+	// 故不调用 TryEnableSftp，sftp_available 恒为 false。
+	logger.Debug("setup done",
+		"sid", sid, "server", srv.Name,
+		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
+	return ptyConn, trace, nil
 }
-
-// viaDesc 返回 server 的 via 描述，用于日志。无 via 时返回空字符串。
 func viaDesc(srv *config.SSHServer) string {
 	if srv.Via == nil {
 		return ""
@@ -221,6 +251,9 @@ func (s *Service) RunInSession(ctx context.Context, req *mcp.CallToolRequest, ar
 	if err != nil {
 		return errorResult("%v", err)
 	}
+	s.sessionLogger(req, args.SID).Debug("run_in_session",
+		"sid", args.SID, "server", sess.ServerName(),
+		"cmd", args.Cmd, "timeout_ms", args.TimeoutMs, "max_output_bytes", args.MaxOutputBytes)
 	output, exitCode, timedOut, truncated, totalBytes, err := sess.RunInSession(args.Cmd, args.TimeoutMs, args.MaxOutputBytes)
 	if err != nil {
 		return errorResult("%v", err)
@@ -259,38 +292,24 @@ func (s *Service) Stat(ctx context.Context, req *mcp.CallToolRequest, args StatA
 	return textResult(s.manager.Stat())
 }
 
-// SendInput 在 running 状态下向 PTY stdin 写入任意文本（如回答交互提示、here-doc 内容）。
-// idle / closed 状态下报错。text 也会记入当前 trace 的 Inputs 供 get_trace 诊断。
-func (s *Service) SendInput(ctx context.Context, req *mcp.CallToolRequest, args SendInputArgs) (*mcp.CallToolResult, any, error) {
-	sess, err := s.manager.Get(args.SID)
-	if err != nil {
-		return errorResult("%v", err)
-	}
-	if err := sess.SendInput(args.Text); err != nil {
-		return errorResult("%v", err)
-	}
-	return textResult(map[string]any{"sid": args.SID, "sent": true})
-}
-
-// SendSpecial 在 running 状态下发送命名控制字符（ctrl-c / ctrl-d / ctrl-z / tab / esc）。
-// idle / closed 状态下报错；未知 key 报错。
-func (s *Service) SendSpecial(ctx context.Context, req *mcp.CallToolRequest, args SendSpecialArgs) (*mcp.CallToolResult, any, error) {
-	sess, err := s.manager.Get(args.SID)
-	if err != nil {
-		return errorResult("%v", err)
-	}
-	if err := sess.SendSpecial(args.Key); err != nil {
-		return errorResult("%v", err)
-	}
-	return textResult(map[string]any{"sid": args.SID, "sent": true})
-}
-
-// GetTrace 返回指定 session 的命令 trace（cmd / output / exit_code / timed_out / inputs）。
-// 活 session 与已关闭 session（10min TTL）均可查。last_n / trunc_output 可选。
+// GetTrace 返回指定 session 的命令 trace + login 阶段的 LoginFlow trace。
+//   - commands: 命令历史（cmd / output / exit_code / timed_out），活 session 与
+//     已关闭 session（10min TTL）均可查
+//   - login_flow: login 阶段 LoginFlow 每步 trace（send / expect / output）；仅活 session
+//     有值，已关闭 session 返回 null（graveyard 未存 login_flow）
+//
+// last_n / trunc_output 仅作用于 commands。
 func (s *Service) GetTrace(ctx context.Context, req *mcp.CallToolRequest, args GetTraceArgs) (*mcp.CallToolResult, any, error) {
 	traces, err := s.manager.GetTrace(args.SID, args.LastN, args.TruncOutput)
 	if err != nil {
 		return errorResult("%v", err)
 	}
-	return textResult(traces)
+	var loginFlow []loginflow.TraceEntry
+	if sess, err := s.manager.Get(args.SID); err == nil {
+		loginFlow = sess.LoginFlowTrace()
+	}
+	return textResult(map[string]any{
+		"commands":   traces,
+		"login_flow": loginFlow,
+	})
 }

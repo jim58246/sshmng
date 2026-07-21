@@ -53,7 +53,6 @@ func TestRunHappyPathSingleAction(t *testing.T) {
 	pty.queueOut("Welcome to server")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "u\n",
 			Expects: []config.Expect{{Pattern: "Welcome*", Next: "success"}},
 		},
@@ -90,7 +89,6 @@ func TestRunEmptySendSkipsSend(t *testing.T) {
 	pty.queueOut("Welcome MOTD")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "", // 空 Send
 			Expects: []config.Expect{{Pattern: "Welcome*", Next: "success"}},
 		},
@@ -117,15 +115,14 @@ func TestRunMultipleExpectsFirstMatchWins(t *testing.T) {
 	pty.queueOut("menu: choice 1")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name: "entry",
 			Send: "\n",
 			Expects: []config.Expect{
 				{Pattern: "menu*", Next: "got_menu"},
 				{Pattern: "choice*", Next: "got_choice"}, // 也能匹配但不应被选
 			},
 		},
-		"got_menu":   {Name: "got_menu", Expects: []config.Expect{{Pattern: "*", Next: "success"}}},
-		"got_choice": {Name: "got_choice", Expects: []config.Expect{{Pattern: "*", Next: "success"}}},
+		"got_menu":   {Expects: []config.Expect{{Pattern: "*", Next: "success"}}},
+		"got_choice": {Expects: []config.Expect{{Pattern: "*", Next: "success"}}},
 	}
 
 	trace, err := Run(pty, flow, "entry", Options{})
@@ -149,7 +146,6 @@ func TestRunNoExpectMatchFailsWithTrace(t *testing.T) {
 	pty.queueOut("unexpected output")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name: "entry",
 			Send: "\n",
 			Expects: []config.Expect{
 				{Pattern: "Welcome*", Next: "success"},
@@ -185,7 +181,6 @@ func TestRunActionTimeoutFails(t *testing.T) {
 	pty.queueOut("partial output")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:      "entry",
 			Send:      "\n",
 			TimeoutMs: 100,
 			Expects:   []config.Expect{{Pattern: "Welcome*", Next: "success"}},
@@ -218,8 +213,8 @@ func TestRunMaxStepsExceeded(t *testing.T) {
 	// 简化：每次 Send 时把 output 重新排队
 	pty2 := &loopPTY{}
 	flow := map[string]config.LoginAction{
-		"a": {Name: "a", Send: "a\n", Expects: []config.Expect{{Pattern: "*", Next: "b"}}},
-		"b": {Name: "b", Send: "b\n", Expects: []config.Expect{{Pattern: "*", Next: "a"}}},
+		"a": {Send: "a\n", Expects: []config.Expect{{Pattern: "*", Next: "b"}}},
+		"b": {Send: "b\n", Expects: []config.Expect{{Pattern: "*", Next: "a"}}},
 	}
 
 	trace, err := Run(pty2, flow, "a", Options{MaxSteps: 3})
@@ -258,8 +253,8 @@ func (p *loopPTY) Read(deadline time.Time, matchers []*regexp.Regexp) (string, i
 func TestRunGlobalTimeoutExceeded(t *testing.T) {
 	pty := &loopPTY{}
 	flow := map[string]config.LoginAction{
-		"a": {Name: "a", Send: "a\n", Expects: []config.Expect{{Pattern: "*", Next: "b"}}},
-		"b": {Name: "b", Send: "b\n", Expects: []config.Expect{{Pattern: "*", Next: "a"}}},
+		"a": {Send: "a\n", Expects: []config.Expect{{Pattern: "*", Next: "b"}}},
+		"b": {Send: "b\n", Expects: []config.Expect{{Pattern: "*", Next: "a"}}},
 	}
 
 	// GlobalTimeout=1ns：globalDeadline 在过去，首次循环 check 即触发
@@ -283,7 +278,6 @@ func TestRunGlobPatternMatch(t *testing.T) {
 	pty.queueOut("Please select:\n  1) prod-db\n  2) prod-web\nYour choice: ")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Expects: []config.Expect{{Pattern: "Please select*", Next: "success"}},
 		},
 	}
@@ -302,7 +296,6 @@ func TestRunRegexPatternMatch(t *testing.T) {
 	pty.queueOut("Permission denied (publickey)")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Expects: []config.Expect{{Pattern: "re:^Permission denied \\(.*\\)$", Next: "success"}},
 		},
 	}
@@ -321,7 +314,6 @@ func TestRunANSIFilterBeforeMatch(t *testing.T) {
 	pty.queueOut("\x1b[0;31mWelcome\x1b[0m to server")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Expects: []config.Expect{{Pattern: "Welcome to server", Next: "success"}},
 		},
 	}
@@ -347,7 +339,6 @@ func TestRunOSCFilterBeforeMatch(t *testing.T) {
 	pty.queueOut("\r\n\x1b]0;root@host:~\x07\x1b[?2004h[root@host ~]# ")
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Expects: []config.Expect{{Pattern: "re:^\\r\\n\\[root@host ~\\]# ", Next: "success"}},
 		},
 	}
@@ -368,12 +359,10 @@ func TestRunTraceStructure(t *testing.T) {
 	pty := &loopPTY{}
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "u\n",
 			Expects: []config.Expect{{Pattern: "*", Next: "step2"}},
 		},
 		"step2": {
-			Name:    "step2",
 			Send:    "p\n",
 			Expects: []config.Expect{{Pattern: "*", Next: "success"}},
 		},

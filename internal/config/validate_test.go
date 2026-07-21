@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func validAction(name string, next string) LoginAction {
-	return LoginAction{Name: name, Expects: []Expect{{Pattern: "x", Next: next}}}
+func validAction(next string) LoginAction {
+	return LoginAction{Expects: []Expect{{Pattern: "x", Next: next}}}
 }
 
 func TestValidateJumphostSSHJTrueRejectsLoginFlow(t *testing.T) {
@@ -16,7 +16,7 @@ func TestValidateJumphostSSHJTrueRejectsLoginFlow(t *testing.T) {
 		User:      "u",
 		Auth:      SSHAuth{Password: "p"},
 		SSHJ:      true,
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow: map[string]LoginAction{"a": validAction("success")},
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
 	err := cfg.Validate()
@@ -68,7 +68,7 @@ func TestValidateJumphostSSHJFalseRejectsUnknownLoginEntry(t *testing.T) {
 		User:       "u",
 		Auth:       SSHAuth{Password: "p"},
 		SSHJ:       false,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "no-such-action",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
@@ -85,7 +85,7 @@ func TestValidateJumphostSSHJFalseAcceptsValid(t *testing.T) {
 		User:       "u",
 		Auth:       SSHAuth{Password: "p"},
 		SSHJ:       false,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
@@ -96,7 +96,7 @@ func TestValidateJumphostSSHJFalseAcceptsValid(t *testing.T) {
 
 func TestValidateSSHServerPatternBRequiresLoginFlow(t *testing.T) {
 	jh := &Jumphost{Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: false,
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")}, LoginEntry: "a"}
+		LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a"}
 	srv := &SSHServer{Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{}, Via: jh}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Servers: []*SSHServer{srv}}
 	err := cfg.Validate()
@@ -107,12 +107,12 @@ func TestValidateSSHServerPatternBRequiresLoginFlow(t *testing.T) {
 
 func TestValidateSSHServerPatternBRejectsAuth(t *testing.T) {
 	jh := &Jumphost{Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: false,
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")}, LoginEntry: "a"}
+		LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a"}
 	srv := &SSHServer{
 		Name: "s", Addr: "t:22", User: "u",
 		Auth:       SSHAuth{Password: "should-be-empty"},
 		Via:        jh,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Servers: []*SSHServer{srv}}
@@ -124,11 +124,11 @@ func TestValidateSSHServerPatternBRejectsAuth(t *testing.T) {
 
 func TestValidateSSHServerPatternBAcceptsValid(t *testing.T) {
 	jh := &Jumphost{Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: false,
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")}, LoginEntry: "a"}
+		LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a"}
 	srv := &SSHServer{
 		Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{},
 		Via:        jh,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Servers: []*SSHServer{srv}}
@@ -150,7 +150,7 @@ func TestValidateSSHServerPatternAWithLoginFlowRequiresEntry(t *testing.T) {
 	// 直连 server，LoginFlow 非空但 LoginEntry 缺失 —— 报错
 	srv := &SSHServer{
 		Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{Password: "p"},
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow: map[string]LoginAction{"a": validAction("success")},
 	}
 	cfg := &Config{Version: "1", Servers: []*SSHServer{srv}}
 	err := cfg.Validate()
@@ -175,7 +175,7 @@ func TestValidateRejectsSuccessAsLoginFlowKey(t *testing.T) {
 		User:       "u",
 		Auth:       SSHAuth{Password: "p"},
 		SSHJ:       false,
-		LoginFlow:  map[string]LoginAction{"success": validAction("success", "success")},
+		LoginFlow:  map[string]LoginAction{"success": validAction("success")},
 		LoginEntry: "success",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
@@ -192,7 +192,7 @@ func TestValidateRejectsUnknownExpectNext(t *testing.T) {
 		User:       "u",
 		Auth:       SSHAuth{Password: "p"},
 		SSHJ:       false,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "no-such-action")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("no-such-action")},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
@@ -209,7 +209,7 @@ func TestValidateRejectsEmptyExpects(t *testing.T) {
 		User:       "u",
 		Auth:       SSHAuth{Password: "p"},
 		SSHJ:       false,
-		LoginFlow:  map[string]LoginAction{"a": {Name: "a", Expects: nil}},
+		LoginFlow:  map[string]LoginAction{"a": {Expects: nil}},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}}
@@ -240,13 +240,13 @@ func TestValidateRejectsSSHServerPatternAMissingAuth(t *testing.T) {
 func TestValidateAcceptsFullValidConfig(t *testing.T) {
 	jh := &Jumphost{
 		Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: false,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	srv1 := &SSHServer{
 		Name: "s1", Addr: "t1:22", User: "u", Auth: SSHAuth{},
 		Via:        jh,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	srv2 := &SSHServer{
@@ -267,13 +267,13 @@ func TestValidateAcceptsFullValidConfig(t *testing.T) {
 
 func TestValidateRejectsSSHServerPatternBWithPartialAuth(t *testing.T) {
 	jh := &Jumphost{Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: false,
-		LoginFlow: map[string]LoginAction{"a": validAction("a", "success")}, LoginEntry: "a"}
+		LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a"}
 	// Pattern B + 仅 Password 非空，应拒绝
 	srv := &SSHServer{
 		Name: "s", Addr: "t:22", User: "u",
 		Auth:       SSHAuth{Password: "leak"},
 		Via:        jh,
-		LoginFlow:  map[string]LoginAction{"a": validAction("a", "success")},
+		LoginFlow:  map[string]LoginAction{"a": validAction("success")},
 		LoginEntry: "a",
 	}
 	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Servers: []*SSHServer{srv}}

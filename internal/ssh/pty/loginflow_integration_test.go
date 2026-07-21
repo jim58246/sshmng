@@ -1,4 +1,4 @@
-package ssh
+package pty
 
 import (
 	"bufio"
@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
+	"sshmng/internal/ssh/conn"
 )
 
 // shellDetectPS1Re 从 `export PS1='__P_<sid>__> '` 中提取 sid。
@@ -136,9 +137,14 @@ func (s *fakeShellServerForLoginFlow) handleSession(ch ssh.Channel, reqs <-chan 
 //   - "pass" → "READY\n"（标志 LoginFlow 完成）
 //
 // 然后转入正常 RC + 命令阶段（复用 runFakeShell 逻辑）。
+//
+// token 化：Run 在写命令前先写 setup 命令 `__sshmng_tok=<token>; ...`。fake shell
+// 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的 sentinel 也含
+// 该 token。
 func runFakeShellWithLoginFlow(ch ssh.Channel) {
 	reader := bufio.NewReader(ch)
 	var sid string
+	var tok string
 	rcDone := false
 	loginFlowDone := false
 
@@ -191,13 +197,28 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 			continue
 		}
 
+		// setup token 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '`
+		// 记录 token，emit setup sentinel（含 token）。不当作正常命令执行。
+		if strings.HasPrefix(line, "__sshmng_tok=") {
+			re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+			m := re.FindStringSubmatch(line)
+			if len(m) > 1 {
+				tok = m[1]
+			}
+			fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+			continue
+		}
+
 		// 命令阶段：用 sh -c 执行（复用 runFakeShell 逻辑）
 		out, code := execFakeShellCommand(line)
 		if len(out) > 0 {
 			ch.Write(out)
 		}
-		fmt.Fprintf(ch, "__E_%s__:%d__\r\n", sid, code)
-		fmt.Fprintf(ch, "__P_%s__> ", sid)
+		if tok != "" {
+			fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, code, sid, tok)
+		} else {
+			fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, code, sid)
+		}
 	}
 }
 
@@ -214,7 +235,7 @@ func TestIntegrationLoginFlowSuccess(t *testing.T) {
 	srv := newFakeShellServerForLoginFlow(t)
 	d := newDialerWithTempKnownHosts(t)
 
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -224,20 +245,17 @@ func TestIntegrationLoginFlowSuccess(t *testing.T) {
 	}
 	defer client.Close()
 
-	sid, _ := RandomSID()
+	sid, _ := conn.RandomSID()
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "",
 			Expects: []config.Expect{{Pattern: "login:*", Next: "send_user"}},
 		},
 		"send_user": {
-			Name:    "send_user",
 			Send:    "user\n",
 			Expects: []config.Expect{{Pattern: "Password:*", Next: "send_pwd"}},
 		},
 		"send_pwd": {
-			Name:    "send_pwd",
 			Send:    "pass\n",
 			Expects: []config.Expect{{Pattern: "READY", Next: "success"}},
 		},
@@ -246,14 +264,14 @@ func TestIntegrationLoginFlowSuccess(t *testing.T) {
 	ptyConn, err := NewPtyConn(client, sid, &PtyConnOptions{
 		LoginFlow:  flow,
 		LoginEntry: "entry",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn with LoginFlow: %v", err)
 	}
 	defer ptyConn.Close()
 
 	// LoginFlow 完成后应能正常跑命令
-	output, exitCode, timedOut, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	output, _, exitCode, timedOut, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -274,7 +292,7 @@ func TestIntegrationLoginFlowFailureReturnsTrace(t *testing.T) {
 	srv := newFakeShellServerForLoginFlow(t)
 	d := newDialerWithTempKnownHosts(t)
 
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -284,11 +302,10 @@ func TestIntegrationLoginFlowFailureReturnsTrace(t *testing.T) {
 	}
 	defer client.Close()
 
-	sid, _ := RandomSID()
+	sid, _ := conn.RandomSID()
 	// 故意配不匹配的 pattern：fake shell emit "login: " 但我们等 "Username:"
 	flow := map[string]config.LoginAction{
 		"entry": {
-			Name:    "entry",
 			Send:    "",
 			Expects: []config.Expect{{Pattern: "Username:*", Next: "success"}},
 		},
@@ -297,7 +314,7 @@ func TestIntegrationLoginFlowFailureReturnsTrace(t *testing.T) {
 	_, err = NewPtyConn(client, sid, &PtyConnOptions{
 		LoginFlow:  flow,
 		LoginEntry: "entry",
-	})
+	}, nil)
 	if err == nil {
 		t.Fatalf("expected LoginFlow failure error, got nil")
 	}

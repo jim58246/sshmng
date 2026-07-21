@@ -1,7 +1,10 @@
 package main
 
 import (
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,5 +42,59 @@ func TestResolveConfigPathDefaultHome(t *testing.T) {
 	want := filepath.Join(dir, ".sshmng", "config.json")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestOpenLogWriterEmptyPathReturnsDiscard 验证 log_path 为空时返回 io.Discard。
+// 空路径是默认场景：用户未配置 log_path，不打任何日志（无 stderr 输出，Inspector
+// 无从捕获，彻底规避 stall）。
+func TestOpenLogWriterEmptyPathReturnsDiscard(t *testing.T) {
+	w, cleanup, err := openLogWriter("")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	defer cleanup()
+
+	// 应是 io.Discard（写入无副作用、无错误）
+	if _, err := w.Write([]byte("should-be-discarded\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// io.Discard 是具体值，直接比较
+	if w != io.Discard {
+		t.Errorf("expected io.Discard for empty log_path")
+	}
+}
+
+// TestOpenLogWriterPathReturnsRotatingWriter 验证 log_path 非空时写入
+// <log_path>/sshmng.log。
+func TestOpenLogWriterPathReturnsRotatingWriter(t *testing.T) {
+	dir := t.TempDir()
+	w, cleanup, err := openLogWriter(dir)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	if _, err := w.Write([]byte("hello\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "sshmng.log"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "hello") {
+		t.Errorf("file content = %q, want contains 'hello'", string(data))
+	}
+}
+
+// TestOpenLogWriterPathErrorReturnsError 验证路径不可写时返回错误（不 panic）。
+func TestOpenLogWriterPathErrorReturnsError(t *testing.T) {
+	_, _, err := openLogWriter("/nonexistent-xyz-123/dir")
+	if err == nil {
+		t.Errorf("expected error for nonexistent dir")
 	}
 }

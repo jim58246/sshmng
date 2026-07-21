@@ -1,4 +1,4 @@
-package ssh
+package pty
 
 import (
 	"regexp"
@@ -6,17 +6,18 @@ import (
 )
 
 // DetectShellReady 判断 PTY 流末尾是否出现本 sid 的 PS1 sentinel，标志 shell 就绪。
-// 用 sid 限制匹配，避免其他 session 的 sentinel 字面量误命中。
+// 宽松匹配：允许无 token（injectRC 初始 PS1 `__P_<sid>__> `）和有 token
+// （Run 中 `__P_<sid>_<token>__> `）。用 sid 限制匹配，避免其他 session 误命中。
 func DetectShellReady(stream string, sid string) bool {
-	re := regexp.MustCompile(`__P_` + regexp.QuoteMeta(sid) + `__>\s*$`)
+	re := regexp.MustCompile(`__P_` + regexp.QuoteMeta(sid) + `(?:_\w+)?__>\s*$`)
 	return re.MatchString(stream)
 }
 
-// ExtractExitCode 从 PTY 流中提取本 sid 的 exit code。
-// 多个 sentinel 时返回最后一个（最新命令的退出码）。
-// 找不到返回 (0, false)。
-func ExtractExitCode(stream string, sid string) (int, bool) {
-	re := regexp.MustCompile(`__E_` + regexp.QuoteMeta(sid) + `__:(-?\d+)__`)
+// ExtractExitCode 从 PTY 流中提取本 sid + 本 token 的 exit code。
+// 精确匹配 token：命令输出含旧 token 的 sentinel 字面量不会误匹配当前 Run。
+// 多个匹配时返回最后一个（最新命令的退出码）。找不到返回 (0, false)。
+func ExtractExitCode(stream string, sid string, token string) (int, bool) {
+	re := regexp.MustCompile(`__E_` + regexp.QuoteMeta(sid) + `_` + regexp.QuoteMeta(token) + `__:(-?\d+)__`)
 	matches := re.FindAllStringSubmatch(stream, -1)
 	if len(matches) == 0 {
 		return 0, false

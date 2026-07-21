@@ -3,84 +3,12 @@ package mcp
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
 )
-
-// --- send_input ---
-
-// TestSendInputUnknownSID: send_input 对未知 sid 报错。
-func TestSendInputUnknownSID(t *testing.T) {
-	svc := newTestService(t, &config.Config{Version: "1"})
-	res, _, _ := svc.SendInput(context.Background(), &mcp.CallToolRequest{}, SendInputArgs{SID: "nope", Text: "x"})
-	if !res.IsError {
-		t.Errorf("expected IsError=true for unknown sid")
-	}
-}
-
-// TestSendInputWhileIdle: send_input 在 idle 状态下报错 "session idle"。
-func TestSendInputWhileIdle(t *testing.T) {
-	srv := newFakeShellServerForMCP(t)
-	dir := t.TempDir()
-	store := config.NewStore(filepath.Join(dir, "config.json"))
-	store.Save(&config.Config{
-		Version: "1",
-		Servers: []*config.SSHServer{
-			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
-		},
-	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
-
-	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
-	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
-	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
-
-	res, _, _ := svc.SendInput(context.Background(), &mcp.CallToolRequest{}, SendInputArgs{SID: sid, Text: "hello\n"})
-	if !res.IsError {
-		t.Errorf("expected IsError=true for send_input on idle session")
-	}
-	if msg := resultText(t, res); !strings.Contains(msg, "idle") {
-		t.Errorf("err should mention 'idle', got: %s", msg)
-	}
-}
-
-// --- send_special ---
-
-// TestSendSpecialUnknownSID: send_special 对未知 sid 报错。
-func TestSendSpecialUnknownSID(t *testing.T) {
-	svc := newTestService(t, &config.Config{Version: "1"})
-	res, _, _ := svc.SendSpecial(context.Background(), &mcp.CallToolRequest{}, SendSpecialArgs{SID: "nope", Key: "ctrl-c"})
-	if !res.IsError {
-		t.Errorf("expected IsError=true for unknown sid")
-	}
-}
-
-// TestSendSpecialWhileIdle: send_special 在 idle 状态下报错。
-func TestSendSpecialWhileIdle(t *testing.T) {
-	srv := newFakeShellServerForMCP(t)
-	dir := t.TempDir()
-	store := config.NewStore(filepath.Join(dir, "config.json"))
-	store.Save(&config.Config{
-		Version: "1",
-		Servers: []*config.SSHServer{
-			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
-		},
-	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
-
-	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
-	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
-	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
-
-	res, _, _ := svc.SendSpecial(context.Background(), &mcp.CallToolRequest{}, SendSpecialArgs{SID: sid, Key: "ctrl-c"})
-	if !res.IsError {
-		t.Errorf("expected IsError=true for send_special on idle session")
-	}
-}
 
 // --- get_trace ---
 
@@ -104,7 +32,7 @@ func TestGetTraceAfterRun(t *testing.T) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
@@ -119,7 +47,7 @@ func TestGetTraceAfterRun(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("GetTrace failed: %s", resultText(t, res))
 	}
-	traces := parseJSON(t, resultText(t, res)).([]any)
+	traces := parseJSON(t, resultText(t, res)).(map[string]any)["commands"].([]any)
 	if len(traces) != 1 {
 		t.Fatalf("got %d traces, want 1", len(traces))
 	}
@@ -140,7 +68,7 @@ func TestGetTraceAfterClose(t *testing.T) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
@@ -155,7 +83,7 @@ func TestGetTraceAfterClose(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("GetTrace after close failed: %s", resultText(t, res))
 	}
-	traces := parseJSON(t, resultText(t, res)).([]any)
+	traces := parseJSON(t, resultText(t, res)).(map[string]any)["commands"].([]any)
 	if len(traces) != 1 {
 		t.Errorf("got %d traces, want 1 (from graveyard)", len(traces))
 	}
@@ -172,7 +100,7 @@ func TestGetTraceWithLastN(t *testing.T) {
 			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
 		},
 	})
-	svc := NewService(store, ssh.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), nil)
 
 	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
 	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
@@ -182,7 +110,7 @@ func TestGetTraceWithLastN(t *testing.T) {
 	svc.RunInSession(context.Background(), &mcp.CallToolRequest{}, RunInSessionArgs{SID: sid, Cmd: "echo two"})
 
 	res, _, _ := svc.GetTrace(context.Background(), &mcp.CallToolRequest{}, GetTraceArgs{SID: sid, LastN: 1})
-	traces := parseJSON(t, resultText(t, res)).([]any)
+	traces := parseJSON(t, resultText(t, res)).(map[string]any)["commands"].([]any)
 	if len(traces) != 1 {
 		t.Fatalf("got %d traces, want 1", len(traces))
 	}

@@ -95,9 +95,6 @@ func validateLoginFlow(flow map[string]LoginAction, entry string) error {
 		return fmt.Errorf("login_entry %q not found in login_flow", entry)
 	}
 	for name, action := range flow {
-		if action.Name == "" {
-			return fmt.Errorf("login_flow[%q]: action.name is empty", name)
-		}
 		if len(action.Expects) == 0 {
 			return fmt.Errorf("login_flow[%q]: expects must have at least one pattern", name)
 		}

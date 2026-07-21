@@ -1,4 +1,4 @@
-package ssh
+package pty
 
 import (
 	"bufio"
@@ -9,16 +9,25 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
+	"sshmng/internal/ssh/conn"
 )
+
+// newDialerWithTempKnownHosts 创建一个用临时 known_hosts 文件的 Dialer。
+// pty 包测试需要 dialer 但不能直接复用 conn 包的 test helper（跨包不可见），
+// 这里重新定义一份，封装 conn.NewDialer + conn.NewKnownHostsStore。
+func newDialerWithTempKnownHosts(t *testing.T) *conn.Dialer {
+	t.Helper()
+	return conn.NewDialer(conn.NewKnownHostsStore(filepath.Join(t.TempDir(), "known_hosts")), nil)
+}
 
 // fakeShellServer 是一个用于集成测试的 SSH server。
 // 它接受 SSH 连接、分配 session、在 session 中跑一个 Go 实现的 fake shell。
@@ -249,6 +258,10 @@ func runSftpServer(ch ssh.Channel) {
 // 保证 injectRC 等到 sentinel 时 RC 已全部执行完）。rc_injecting 期间所有行忽略
 // 不执行，避免 RC 行被误当命令跑。
 //
+// token 化：Run 在写命令前先写 setup 命令 `__sshmng_tok=<token>; ...`。fake shell
+// 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的 sentinel 也含
+// 该 token，模拟真实 bash PROMPT_COMMAND 用 ${__sshmng_tok} 输出 sentinel 的行为。
+//
 // realisticPrompt=true 时模拟真实 bash 在 RC 期间每行执行后都显示 PS1 的行为，
 // 用于复现 BuildRC 把 `export PS1=` 放在 RC 中间导致 injectRC 提前匹配的 bug：
 // 在 `export PS1=` 行后再额外 emit 若干 `__E_<sid>:0__\r\n__P_<sid>__> ` 模拟
@@ -257,6 +270,7 @@ func runSftpServer(ch ssh.Channel) {
 func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool) {
 	reader := bufio.NewReader(ch)
 	var sid string
+	var tok string
 	rcDone := false
 	for {
 		line, err := reader.ReadString('\n')
@@ -300,6 +314,18 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool
 			continue
 		}
 
+		// setup token 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '`
+		// 记录 token，emit setup sentinel（含 token）。不当作正常命令执行。
+		if strings.HasPrefix(line, "__sshmng_tok=") {
+			re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+			m := re.FindStringSubmatch(line)
+			if len(m) > 1 {
+				tok = m[1]
+			}
+			fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+			continue
+		}
+
 		// 命令阶段：用 sh -c 执行
 		cmd := exec.Command("sh", "-c", line)
 		output, err := cmd.CombinedOutput()
@@ -314,8 +340,11 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool
 				exitCode = 127
 			}
 		}
-		fmt.Fprintf(ch, "__E_%s__:%d__\r\n", sid, exitCode)
-		fmt.Fprintf(ch, "__P_%s__> ", sid)
+		if tok != "" {
+			fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, exitCode, sid, tok)
+		} else {
+			fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, exitCode, sid)
+		}
 	}
 }
 
@@ -338,7 +367,7 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
 
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -347,11 +376,11 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 
-	sid, err := RandomSID()
+	sid, err := conn.RandomSID()
 	if err != nil {
 		t.Fatalf("RandomSID: %v", err)
 	}
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -361,7 +390,7 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 		t.Errorf("Shell = %q, want bash", ptyConn.Shell())
 	}
 
-	output, exitCode, timedOut, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	output, _, exitCode, timedOut, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -380,7 +409,7 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 func TestIntegrationRunFailingCommand(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -388,14 +417,14 @@ func TestIntegrationRunFailingCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
 	defer ptyConn.Close()
 
-	output, exitCode, _, _, _, _ := ptyConn.Run("exit 42", 5000, 0)
+	output, _, exitCode, _, _, _, _, _, _ := ptyConn.Run("exit 42", 5000, 0)
 	if exitCode != 42 {
 		t.Errorf("exitCode = %d, want 42 (output: %q)", exitCode, output)
 	}
@@ -405,7 +434,7 @@ func TestIntegrationRunFailingCommand(t *testing.T) {
 func TestIntegrationRunTimeout(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -413,54 +442,16 @@ func TestIntegrationRunTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
 	defer ptyConn.Close()
 
-	_, _, timedOut, _, _, _ := ptyConn.Run("sleep 2", 500, 0)
+	_, _, _, timedOut, _, _, _, _, _ := ptyConn.Run("sleep 2", 500, 0)
 	if !timedOut {
 		t.Errorf("should time out for sleep 2 with 500ms timeout")
-	}
-}
-
-// TestIntegrationSendSpecialInterruptsTimeout 端到端：超时后用 send_special("ctrl-c") 中断。
-// 注：本测试只验证 SendSpecial 能成功写入 PTY（不验证命令真的被中断——
-// 因为 fake shell 的 sh -c sleep 是子进程，ctrl-c 不一定能传到它）。
-func TestIntegrationSendSpecial(t *testing.T) {
-	srv := newFakeShellServer(t)
-	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
-	})
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
-	if err != nil {
-		t.Fatalf("NewPtyConn: %v", err)
-	}
-	defer ptyConn.Close()
-
-	// 启动一个长命令，然后发 ctrl-c
-	go func() {
-		ptyConn.Run("sleep 2", 3000, 0)
-	}()
-	time.Sleep(100 * time.Millisecond)
-
-	if err := ptyConn.SendSpecial("ctrl-c"); err != nil {
-		t.Errorf("SendSpecial(ctrl-c): %v", err)
-	}
-	if err := ptyConn.SendSpecial("tab"); err != nil {
-		t.Errorf("SendSpecial(tab): %v", err)
-	}
-	if err := ptyConn.SendSpecial("unknown-key"); err == nil {
-		t.Errorf("unknown key should error")
 	}
 }
 
@@ -468,7 +459,7 @@ func TestIntegrationSendSpecial(t *testing.T) {
 func TestIntegrationMultipleCommands(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -476,22 +467,22 @@ func TestIntegrationMultipleCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
 	defer ptyConn.Close()
 
-	out1, code1, _, _, _, _ := ptyConn.Run("echo one", 5000, 0)
+	out1, _, code1, _, _, _, _, _, _ := ptyConn.Run("echo one", 5000, 0)
 	if code1 != 0 || !strings.Contains(out1, "one") {
 		t.Errorf("cmd1: code=%d out=%q", code1, out1)
 	}
-	out2, code2, _, _, _, _ := ptyConn.Run("echo two", 5000, 0)
+	out2, _, code2, _, _, _, _, _, _ := ptyConn.Run("echo two", 5000, 0)
 	if code2 != 0 || !strings.Contains(out2, "two") {
 		t.Errorf("cmd2: code=%d out=%q", code2, out2)
 	}
-	out3, code3, _, _, _, _ := ptyConn.Run("false", 5000, 0)
+	out3, _, code3, _, _, _, _, _, _ := ptyConn.Run("false", 5000, 0)
 	if code3 != 1 {
 		t.Errorf("cmd3 (false): code=%d want 1 (out: %q)", code3, out3)
 	}
@@ -501,7 +492,7 @@ func TestIntegrationMultipleCommands(t *testing.T) {
 func TestIntegrationOutputTruncation(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -509,14 +500,14 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
 	defer ptyConn.Close()
 
-	out, _, _, truncated, totalBytes, _ := ptyConn.Run("seq 1 1000", 5000, 100)
+	out, _, _, _, _, truncated, totalBytes, _, _ := ptyConn.Run("seq 1 1000", 5000, 100)
 	if !truncated {
 		t.Errorf("should be truncated (out len=%d)", len(out))
 	}
@@ -542,7 +533,7 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	srv := newFakeShellServerWithEcho(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -550,8 +541,8 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v (PTY ECHO should be disabled so detectShell waits for real execution result, not echoed command)", err)
 	}
@@ -562,7 +553,7 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	}
 
 	// 完整跑一条命令验证后续流程也正常（RC 注入、sentinel 识别）。
-	output, exitCode, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	output, _, exitCode, _, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -588,7 +579,7 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 	srv := newFakeShellServerWithRealisticPrompt(t)
 	d := newDialerWithTempKnownHosts(t)
-	client, err := d.Dial(DialOptions{
+	client, err := d.Dial(conn.DialOptions{
 		Addr: srv.Addr(),
 		User: "alice",
 		Auth: config.SSHAuth{Password: "wonderland"},
@@ -596,15 +587,15 @@ func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	sid, _ := RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil)
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
 	defer ptyConn.Close()
 
 	// 关键断言：Run 必须等到 cmd 真正执行完才返回，output 含 "hello"
-	output, exitCode, timedOut, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	output, _, exitCode, timedOut, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -619,7 +610,7 @@ func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 	}
 
 	// 第二条命令验证 session 状态没被残留 sentinel 污染
-	output2, _, _, _, _, _ := ptyConn.Run("echo world", 5000, 0)
+	output2, _, _, _, _, _, _, _, _ := ptyConn.Run("echo world", 5000, 0)
 	if !strings.Contains(output2, "world") {
 		t.Errorf("second cmd output should contain 'world', got: %q", output2)
 	}

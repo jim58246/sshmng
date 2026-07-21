@@ -1,4 +1,4 @@
-package ssh
+package pty
 
 import (
 	"context"
@@ -7,46 +7,11 @@ import (
 	"io"
 	"time"
 
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
+	"sshmng/internal/ssh/conn"
 )
 
-// sftpDialTimeout 是 login 时建立 sftp 通道的超时。sftp 不可用不影响 login 成功，
-// 仅决定 upload/download 可用性。
-const sftpDialTimeout = 5 * time.Second
-
-// defaultTransferTimeout 是 Upload/Download 未指定 timeoutMs 时的默认超时。
-const defaultTransferTimeout = 300 * time.Second
-
-// errSftpUnavailable 是 sftp 通道未建立时 Upload/Download 返回的错误。
-var errSftpUnavailable = errors.New("sftp not available for this session")
-
-// newSftpClient 在已有 SSH 连接上建立 sftp 通道，5s 超时。
-// 失败返回 error（调用方应把 sftpClient 留空，不影响 login 成功）。
-//
-// sftp.NewClient 内部 open session + RequestSubsystem 都是同步的，但 ssh.Client
-// 没有per-operation timeout；用 goroutine + select 实现总超时。超时后 goroutine
-// 仍会泄漏直到 server 响应或连接断开，但 login 流程不被阻塞。
-func newSftpClient(client *ssh.Client) (*sftp.Client, error) {
-	type result struct {
-		c   *sftp.Client
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		c, err := sftp.NewClient(client)
-		ch <- result{c, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.c, r.err
-	case <-time.After(sftpDialTimeout):
-		return nil, fmt.Errorf("sftp channel establishment timed out after %s", sftpDialTimeout)
-	}
-}
-
 // SftpAvailable 返回 sftp 通道是否在 login 时成功建立。
-// false 时 Upload/Download 会返回 errSftpUnavailable。
+// false 时 Upload/Download 会返回 conn.ErrSftpUnavailable。
 func (p *PtyConn) SftpAvailable() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -56,19 +21,20 @@ func (p *PtyConn) SftpAvailable() bool {
 // Upload 把 src 的内容上传到远端 remotePath。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)
-//   - sftp 通道未建立时返回 errSftpUnavailable
+//   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
 //   - 超时返回已传输字节 + timed_out=true；error 为 context.DeadlineExceeded 包装
 //
 // 用 context-aware io.Copy 在 Read/Write 迭代间检查 deadline。
 func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
+	p.logger.Debug("sftp upload start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
 	if sftpClient == nil {
-		return 0, false, errSftpUnavailable
+		return 0, false, conn.ErrSftpUnavailable
 	}
 
-	timeout := defaultTransferTimeout
+	timeout := conn.DefaultTransferTimeout
 	if timeoutMs > 0 {
 		timeout = time.Duration(timeoutMs) * time.Millisecond
 	}
@@ -83,23 +49,26 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 
 	n, err := copyCtx(ctx, dst, src)
 	timedOut := errors.Is(err, context.DeadlineExceeded)
+	p.logger.Debug("sftp upload done",
+		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
 
 // Download 把远端 remotePath 的内容下载到 dst。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)
-//   - sftp 通道未建立时返回 errSftpUnavailable
+//   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
 //   - 超时返回已传输字节 + timed_out=true
 func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
+	p.logger.Debug("sftp download start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
 	if sftpClient == nil {
-		return 0, false, errSftpUnavailable
+		return 0, false, conn.ErrSftpUnavailable
 	}
 
-	timeout := defaultTransferTimeout
+	timeout := conn.DefaultTransferTimeout
 	if timeoutMs > 0 {
 		timeout = time.Duration(timeoutMs) * time.Millisecond
 	}
@@ -114,6 +83,8 @@ func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 
 	n, err := copyCtx(ctx, dst, src)
 	timedOut := errors.Is(err, context.DeadlineExceeded)
+	p.logger.Debug("sftp download done",
+		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
 

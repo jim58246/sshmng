@@ -17,18 +17,53 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"sshmng/internal/config"
-	"sshmng/internal/ssh"
+	"sshmng/internal/ssh/conn"
+	"sshmng/internal/ssh/session"
 )
+
+// serverInstructions 是 MCP server 的整体说明，发送给 client（Agent）作为
+// initialize 响应的一部分。Agent 据此理解工作流、session 生命周期、失败诊断路径、
+// 实体模型与安全约束——这些信息单靠 tool description 无法充分传达。
+const serverInstructions = `SSH session manager MCP server. Manages SSH servers, jumphosts, proxies, and interactive sessions.
+
+== Entity model (config.json) ==
+- SSHServer: target host (name, addr host:port, user, auth, login_flow?, via?, proxy?, tags).
+- Jumphost: SSH jump. ssh_j=true → transparent forwarding (ssh -J semantics, login_flow must be empty); ssh_j=false → interactive bastion (login_flow required, drives menu to ready state).
+- Proxy: transport-layer proxy HTTP/SOCKS5 (not SSH jump). Fields: name, type, addr, auth?, tags.
+- Relationships: SSHServer.via → Jumphost.name; SSHServer.proxy / Jumphost.proxy → Proxy.name.
+- Auth: password / private_key + passphrase. Prefer NOPASSWD sudo or private_key to avoid storing passwords in config.
+- LoginFlow: map[action_name]→{send, expects[], timeout_ms}. Expects: {pattern, next} where pattern is glob or "re:..." regex, next is another action name or "success". login_entry names the start action.
+
+== Workflow ==
+1. list_ssh_servers / list_jumphosts / list_proxies (query: space-separated keywords with AND semantics; each keyword substring-matches name/addr/tags, case-insensitive) → resolve target name.
+2. login(name) → {sid, server_name, sftp_available}. Pattern B (via jumphost ssh_j=false) runs jumphost LoginFlow then target LoginFlow on same PTY.
+3. run_in_session(sid, cmd) → {output, exit_code, timed_out, truncated, total_bytes}. Reuse session for multiple commands (don't login per command).
+4. close_session(sid) when done, or rely on idle timeout (default 5min via idle_timeout_s).
+
+== Session lifecycle ==
+- States: idle / running / closed. run_in_session requires idle; use stat to check.
+- idle timeout resets on activity (run_in_session).
+- After close_session: trace retained 10min in graveyard for get_trace diagnosis.
+
+== Failure recovery ==
+- login fail with loginflow error → response carries login_trace (step-by-step send/expect) for diagnosis.
+- run_in_session timeout → auto Ctrl-C + 3s drain. Drain success: partial output returned, session idle. Drain fail (vim/REPL/pipe block): session forced closed (connUnusable), must re-login.
+- Output insufficient (sentinel mismatch, interactive prompt stuck) → get_trace(sid, last_n, trunc_output=0) for raw_output (un cleaned PTY bytes with ANSI/sentinel).
+- upload/download "sftp not available" → check stat.sftp_available first; server may not support sftp subsystem.
+
+== Security ==
+- Passwords/private_keys stored in config.json. Prefer NOPASSWD sudo or private_key auth to avoid plaintext credentials.
+- Logs (config.log_path) may contain LoginFlow send content + PTY output, which may include passwords. Share logs with care.
+`
 
 // Service 是工具 handler 的宿主，封装 store / session manager / known_hosts 与并发保护。
 type Service struct {
 	store      *config.Store
-	knownHosts *ssh.KnownHostsStore
-	manager    *ssh.Manager
+	knownHosts *conn.KnownHostsStore
+	manager    *session.Manager
 	baseLogger *slog.Logger // stderr 兜底日志；sessionLogger 不可用时退回此 logger
 	mu         sync.Mutex
 }
@@ -36,44 +71,42 @@ type Service struct {
 // NewService 创建一个绑定到 store + knownHosts 的 Service。
 // baseLogger 用于 stderr 兜底（bootstrap / 异步事件无 req.Session 时）；nil 退化为 discard。
 // 内部创建 session Manager。
-func NewService(store *config.Store, knownHosts *ssh.KnownHostsStore, baseLogger *slog.Logger) *Service {
+func NewService(store *config.Store, knownHosts *conn.KnownHostsStore, baseLogger *slog.Logger) *Service {
 	if baseLogger == nil {
 		baseLogger = slog.New(slog.DiscardHandler)
 	}
 	return &Service{
 		store:      store,
 		knownHosts: knownHosts,
-		manager:    ssh.NewManager(),
+		manager:    session.NewManager(),
 		baseLogger: baseLogger,
 	}
 }
 
-// sessionLogger 返回与当前 MCP client session 绑定的 logger。
-// 通过 mcp.NewLoggingHandler 把 slog 记录转成 notifications/message 推到 client。
-// 若 req 或 req.Session 为 nil（如异步回调、测试），退回 baseLogger（stderr）。
-// MinInterval=100ms 限流避免高频日志淹没 client。
+// sessionLogger 返回绑定 sid 的 logger。
+//
+// 所有日志（DEBUG/INFO/Warn/Error）走 baseLogger → config.log_path 指定的文件
+// （或 io.Discard 当 log_path 为空），绝不走 MCP notifications/message。原因：
+// MCP SDK 的 LoggingHandler.Handle 同步调 ss.Log → ioConn.Write，和 tool result
+// 共用 stdout JSON-RPC 通道（writeMu 串行化）。DEBUG 日志多了会堵塞 tool result
+// （用户观察到"卡住"），且 notification 进入 Agent 上下文污染决策。
+//
+// 日志级别由 config.log_level 控制（main.go 加载时解析）：默认 INFO，支持缩写
+// （debug/dbg/d、info/inf/i、warn/warning/w、error/err/e）。配错 Load 报错。
+//
+// req 参数保留是为了调用方签名兼容，实际不使用。
 func (s *Service) sessionLogger(req *mcp.CallToolRequest, sid string) *slog.Logger {
-	if req == nil || req.Session == nil {
-		l := s.baseLogger
-		if sid != "" {
-			l = l.With("sid", sid)
-		}
-		return l
-	}
-	h := mcp.NewLoggingHandler(req.Session, &mcp.LoggingHandlerOptions{
-		LoggerName:  "sshmng",
-		MinInterval: 100 * time.Millisecond,
-	})
-	l := slog.New(h)
+	_ = req
+	l := s.baseLogger
 	if sid != "" {
 		l = l.With("sid", sid)
 	}
 	return l
 }
 
-// ListArgs 是 list_* 工具的入参。Query 为空时返回全部。
+// ListArgs 是 list_* 工具的入参。Query 为空（或纯空白）时返回全部。
 type ListArgs struct {
-	Query string `json:"query,omitempty" jsonschema:"optional substring to filter by name/addr/tags (case-insensitive)"`
+	Query string `json:"query,omitempty" jsonschema:"optional, space-separated keywords with AND semantics; each keyword substring-matches name/addr/tags (case-insensitive). e.g. 'prod web' returns entities matching both 'prod' AND 'web'"`
 }
 
 // GetArgs 是 get_* 工具的入参。
@@ -85,39 +118,41 @@ type GetArgs struct {
 // null 表示删除整个实体，object 表示合并到现有实体（不存在则创建）。
 type UpdateArgs struct {
 	Name  string `json:"name" jsonschema:"entity name; if not exist, create"`
-	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges"`
+	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges (or creates if name not found). Structure mirrors get_* output; via/proxy fields are name strings"`
 }
 
-// NewServer 创建 MCP server 并注册 9 个 CRUD 工具（3 类资源 × 3 个操作）。
+// NewServer 创建 MCP server 并注册 14 个工具（9 CRUD + 5 session/file）。
 func NewServer(svc *Service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: "v1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: "v1"}, &mcp.ServerOptions{
+		Instructions: serverInstructions,
+	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_ssh_servers",
-		Description: "List SSH servers, optionally filtered by query (substring match on name/addr/tags, case-insensitive). Sensitive auth fields are redacted.",
+		Description: "List SSH servers, optionally filtered by query. Query is space-separated keywords with AND semantics: each keyword substring-matches name/addr/tags (case-insensitive), and ALL keywords must match. Empty/whitespace query returns all. Sensitive auth fields (password/private_key/passphrase) are redacted in output. Use get_ssh_server for full auth.",
 	}, svc.ListSSHServers)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_ssh_server",
-		Description: "Get a single SSH server by name, including full auth.",
+		Description: "Get a single SSH server by name, including full auth (password/private_key/passphrase). Use to inspect LoginFlow structure or auth method before login.",
 	}, svc.GetSSHServer)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_ssh_server",
-		Description: "Apply RFC 7396 JSON Merge Patch to an SSH server. Patch=null deletes; object merges (or creates if name not found).",
+		Description: "Apply RFC 7396 JSON Merge Patch to an SSH server. Patch=null deletes the entity; object merges (or creates if name not found). Patch structure mirrors get_ssh_server output; via/proxy fields reference entity names (strings).",
 	}, svc.UpdateSSHServer)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_jumphosts",
-		Description: "List jumphosts, optionally filtered by query.",
+		Description: "List jumphosts, optionally filtered by query. Query is space-separated keywords with AND semantics (each keyword substring-matches name/addr/tags, case-insensitive; all must match). Empty/whitespace query returns all. ssh_j=true means transparent forwarding (ssh -J semantics); ssh_j=false means interactive bastion (login_flow required, drives menu to ready state).",
 	}, svc.ListJumphosts)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_jumphost",
-		Description: "Get a single jumphost by name.",
+		Description: "Get a single jumphost by name, including full auth.",
 	}, svc.GetJumphost)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_jumphost",
-		Description: "Apply RFC 7396 JSON Merge Patch to a jumphost.",
+		Description: "Apply RFC 7396 JSON Merge Patch to a jumphost. Patch=null deletes; object merges (or creates if name not found). Patch structure mirrors get_jumphost output; via/proxy fields reference entity names.",
 	}, svc.UpdateJumphost)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_proxies",
-		Description: "List proxies, optionally filtered by query.",
+		Description: "List transport-layer proxies (HTTP/SOCKS5), optionally filtered by query. Query is space-separated keywords with AND semantics (each keyword substring-matches name/addr/tags, case-insensitive; all must match). Empty/whitespace query returns all. Proxies are not SSH jumps — they proxy the underlying TCP connection.",
 	}, svc.ListProxies)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_proxy",
@@ -125,47 +160,39 @@ func NewServer(svc *Service) *mcp.Server {
 	}, svc.GetProxy)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_proxy",
-		Description: "Apply RFC 7396 JSON Merge Patch to a proxy.",
+		Description: "Apply RFC 7396 JSON Merge Patch to a proxy. Patch=null deletes; object merges (or creates if name not found).",
 	}, svc.UpdateProxy)
 
-	// Session tools (phase 2)
+	// Session tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "login",
-		Description: "Establish an interactive SSH session to a server. Returns sid for use with run_in_session / close_session. v1 phase 2: direct connections only (no jumphost, no login_flow).",
+		Description: "Establish an interactive SSH session to a server. Use list_ssh_servers first to resolve the name (query: space-separated keywords, AND, substring on name/addr/tags). Returns {sid, server_name, sftp_available}. Pattern B (via jumphost with ssh_j=false) runs jumphost LoginFlow then target LoginFlow on the same PTY. On LoginFlow failure, error contains 'loginflow' and response carries login_trace for diagnosis.",
 	}, svc.Login)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_in_session",
-		Description: "Run a single command in an existing session. Returns output (cleaned), exit_code, timed_out, truncated, total_bytes. Session must be idle.",
+		Description: "Run a single command in an existing session. Session must be idle (use stat to check). Returns {output, exit_code, timed_out, truncated, total_bytes}. On timeout: auto Ctrl-C + 3s drain; if drain fails (vim/REPL/pipe block) session is closed and must re-login. If output insufficient (sentinel mismatch, interactive prompt stuck), call get_trace(sid, last_n, trunc_output=0) for raw PTY bytes. If truncated=true, use tail/head/grep or redirect to file + download.",
 	}, svc.RunInSession)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "close_session",
-		Description: "Close an SSH session. Forced: closes even if a command is running.",
+		Description: "Close an SSH session. Forced: closes even if a command is running. Trace retained 10min for get_trace diagnosis. After this, sid is invalid for run_in_session/upload/download.",
 	}, svc.CloseSession)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "stat",
-		Description: "List all active sessions with their state (idle/running/closed), last activity, command count, uptime.",
+		Description: "List all active sessions with state (idle/running/closed), last activity, command count, uptime, sftp_available. Use before run_in_session to avoid 'session busy' error, and before upload/download to verify sftp_available=true.",
 	}, svc.Stat)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "send_input",
-		Description: "Write raw text to an idle session's PTY stdin. Use when a command prompts for input (e.g. password, y/n). Session must be in running state; use run_in_session first to start a command.",
-	}, svc.SendInput)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "send_special",
-		Description: "Send a named control character to a running session's PTY. Keys: ctrl-c (SIGINT), ctrl-d (EOF), ctrl-z (SIGTSTP), tab, esc. Use to interrupt or signal the foreground command.",
-	}, svc.SendSpecial)
-	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_trace",
-		Description: "Retrieve command trace for a session (alive or closed within last 10min). Returns cmd/output/exit_code/timed_out/inputs per command. Use last_n to limit count, trunc_output to cap each Output length.",
+		Description: "Retrieve command trace for a session (alive or closed within last 10min). Returns [{time, cmd, output, raw_output, exit_code, timed_out, ctrl_c_sent}] per command. raw_output contains un cleaned PTY bytes (ANSI/sentinel/\\r\\n) for debugging sentinel mismatch or interactive prompt issues. Use last_n to limit count (0=all), trunc_output to cap each Output/raw_output length (default 200, 0=no truncation for full raw bytes).",
 	}, svc.GetTrace)
 
-	// File transfer tools (phase 5)
+	// File transfer tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "upload",
-		Description: "Upload a local file to the remote host via sftp. Requires sftp_available=true on the session (see stat). Returns bytes transferred; timed_out=true if timeout hit.",
+		Description: "Upload a local file to the remote host via sftp. Requires sftp_available=true on the session (check stat first). Returns {bytes, timed_out}. Fails with 'sftp not available' if session's sftp channel wasn't established (server doesn't support sftp subsystem).",
 	}, svc.Upload)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "download",
-		Description: "Download a remote file to local via sftp. Requires sftp_available=true on the session. Returns bytes transferred; timed_out=true if timeout hit.",
+		Description: "Download a remote file to local via sftp. Requires sftp_available=true on the session (check stat first). Returns {bytes, timed_out}. Fails with 'sftp not available' if session's sftp channel wasn't established.",
 	}, svc.Download)
 	return server
 }
