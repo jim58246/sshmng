@@ -16,8 +16,9 @@
 | 5.1 | sentinel 误匹配 + Ctrl-C 失效修复（A+D 方案） | ✅ 完成 | （已合入主线） |
 | 5.2 | token 化 sentinel（bash/zsh）+ 日志改配置文件 + zombie 修复 | ✅ 完成 | （已合入主线） |
 | 6.1 | login 硬超时（NewSession/RequestPty/Shell） | ✅ 完成 | — |
-| 6.3 | 模块测试补全（sentinel / PTY / 状态机 / 连接层） | ✅ 完成 | — |
 | 6.2 | 模块 3 层目录拆解（conn/ + pty/ + session/） | ✅ 完成 | — |
+| 6.3 | 模块测试补全（sentinel / PTY / 状态机 / 连接层） | ✅ 完成 | — |
+| 6.4 | MCP 描述增强（Instructions + jsonschema）+ 多关键字 AND 搜索 | ✅ 完成 | `5926c70` |
 
 ## 项目结构
 
@@ -58,7 +59,7 @@ sshmng/
 │   │   │   ├── sftp.go             # sftp 通道建立
 │   │   │   └── *_test.go
 │   │   ├── pty/                    # L2 PTY 层：PTY 读写、sentinel 匹配、RC 注入
-│   │   │   ├── pty.go              # PtyConn：OpenPtyConn / Run / SendInput / Close
+│   │   │   ├── pty.go              # PtyConn：OpenPtyConn / Run / Close / Upload / Download
 │   │   │   ├── read.go             # readLoop + readUntilCommandDone + pushback
 │   │   │   ├── sentinel.go         # 组合 sentinel 正则 + ExtractExitCode
 │   │   │   ├── normalize.go        # ANSI 过滤 + CleanOutput
@@ -76,7 +77,7 @@ sshmng/
 **3 层职责契约：**
 
 - **L1 连接层** (`conn/`)：输入 `DialOptions`，输出 `*ssh.Client` + sftp 通道。不关心 PTY / sentinel / session 状态。可独立测试（mock SSH server）。
-- **L2 PTY 层** (`pty/`)：输入 `*ssh.Client` + `sid` + 可选 `LoginFlow`，输出 `Conn` 接口（Run/SendInput/SendSpecial/Close/Upload/Download）。负责 sentinel 匹配、pushback、drain、Ctrl-C。可独立测试（io.Pipe 模拟 stdin/stdout）。
+- **L2 PTY 层** (`pty/`)：输入 `*ssh.Client` + `sid` + 可选 `LoginFlow`，输出 `Conn` 接口（Run/Close/Upload/Download/SftpAvailable）。负责 sentinel 匹配、pushback、drain、Ctrl-C。可独立测试（io.Pipe 模拟 stdin/stdout）。
 - **L3 状态机层** (`session/`)：输入 `Conn` 接口，输出 session 生命周期管理（idle/running/closed + idle timeout + trace）。不关心 PTY / SSH。可独立测试（fakeConn）。
 
 **拆解动机**：当前 `internal/ssh/` 8 个文件职责纠缠——pty.go 既做 PTY 读写又做 sentinel 匹配，session.go 既做状态机又持有 Conn。测试分散，改一处怕动多处。拆 3 层后每层有明确接口，可独立测试，改动隔离。
@@ -105,13 +106,13 @@ sshmng/
 **目标**：`login` 能拨通直连 server（`Via` 为空、无 LoginFlow），`run_in_session` 能跑命令并解析 sentinel，`close_session` / `stat` 工作。
 
 **交付物**：
-- `internal/ssh/normalize.go` — ANSI CSI 序列剥离 + sentinel 行清理
-- `internal/ssh/sentinel.go` — `DetectShellReady` / `ExtractExitCode` / `TruncateOutput`
-- `internal/ssh/shell_detect.go` — `ParseShellDetect` / `BuildRC`（bash/zsh/dash 分支）
-- `internal/ssh/known_hosts.go` — TOFU store，0600 权限，原子写
-- `internal/ssh/session.go` — `Session` 状态机（idle/running/closed）+ `Manager` map，idle timeout
-- `internal/ssh/dialer.go` — 拨号 + 密码/私钥 auth + TOFU + SOCKS5/HTTP CONNECT 代理
-- `internal/ssh/pty.go` — `PtyConn`：PTY 分配、shell 探测、RC 注入、`Run`/`SendInput`/`SendSpecial`/`Close`
+- `internal/ssh/pty/normalize.go` — ANSI CSI 序列剥离 + sentinel 行清理
+- `internal/ssh/pty/sentinel.go` — `DetectShellReady` / `ExtractExitCode` / `TruncateOutput`
+- `internal/ssh/pty/shell_detect.go` — `ParseShellDetect` / `BuildRC`（bash/zsh/dash 分支）
+- `internal/ssh/conn/known_hosts.go` — TOFU store，0600 权限，原子写
+- `internal/ssh/session/session.go` — `Session` 状态机（idle/running/closed）+ `Manager` map，idle timeout
+- `internal/ssh/conn/dialer.go` — 拨号 + 密码/私钥 auth + TOFU + SOCKS5/HTTP CONNECT 代理
+- `internal/ssh/pty/pty.go` — `PtyConn`：PTY 分配、shell 探测、RC 注入、`Run`/`Close`/`Upload`/`Download`
 - `internal/mcp/tools_session.go` — `login` / `run_in_session` / `close_session` / `stat` 4 个 MCP 工具
 
 **实现要点**：
@@ -156,16 +157,16 @@ sshmng/
 **实现要点**：
 - `executor.go` 接口：`Run(pty PTY, flow map[string]LoginAction, entry string) (trace []TraceEntry, err error)`
 - PTY 接口抽象：`Send(s string)`、`Read(deadline time.Time, mustContain string) (output string, timedOut bool)`，便于测试用 fake PTY
-- ANSI 过滤复用 `internal/ssh/normalize.go`
+- ANSI 过滤复用 `internal/ssh/pty/normalize.go`
 - TimeoutMs / MaxSteps / GlobalTimeoutMs 用 0 = 默认值（10000 / 50 / 60000）
 
-**集成**：`internal/ssh/session.go` 在 SSH auth 完成、target shell 就绪后调 `loginflow.Run`，成功后再注入 RC
+**集成**：`internal/ssh/session/session.go` 在 SSH auth 完成、target shell 就绪后调 `loginflow.Run`，成功后再注入 RC
 
 **验证**：
 - `go test ./internal/loginflow/...` 全绿
 - mock SSH server 配置一个简单 SSHServer.LoginFlow（如 `su -` 切换用户），MCP Inspector 跑通
 
-**关键文件**：`internal/loginflow/{executor,trace}.go`、`internal/ssh/session.go`（集成）
+**关键文件**：`internal/loginflow/{executor,trace}.go`、`internal/ssh/session/session.go`（集成）
 
 ## 阶段 4：Pattern B 交互式堡垒机 ✅
 
@@ -189,7 +190,7 @@ sshmng/
 - `go test -race ./...` 全绿（含 Pattern B 端到端 + jumphost flow 失败 + Pattern A 拒绝）
 - MCP Inspector 待真实环境验收（mock 已覆盖核心路径）
 
-**关键文件**：`internal/loginflow/executor.go`（PTY 接口）、`internal/ssh/pty.go`（OpenPtyConn/RunLoginFlow/InjectRC + pushback 切分）、`internal/mcp/tools_session.go`（setupDirect/setupPatternB 分支）
+**关键文件**：`internal/loginflow/executor.go`（PTY 接口）、`internal/ssh/pty/pty.go`（OpenPtyConn/RunLoginFlow/InjectRC + pushback 切分）、`internal/mcp/tools_session.go`（setupDirect/setupPatternB 分支）
 
 ## 阶段 5：sftp + 其余工具 ✅
 
@@ -197,7 +198,7 @@ sshmng/
 
 **TDD 测试用例**：
 
-`internal/ssh/sftp_test.go`
+`internal/ssh/pty/sftp_test.go`
 - sftp 通道在 login 时同步建立（5s 超时）
 - sftp 不可用时 `stat()` 返回 `sftp_available=false`
 - sftp 不可用时 `upload` / `download` 报错 "sftp not available for this session"
@@ -205,7 +206,7 @@ sshmng/
 - `upload` 超时：返回已传输字节，timed_out=true
 - `download` 同上
 
-`internal/ssh/trace_test.go`
+`internal/ssh/session/trace_test.go`
 - `get_trace(sid, last_n)` 返回最近 N 轮
 - `get_trace(sid)` 返回全部
 - `trunc_output` 截断参数生效（默认 200，0 不截断）
@@ -231,7 +232,7 @@ sshmng/
 - `TestRunIgnoresPS1LiteralInCommandOutput`：命令输出含 PS1 字面量，验证下次 Run 正常执行
 - `TestRunReturnsConnUnusableWhenDrainTimesOut`：drain 超时后 PtyConn 返回 connUnusable=true（不自己 Close），Session 据此调 Close
 
-**关键文件**：`internal/ssh/pty.go`（readUntilCommandDone + Run 三段式超时）、`internal/ssh/pty_combo_test.go`
+**关键文件**：`internal/ssh/pty/pty.go`（readUntilCommandDone + Run 三段式超时）、`internal/ssh/pty/pty_combo_test.go`
 
 ## 阶段 6：模块 3 层拆解 + login 硬超时 + 模块测试
 
@@ -315,7 +316,27 @@ type Manager struct{...}  // map[sid]*Session + graveyard
 
 **验证**：`go test -race ./...` 全绿。
 
-**关键文件**：`internal/ssh/pty_token_test.go`、`pty_combo_test.go`、`pty_ctrlc_test.go`、`session_test.go`、`sentinel_test.go`、`shell_detect_test.go`
+**关键文件**：`internal/ssh/pty/pty_token_test.go`、`internal/ssh/pty/pty_combo_test.go`、`internal/ssh/pty/pty_ctrlc_test.go`、`internal/ssh/session/session_test.go`、`internal/ssh/pty/sentinel_test.go`、`internal/ssh/pty/shell_detect_test.go`
+
+### 6.4 MCP 描述增强 + 多关键字搜索 ✅
+
+**问题**：基本功能测试 OK，但 tool description 和 server 级元信息不足以支撑 Agent 正确使用 MCP——Agent 只能从各 tool description 拼凑工作流，容易漏掉"失败时调 get_trace"、"session 复用"、"idle timeout"、"Pattern B 不支持 sftp"等关键约束。同时 `list_*` 的单关键字子串搜索不符合实际"多关键字逐步缩小范围"的用法。
+
+**修复**：
+
+- **Server Instructions**：`internal/mcp/server.go` 新增 `serverInstructions` 常量（Entity model / Workflow / Session semantics / Session lifecycle / Failure recovery 五段，约 1.9KB 塞在 Claude Code 2KB 截断阈值下），通过 `mcp.ServerOptions.Instructions` 传给 MCP server，Agent 在 initialize 响应里收到完整文本。新增 Session semantics 节明确"session 间互不干扰 + session 内 PTY 状态延续"心智模型
+- **Tool description 重写**：14 个工具的 description 全部加上 workflow 上下文 + 失败模式 + 诊断路径；修复 3 处过时描述（login 的 "phase 2 direct only"、get_trace 的 "inputs"、"9 CRUD tools" 注释）
+- **Args jsonschema 增强**：`LoginArgs.Name` / `RunInSessionArgs.TimeoutMs` / `MaxOutputBytes` / `GetTraceArgs.TruncOutput` / `UploadArgs` / `DownloadArgs` / `UpdateArgs.Patch` 都加上失败模式 + 诊断路径说明
+- **多关键字 AND 搜索**：`internal/config/crud.go` 的 `matchesQuery` 重写为 `strings.Fields` 分词 + AND 语义，每个关键字独立子串匹配 name/addr/tags（大小写不敏感）；`list_ssh_servers` / `list_jumphosts` / `list_proxies` 的 query 现支持 `"prod web"` 这样的多关键字逐步缩小范围
+
+**测试**：
+
+- `internal/mcp/server_test.go` 新增 `TestNewServerSetsInstructions`：通过 `mcp.NewInMemoryTransports()` 连 client+server，读 `ClientSession.InitializeResult().Instructions` 验证 Agent 实际看到的 initialize 响应非空且含 11 个关键关键词
+- `internal/config/crud_test.go` 新增 6 个多关键字测试：AND 语义 / 跨字段匹配 / 大小写不敏感 / 多余空格压缩 / 无匹配 / 纯空白返回全部
+
+**验证**：`go test -race ./...` 全绿。
+
+**关键文件**：`internal/mcp/server.go`（serverInstructions + NewServer）、`internal/mcp/tools_session.go` + `internal/mcp/tools_file.go`（Args jsonschema）、`internal/config/crud.go`（matchesQuery）、`internal/mcp/server_test.go` + `internal/config/crud_test.go`（测试）
 
 ## 跨阶段事项
 
@@ -349,7 +370,7 @@ type Manager struct{...}  // map[sid]*Session + graveyard
 - `internal/config/types.go`：Config 加 `LogLevel` / `LogPath` 字段；`ParseLogLevel` 支持缩写
 - `internal/mcp/rotating_writer.go`：`RotatingWriter` 实现 `io.Writer`，超过 maxSize 轮转，最多 maxBackups 份
 - `internal/mcp/server.go`：`Service` 持有 `baseLogger`；`sessionLogger(req, sid)` 直接返回 `baseLogger.With("sid", sid)`，不走 `mcp.NewLoggingHandler`
-- `internal/ssh/session.go`：`Session` 持有 `logger *slog.Logger`；`NewSession`/`newSessionWithConn` 新增 logger 参数（nil 退化为 discard）
+- `internal/ssh/session/session.go`：`Session` 持有 `logger *slog.Logger`；`NewSession`/`newSessionWithConn` 新增 logger 参数（nil 退化为 discard）
 - 日志内容不含 password / private_key / passphrase（敏感字段不打）；DEBUG 级会完整记录 LoginFlow send / PTY stdout 片段，分享时注意脱敏
 
 **状态**：✅ 已实施。

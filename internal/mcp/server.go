@@ -25,38 +25,42 @@ import (
 )
 
 // serverInstructions 是 MCP server 的整体说明，发送给 client（Agent）作为
-// initialize 响应的一部分。Agent 据此理解工作流、session 生命周期、失败诊断路径、
-// 实体模型与安全约束——这些信息单靠 tool description 无法充分传达。
-const serverInstructions = `SSH session manager MCP server. Manages SSH servers, jumphosts, proxies, and interactive sessions.
+// initialize 响应的一部分。Agent 据此理解工作流、session 语义、生命周期、失败诊断路径、
+// 实体模型——这些信息单靠 tool description 无法充分传达。
+//
+// 注意：Claude Code 对 server instructions 有 2KB 截断。当前文本约 1.9KB，所有
+// 关键约束（session 复用、loginflow error→login_trace、Pattern B 不支持 sftp、
+// idle timeout、NOPASSWD）都塞在前面。压缩后 Instructions 不保证重新注入，
+// 关键信息也散落在各 tool description 里兜底。
+const serverInstructions = `SSH session manager: servers, jumphosts, proxies, sessions.
 
-== Entity model (config.json) ==
-- SSHServer: target host (name, addr host:port, user, auth, login_flow?, via?, proxy?, tags).
-- Jumphost: SSH jump. ssh_j=true → transparent forwarding (ssh -J semantics, login_flow must be empty); ssh_j=false → interactive bastion (login_flow required, drives menu to ready state).
-- Proxy: transport-layer proxy HTTP/SOCKS5 (not SSH jump). Fields: name, type, addr, auth?, tags.
-- Relationships: SSHServer.via → Jumphost.name; SSHServer.proxy / Jumphost.proxy → Proxy.name.
-- Auth: password / private_key + passphrase. Prefer NOPASSWD sudo or private_key to avoid storing passwords in config.
-- LoginFlow: map[action_name]→{send, expects[], timeout_ms}. Expects: {pattern, next} where pattern is glob or "re:..." regex, next is another action name or "success". login_entry names the start action.
+== Entity model ==
+- SSHServer: name, addr (host:port), user, auth, login_flow?, via?, proxy?, tags.
+- Jumphost: ssh_j=true → transparent (ssh -J, login_flow empty); ssh_j=false → bastion (login_flow required).
+- Proxy: transport HTTP/SOCKS5. Fields: name, type, addr, auth?, tags.
+- Relationships: SSHServer.via → Jumphost.name; *.proxy → Proxy.name.
+- Auth: password / private_key + passphrase. Prefer NOPASSWD/private_key.
+- LoginFlow: map[action]→{send, expects[], timeout_ms}. Expect={pattern, next}; pattern=glob or "re:..." regex; next=action or "success". login_entry=start.
 
 == Workflow ==
-1. list_ssh_servers / list_jumphosts / list_proxies (query: space-separated keywords with AND semantics; each keyword substring-matches name/addr/tags, case-insensitive) → resolve target name.
-2. login(name) → {sid, server_name, sftp_available}. Pattern B (via jumphost ssh_j=false) runs jumphost LoginFlow then target LoginFlow on same PTY.
-3. run_in_session(sid, cmd) → {output, exit_code, timed_out, truncated, total_bytes}. Reuse session for multiple commands (don't login per command).
-4. close_session(sid) when done, or rely on idle timeout (default 5min via idle_timeout_s).
+1. list_ssh_servers / list_jumphosts / list_proxies (query: keywords AND on name/addr/tags) → resolve name.
+2. login(name) → {sid, server_name, sftp_available}. Pattern B (ssh_j=false): jumphost then target LoginFlow, same PTY.
+3. run_in_session(sid, cmd) → {output, exit_code, timed_out, truncated, total_bytes}.
+4. close_session(sid), or rely on idle timeout (default 5min via idle_timeout_s).
+
+== Session semantics ==
+- Each session is an independent PTY with its own shell. State (cwd, env, background jobs, history) never leaks across sessions.
+- run_in_session runs in the session's PTY; state persists across calls: ` + "`cd /tmp`" + ` then ` + "`ls`" + ` lists /tmp; ` + "`export FOO=bar`" + ` then ` + "`echo $FOO`" + ` prints bar; background jobs keep running.
+- Reuse one session for related work. New for fresh state (different user, clean cwd).
 
 == Session lifecycle ==
-- States: idle / running / closed. run_in_session requires idle; use stat to check.
-- idle timeout resets on activity (run_in_session).
-- After close_session: trace retained 10min in graveyard for get_trace diagnosis.
+- States: idle / running / closed. run_in_session requires idle; use stat. idle timeout resets on activity. After close_session: trace 10min for get_trace.
 
 == Failure recovery ==
-- login fail with loginflow error → response carries login_trace (step-by-step send/expect) for diagnosis.
-- run_in_session timeout → auto Ctrl-C + 3s drain. Drain success: partial output returned, session idle. Drain fail (vim/REPL/pipe block): session forced closed (connUnusable), must re-login.
-- Output insufficient (sentinel mismatch, interactive prompt stuck) → get_trace(sid, last_n, trunc_output=0) for raw_output (un cleaned PTY bytes with ANSI/sentinel).
-- upload/download "sftp not available" → check stat.sftp_available first; server may not support sftp subsystem.
-
-== Security ==
-- Passwords/private_keys stored in config.json. Prefer NOPASSWD sudo or private_key auth to avoid plaintext credentials.
-- Logs (config.log_path) may contain LoginFlow send content + PTY output, which may include passwords. Share logs with care.
+- loginflow error → login_trace in response.
+- run_in_session timeout → auto Ctrl-C + 3s drain. Drain fail: closed, re-login.
+- Output insufficient → get_trace(sid, last_n, trunc_output=0) for raw_output.
+- upload/download "sftp not available" → check stat.sftp_available first.
 `
 
 // Service 是工具 handler 的宿主，封装 store / session manager / known_hosts 与并发保护。

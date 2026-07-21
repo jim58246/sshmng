@@ -250,7 +250,7 @@ LoginAction 的一个分支。`pattern` 命中后跳转到 `next` 指向的 acti
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
-| 配置查询 | `list_ssh_servers` / `list_jumphosts` / `list_proxies` | 按 query 子串匹配 name/addr/tags（脱敏 auth） |
+| 配置查询 | `list_ssh_servers` / `list_jumphosts` / `list_proxies` | 按 query 多关键字 AND 匹配 name/addr/tags（空格分词、大小写不敏感、脱敏 auth） |
 | 配置查询 | `get_ssh_server` / `get_jumphost` / `get_proxy` | 按 name 取单条（完整 auth） |
 | 配置更新 | `update_ssh_server` / `update_jumphost` / `update_proxy` | RFC 7396 JSON Merge Patch；null 删除，object 合并/创建 |
 | 会话管理 | `login(name)` → `{sid, sftp_available}` | 拨号 + LoginFlow + RC 注入 + sftp 通道建立 |

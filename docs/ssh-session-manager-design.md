@@ -295,6 +295,7 @@ type SSHServer struct {
 login(name) → {sid?, ok, error?, login_trace?}
   - 走完整登录流程：Pattern B 下依次跑 `Jumphost.LoginFlow`（jumphost 到主菜单就绪）+ `SSHServer.LoginFlow`（主菜单到 target shell）；Pattern A 下仅跑 `SSHServer.LoginFlow`（如有）。返回 sid
   - 成功后同步建立 sftp 通道（5s 超时，不影响 login 成功与否，仅决定 upload/download 可用性）；建立失败时 stat() 返回 sftp_available=false
+  - **Pattern B（`Via.SSHJ=false`）下不建立 sftp 通道**：SSH client 是到 jumphost 的，sftp 通道只会到 jumphost 而非 target，探测成功反而误导（用户以为能 upload 到 target，实际落到 jumphost）。故 `sftp_available` 恒为 false，upload/download 直接报 "sftp not available"
   - 失败分类见 3.2：
     - SSH auth 失败（含 host key 变更、网络拨号失败）：sid 为空，error 说明原因，**login_trace 为空**
     - LoginFlow 失败：sid 为空，error 说明原因，login_trace 供诊断
@@ -423,6 +424,7 @@ type TraceEntry struct {
 9. Host key 验证用 TOFU —— 首次连接记录 key，后续验证；key 变更报错且 `update_*` 不能重置（安全决策需人工确认），见 3.5
 10. 终端规范化统一在 target shell 就绪后一次性注入 —— LoginFlow 阶段不强制规范化（堡垒机菜单可能不支持 `TERM=dumb`/`PS1` 等设置，且交互式 prompt 不应有命令边界概念），靠 expect 前的 ANSI 过滤兜底；target shell 就绪后注入完整 RC（TERM/NO_COLOR/LANG/stty/PS1/PROMPT_COMMAND/history），见 3.7
 11. 操作前先识别 —— Agent 执行 `login`/`update_*` 等操作前，先用 `list_*(query)` 把模糊引用（IP/地域/服务名）解析为唯一 name；候选 1 个直接用，多个反问消歧，0 个反问确认。三类资源（SSHServer / Jumphost / Proxy）均支持 `name` 路径 + `tags` 平 token 列表，tag 值用自然语言。详见 2.8
+12. **Server Instructions** —— `NewServer` 通过 `mcp.ServerOptions.Instructions` 把 `serverInstructions` 常量传给 MCP server，client（Agent）在 initialize 响应里收到完整文本。内容覆盖 Entity model / Workflow / Session semantics / Session lifecycle / Failure recovery 五段，单靠 tool description 拼凑不出来的关键约束（"session 间互不干扰 + session 内状态延续"、"失败时调 get_trace"、"idle timeout"、"Pattern B 不支持 sftp"、"NOPASSWD 优先"）都在这里。缺失时 Agent 容易漏掉这些约束，靠 trial-and-error 学习。**注意**：Claude Code 对 server instructions 有 2KB 截断，当前文本压在 1.9KB 以下；且压缩后 Instructions 不保证重新注入（不在 "What survives compaction" 列表里），关键信息也散落在各 tool description 里兜底。
 
 ### 3.4 本地存储格式
 
@@ -913,7 +915,7 @@ echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_<
 - [x] 安全模型（敏感数据保护）
 - [x] 技术选型（SSH 库）
 - [x] MCP SDK 具体包选择
-- [x] 资源识别（name 路径 + tags 平列表 + 子串搜索）
-- [x] 日志处理（MCP notifications + stderr 兜底，见 3.8）
+- [x] 资源识别（name 路径 + tags 平列表 + 多关键字 AND 搜索）
+- [x] 日志处理（配置文件 log_path + log_level + stderr 兜底，见 3.8）
 - [ ] .xsh 导入导出格式（v2）
 - [ ] 同步方向（v2）
