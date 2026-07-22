@@ -73,7 +73,7 @@ SSHMNG_HOME=/custom/dir ./sshmng  # 自定义配置目录
 2. `$SSHMNG_HOME/config.json`
 3. `$HOME/.sshmng/config.json`
 
-**文件权限**：必须 0600，过宽会被拒绝加载；首次创建时立即 chmod 0600。
+**文件权限**：Unix（macOS/Linux）必须 0600，过宽会被拒绝加载；首次创建时立即 chmod 0600。Windows 跳过权限检查（NTFS 用 ACL 而非 Unix rwx，`os.FileMode.Perm()` 的 group/other 位恒为 0，检查形同虚设）——需手动用 NTFS ACL 限制 config.json 访问（右键→属性→安全，移除除当前用户外的所有条目）。
 
 **示例（Pattern B 交互式堡垒机）**：
 

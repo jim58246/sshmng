@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -26,6 +27,9 @@ func TestLoadFileNotExistReturnsDefault(t *testing.T) {
 }
 
 func TestLoadRejectsWidePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission check skipped on Windows (NTFS ACL model)")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(`{"version":"1"}`), 0644); err != nil {
@@ -55,6 +59,9 @@ func TestLoadAccepts0600(t *testing.T) {
 }
 
 func TestSaveCreatesFileWith0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0600 no-op on Windows (NTFS ACL model)")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	s := NewStore(path)
@@ -114,6 +121,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestSaveOverwritePreservesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0600 no-op on Windows (NTFS ACL model)")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	// 先创建 0600 文件

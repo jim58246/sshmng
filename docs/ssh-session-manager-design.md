@@ -513,6 +513,7 @@ type TraceEntry struct {
 - 启动时检查 config.json 文件权限，若权限过宽（如 0644）拒绝加载并报错
 - 创建 config.json 时立即 `chmod 0600`
 - 启动时校验 `PrivateKey` 路径指向的私钥文件权限为 0600（或更严），过宽则拒绝加载
+- Windows 平台跳过上述 Unix 权限检查：NTFS 用 ACL 而非 Unix rwx 模型，`os.FileMode.Perm()` 的 group/other 位恒为 0，检查形同虚设。Windows 上由 NTFS ACL 负责文件访问控制（标准做法），启动时打一条 Info 日志提示用户确保 ACL 限制访问
 - 文档明确警告：明文存储，请确保机器本身安全
 
 **为什么 v1 不加密：**

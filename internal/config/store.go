@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // Store 管理 config.json 的加载与持久化。
@@ -22,6 +23,10 @@ func (s *Store) Path() string { return s.path }
 
 // Load 从文件加载配置。文件不存在时返回默认空配置（不创建文件）。
 // 文件存在但权限过宽（group/other 有任何权限）时拒绝加载。
+//
+// Windows 跳过权限检查：NTFS 用 ACL 而非 Unix rwx，os.FileMode.Perm() 的
+// group/other 位在 Windows 上恒为 0，此检查形同虚设。由 NTFS ACL 负责
+// 文件访问控制（Windows 标准做法）。
 func (s *Store) Load() (*Config, error) {
 	info, err := os.Stat(s.path)
 	if os.IsNotExist(err) {
@@ -30,8 +35,10 @@ func (s *Store) Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat config: %w", err)
 	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
-		return nil, fmt.Errorf("config file permissions too open: %o, want 0600 or stricter (no group/other access)", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			return nil, fmt.Errorf("config file permissions too open: %o, want 0600 or stricter (no group/other access)", perm)
+		}
 	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
