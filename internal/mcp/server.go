@@ -174,7 +174,7 @@ func NewServer(svc *Service) *mcp.Server {
 	}, svc.Login)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_in_session",
-		Description: "Run a single command in an existing session. Session must be idle (use stat to check). Returns {output, exit_code, timed_out, truncated, total_bytes}. On timeout: auto Ctrl-C + 3s drain; if drain fails (vim/REPL/pipe block) session is closed and must re-login. If output insufficient (sentinel mismatch, interactive prompt stuck), call get_trace(sid, last_n, trunc_output=0) for raw PTY bytes. If truncated=true, use tail/head/grep or redirect to file + download.",
+		Description: "Run a single command in an existing session. Session must be idle (use stat to check). Returns {output, exit_code, timed_out, truncated, total_bytes}. On timeout: auto Ctrl-C + 3s drain; if drain fails (vim/REPL/pipe block) session is closed and must re-login. If output insufficient (sentinel mismatch, interactive prompt stuck), call get_trace(sid, last_n, trunc_output=0) for raw PTY bytes. If truncated=true, use tail/head/grep or redirect to file + download. One command per call; commands joined by `\\n` are not supported — subsequent commands run but their results are discarded. Combine multiple commands with `&&` or `;` into a single line. Multi-line single-command constructs (for-loop, heredoc, if-block, line continuation `\\`) work fine.",
 	}, svc.RunInSession)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "close_session",
