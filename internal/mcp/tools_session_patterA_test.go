@@ -7,9 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
@@ -162,6 +164,19 @@ type fakeTargetForPatternA struct {
 
 func newFakeTargetForPatternA(t *testing.T) *fakeTargetForPatternA {
 	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	return newFakeTargetForPatternAWithListener(t, l)
+}
+
+// newFakeTargetForPatternAWithListener 构造一个使用给定 listener 的 fake target。
+// 用于 host key changed 测试：target1 关闭后，target2 在同端口上用不同 host key
+// 起服务，known_hosts 里记的是 target1 的 key，target2 连接时触发 "host key changed"。
+// 调用方负责 l 已 Close 的清理；这里仅接管 serve goroutine 的生命周期。
+func newFakeTargetForPatternAWithListener(t *testing.T, l net.Listener) *fakeTargetForPatternA {
+	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate host key: %v", err)
@@ -173,10 +188,6 @@ func newFakeTargetForPatternA(t *testing.T) *fakeTargetForPatternA {
 	pub, err := cryptossh.NewPublicKey(&rsaKey.PublicKey)
 	if err != nil {
 		t.Fatalf("new pubkey: %v", err)
-	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
 	}
 	s := &fakeTargetForPatternA{
 		t:        t,
@@ -315,5 +326,121 @@ func TestIntegrationPatternAEndToEnd(t *testing.T) {
 	}
 	if got := target.ActiveConns(); got != 1 {
 		t.Errorf("target activeConns after login = %d, want 1", got)
+	}
+}
+
+// jumphost 密码错 → setupPatternA 报错，无 trace，错误含 "ssh connect to jumphost"。
+func TestIntegrationPatternAJumphostAuthFails(t *testing.T) {
+	target := newFakeTargetForPatternA(t)
+	jump := newFakeJumphostForPatternA(t, true)
+
+	jhCfg := &config.Jumphost{
+		Name: "jh", Addr: jump.Addr(), User: "jump-user",
+		Auth: config.SSHAuth{Password: "wrong-pass"}, SSHJ: true,
+	}
+	srvCfg := &config.SSHServer{
+		Name: "srv", Addr: target.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, Via: jhCfg,
+	}
+
+	knownHosts := conn.NewKnownHostsStore(t.TempDir() + "/known_hosts")
+	dialer := conn.NewDialer(knownHosts, nil)
+	svc := &Service{}
+	_, trace, err := svc.setupPatternA(srvCfg, dialer, "deadbeefcafebabe", testLogger(t))
+	if err == nil {
+		t.Fatalf("expected jumphost auth failure")
+	}
+	if trace != nil {
+		t.Errorf("expected nil trace for dial failure, got %d entries", len(trace))
+	}
+	if !strings.Contains(err.Error(), "jumphost") {
+		t.Errorf("error should mention jumphost, got: %v", err)
+	}
+	// 确认无连接泄漏（jumphost auth 失败，target 未连）
+	if got := target.ActiveConns(); got != 0 {
+		t.Errorf("target activeConns = %d, want 0 (target never dialed)", got)
+	}
+}
+
+// target 密码错 → setupPatternA 报错，无 trace，错误含 "through jumphost"。
+// jumphost 连接必须被清理（无泄漏）。
+func TestIntegrationPatternATargetAuthFails(t *testing.T) {
+	target := newFakeTargetForPatternA(t)
+	jump := newFakeJumphostForPatternA(t, true)
+
+	jhCfg := &config.Jumphost{
+		Name: "jh", Addr: jump.Addr(), User: "jump-user",
+		Auth: config.SSHAuth{Password: "jump-pass"}, SSHJ: true,
+	}
+	srvCfg := &config.SSHServer{
+		Name: "srv", Addr: target.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wrong"}, Via: jhCfg,
+	}
+
+	knownHosts := conn.NewKnownHostsStore(t.TempDir() + "/known_hosts")
+	dialer := conn.NewDialer(knownHosts, nil)
+	svc := &Service{}
+	_, trace, err := svc.setupPatternA(srvCfg, dialer, "deadbeefcafebabe", testLogger(t))
+	if err == nil {
+		t.Fatalf("expected target auth failure")
+	}
+	if trace != nil {
+		t.Errorf("expected nil trace for dial failure, got %d entries", len(trace))
+	}
+	if !strings.Contains(err.Error(), "through jumphost") {
+		t.Errorf("error should mention 'through jumphost', got: %v", err)
+	}
+	// jumphost 连接应被清理（setupPatternA 在 DialThrough 失败时关 jumpClient）
+	// 给异步关闭一点时间
+	time.Sleep(100 * time.Millisecond)
+	if got := jump.ActiveConns(); got != 0 {
+		t.Errorf("jumphost activeConns after target auth fail = %d, want 0 (cleaned up)", got)
+	}
+}
+
+// target host key 变更 → setupPatternA 报错 "host key changed"。
+func TestIntegrationPatternAHostKeyChanged(t *testing.T) {
+	jump := newFakeJumphostForPatternA(t, true)
+	knownHosts := conn.NewKnownHostsStore(t.TempDir() + "/known_hosts")
+	dialer := conn.NewDialer(knownHosts, nil)
+	svc := &Service{}
+
+	// 第一次：target1 记录 host key
+	target1 := newFakeTargetForPatternA(t)
+	jhCfg := &config.Jumphost{
+		Name: "jh", Addr: jump.Addr(), User: "jump-user",
+		Auth: config.SSHAuth{Password: "jump-pass"}, SSHJ: true,
+	}
+	srvCfg := &config.SSHServer{
+		Name: "srv", Addr: target1.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, Via: jhCfg,
+	}
+	ptyConn, _, err := svc.setupPatternA(srvCfg, dialer, "aabbccddeeff0011", testLogger(t))
+	if err != nil {
+		t.Fatalf("first setupPatternA: %v", err)
+	}
+	ptyConn.Close()
+	target1Addr := target1.Addr()
+	target1.listener.Close()
+	// 等 target1 完全关闭
+	time.Sleep(100 * time.Millisecond)
+
+	// 第二次：target2 复用同端口但 host key 不同
+	l, err := net.Listen("tcp", target1Addr)
+	if err != nil {
+		t.Fatalf("listen on same port: %v", err)
+	}
+	target2 := newFakeTargetForPatternAWithListener(t, l)
+
+	srvCfg2 := &config.SSHServer{
+		Name: "srv", Addr: target2.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, Via: jhCfg,
+	}
+	_, _, err = svc.setupPatternA(srvCfg2, dialer, "aabbccddeeff0011", testLogger(t))
+	if err == nil {
+		t.Fatalf("expected host key changed error")
+	}
+	if !strings.Contains(err.Error(), "host key changed") {
+		t.Errorf("error should mention host key changed, got: %v", err)
 	}
 }
