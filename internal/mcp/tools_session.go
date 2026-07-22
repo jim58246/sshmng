@@ -149,6 +149,10 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 		}
 		logger.Debug("loginflow phase done", "phase", "direct", "steps", len(trace))
 	}
+	if err := ptyConn.DetectShell(); err != nil {
+		ptyConn.Close()
+		return nil, trace, fmt.Errorf("detect shell: %w", err)
+	}
 	if err := ptyConn.InjectRC(); err != nil {
 		ptyConn.Close()
 		return nil, trace, fmt.Errorf("inject rc: %w", err)
@@ -163,8 +167,11 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 
 // setupPatternB 处理 Pattern B 交互式堡垒机场景：
 // 拨号 jumphost → OpenPtyConn → Jumphost.LoginFlow（菜单就绪）→ SSHServer.LoginFlow
-// （选 target + 凭据）→ InjectRC。两段 LoginFlow 共用同一 PTY，trailing data 通过
-// pushback 在调用间保留。
+// （选 target + 凭据）→ DetectShell → InjectRC。两段 LoginFlow 共用同一 PTY，
+// trailing data 通过 pushback 在调用间保留。
+//
+// detectShell 必须在两段 LoginFlow 之后：堡垒机 session.Shell() 启动的是菜单程序，
+// 此时探测 bash 命令无法解析；走完 jumphost + target LoginFlow 才进入目标真 shell。
 //
 // 成功返回 ptyConn + 两段 LoginFlow 拼接的 trace（jumphost 在前 target 在后）。
 // LoginFlow 失败返回 *pty.LoginFlowError（携带 trace），供 Login handler 提取
@@ -206,6 +213,10 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid 
 	} else {
 		trace = append(trace, t...)
 		logger.Debug("loginflow phase done", "phase", "target", "steps", len(t))
+	}
+	if err := ptyConn.DetectShell(); err != nil {
+		ptyConn.Close()
+		return nil, trace, fmt.Errorf("detect shell: %w", err)
 	}
 	if err := ptyConn.InjectRC(); err != nil {
 		ptyConn.Close()

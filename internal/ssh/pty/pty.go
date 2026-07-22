@@ -129,6 +129,10 @@ func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions, logger *sl
 			return nil, &LoginFlowError{Stage: "direct", Trace: trace, Err: err}
 		}
 	}
+	if err := p.DetectShell(); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("detect shell: %w", err)
+	}
 	if err := p.InjectRC(); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("inject rc: %w", err)
@@ -138,11 +142,15 @@ func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions, logger *sl
 	return p, nil
 }
 
-// OpenPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell、探测 shell 类型。
-// 不执行 LoginFlow、不注入 RC——调用方负责后续装配：
-//   - 直连：直接 InjectRC
-//   - SSHServer.LoginFlow：RunLoginFlow → InjectRC
-//   - Pattern B：RunLoginFlow(jumphost) → RunLoginFlow(server) → InjectRC
+// OpenPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell。
+// 不执行 detectShell / LoginFlow / RC 注入——调用方负责后续装配：
+//   - 直连：DetectShell → InjectRC
+//   - SSHServer.LoginFlow：RunLoginFlow → DetectShell → InjectRC
+//   - Pattern B：RunLoginFlow(jumphost) → RunLoginFlow(server) → DetectShell → InjectRC
+//
+// detectShell 必须在所有 LoginFlow 之后调用：堡垒机/2FA 菜单等场景下，
+// session.Shell() 启动的是菜单程序而非真实 shell，此时探测命令无法解析；
+// 走完 LoginFlow 才进入目标真 shell，detectShell 才有效。
 //
 // logger 用于 DEBUG 级别的 PTY 交互日志；nil 退化为 discard handler。
 //
@@ -198,14 +206,6 @@ func OpenPtyConn(client *ssh.Client, sid string, logger *slog.Logger) (*PtyConn,
 	}
 	go p.readLoop()
 
-	shell, err := p.detectShell()
-	if err != nil {
-		p.Close()
-		return nil, fmt.Errorf("detect shell: %w", err)
-	}
-	p.shell = shell
-	p.logger.Debug("shell detected", "sid", sid, "shell", shell)
-
 	return p, nil
 }
 
@@ -243,7 +243,7 @@ func OpenPtyConnWithTimeout(client *ssh.Client, sid string, logger *slog.Logger,
 	case r := <-ch:
 		return r.p, r.err
 	case <-time.After(timeout):
-		// Close client 中断阻塞的 SSH 操作（RequestPty / Shell / detectShell）。
+		// Close client 中断阻塞的 SSH 操作（RequestPty / Shell）。
 		// goroutine 会随后返回 error，ch 有 buffer 不会泄漏。
 		client.Close()
 		r := <-ch
@@ -302,6 +302,20 @@ func (p *PtyConn) RunLoginFlow(flow map[string]config.LoginAction, entry string,
 // 在所有 LoginFlow（如有）执行完后调用。
 func (p *PtyConn) InjectRC() error {
 	return p.injectRC()
+}
+
+// DetectShell 探测远端 shell 类型并记录到 p.shell，供后续 InjectRC 生成对应 RC。
+// 必须在所有 LoginFlow 之后、InjectRC 之前调用：堡垒机/2FA 菜单等场景下，
+// session.Shell() 启动的是菜单程序，探测命令无法解析；走完 LoginFlow 进入
+// 真实 shell 后探测才有效。
+func (p *PtyConn) DetectShell() error {
+	shell, err := p.detectShell()
+	if err != nil {
+		return fmt.Errorf("detect shell: %w", err)
+	}
+	p.shell = shell
+	p.logger.Debug("shell detected", "sid", p.sid, "shell", shell)
+	return nil
 }
 
 // readLoop 单 goroutine 持续读 stdout，把数据投递到 stdoutCh。

@@ -38,8 +38,9 @@ func execFakeShellCommand(line string) ([]byte, int) {
 
 // fakeShellServerForLoginFlow 是支持 LoginFlow 阶段的 fake SSH server。
 //
-// 与 fakeShellServer 的区别：在 shell detect 之后、RC 注入之前，先走一段 LoginFlow
-// 交互——emit "login: "，根据输入响应 "Password: " / "READY\n"，然后才进入 RC 阶段。
+// 与 fakeShellServer 的区别：shell 启动即 emit "login: "（真实 2FA/菜单行为，不等
+// shell detect），LoginFlow 交互响应 "Password: " / "READY\n"，LoginFlow 完成后
+// 才响应 shell detect，然后进入 RC 阶段。
 type fakeShellServerForLoginFlow struct {
 	t        *testing.T
 	listener net.Listener
@@ -132,11 +133,11 @@ func (s *fakeShellServerForLoginFlow) handleSession(ch ssh.Channel, reqs <-chan 
 	}
 }
 
-// runFakeShellWithLoginFlow 在 shell detect 后 emit "login: "，按 LoginFlow 输入响应：
+// runFakeShellWithLoginFlow 在 shell 启动即 emit "login: "，按 LoginFlow 输入响应：
 //   - "user" → "Password: "
 //   - "pass" → "READY\n"（标志 LoginFlow 完成）
 //
-// 然后转入正常 RC + 命令阶段（复用 runFakeShell 逻辑）。
+// LoginFlow 完成后响应 shell detect，然后转入正常 RC + 命令阶段（复用 runFakeShell 逻辑）。
 //
 // token 化：Run 在写命令前先写 setup 命令 `__sshmng_tok=<token>; ...`。fake shell
 // 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的 sentinel 也含
@@ -148,6 +149,9 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 	rcDone := false
 	loginFlowDone := false
 
+	// Shell 启动即 emit 初始 prompt（真实 2FA/菜单行为，不等 shell detect）
+	fmt.Fprintf(ch, "login: ")
+
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -155,15 +159,13 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 		}
 		line = strings.TrimRight(line, "\r\n")
 
-		// Shell detect
+		// Shell detect（LoginFlow 完成后才到）
 		if strings.Contains(line, "__SHELL_DETECT__") {
 			rand := extractRand(line)
 			fmt.Fprintf(ch, "__SHELL_DETECT__:/bin/bash:5.2.15(1)-release:\r\n")
 			if rand != "" {
 				fmt.Fprintf(ch, "__DETECT_END_%s__\r\n", rand)
 			}
-			// 进入 LoginFlow 阶段：emit 初始 prompt
-			fmt.Fprintf(ch, "login: ")
 			continue
 		}
 

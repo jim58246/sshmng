@@ -24,11 +24,11 @@ import (
 //
 // 全程在同一 SSH session 内完成（Pattern B = 交互式堡垒机，不开新 channel）：
 //  1. SSH auth (alice/wonderland)
-//  2. Shell detect → 自动 emit 菜单
+//  2. Shell 启动即 emit 菜单（真实堡垒机行为，不等 shell detect 探测）
 //  3. 接受菜单选择 "1" → emit "login: "
 //  4. 接受 username → emit "Password: "
 //  5. 接受 password (wonderland) → emit "Welcome to prod-db!" → 转入 target shell
-//  6. RC 注入 + 命令执行（同 fakeShellServerForMCP）
+//  6. 两段 LoginFlow 完成后 shell detect → RC 注入 + 命令执行
 type fakeJumphostServerForMCP struct {
 	t          *testing.T
 	listener   net.Listener
@@ -146,15 +146,22 @@ func (s *fakeJumphostServerForMCP) handleSession(ch cryptossh.Channel, reqs <-ch
 // runFakeJumphostShellForMCP 模拟 Pattern B 堡垒机的状态机：
 // menu → target_user → target_pass → target_shell。
 //
-// shell detect 响应后自动 emit 菜单；menu 阶段读 "1" 触发 target login；
+// Shell 启动即 emit 菜单（真实堡垒机行为）；menu 阶段读 "1" 触发 target login；
 // target_user 阶段读 username emit "Password: "；target_pass 阶段读 password
-// 验证后 emit "Welcome to prod-db!" 转入 target_shell；target_shell 走 RC + 命令。
+// 验证后 emit "Welcome to prod-db!" 转入 target_shell；target_shell 阶段响应
+// shell detect（两段 LoginFlow 完成后才到），再走 RC + 命令。
 func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 	reader := bufio.NewReader(ch)
 	var sid string
 	var tok string
 	rcDone := false
 	phase := "menu"
+
+	// Shell 启动即 emit 菜单（不等 shell detect——真实堡垒机行为）
+	fmt.Fprintf(ch, "Welcome to Jumphost v2\r\n")
+	fmt.Fprintf(ch, "Main menu:\r\n")
+	fmt.Fprintf(ch, "1) prod-db\r\n")
+	fmt.Fprintf(ch, "Select target: ")
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -163,17 +170,13 @@ func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 		}
 		line = strings.TrimRight(line, "\r\n")
 
-		// Shell detect（任何 phase 都响应，但只在 menu phase 触发菜单 emit）
+		// Shell detect（两段 LoginFlow 完成后才到，任何 phase 都响应）
 		if strings.Contains(line, "__SHELL_DETECT__") {
 			rand := extractRandMCP(line)
 			fmt.Fprintf(ch, "__SHELL_DETECT__:/bin/bash:5.2.15(1)-release:\r\n")
 			if rand != "" {
 				fmt.Fprintf(ch, "__DETECT_END_%s__\r\n", rand)
 			}
-			fmt.Fprintf(ch, "Welcome to Jumphost v2\r\n")
-			fmt.Fprintf(ch, "Main menu:\r\n")
-			fmt.Fprintf(ch, "1) prod-db\r\n")
-			fmt.Fprintf(ch, "Select target: ")
 			continue
 		}
 
