@@ -123,11 +123,12 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 // login_trace 字段返给 Agent。
 func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, []loginflow.TraceEntry, error) {
 	client, err := dialer.Dial(conn.DialOptions{
-		Addr:       srv.Addr,
-		User:       srv.User,
-		Auth:       srv.Auth,
-		Proxy:      srv.Proxy,
-		ServerName: srv.Name,
+		Addr:          srv.Addr,
+		User:          srv.User,
+		Auth:          srv.Auth,
+		Proxy:         srv.Proxy,
+		ServerName:    srv.Name,
+		HostKeyVerify: srv.HostKeyVerifyEnabled(),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh connect to %s: %w", srv.Addr, err)
@@ -179,11 +180,12 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, []loginflow.TraceEntry, error) {
 	jump := srv.Via
 	client, err := dialer.Dial(conn.DialOptions{
-		Addr:       jump.Addr,
-		User:       jump.User,
-		Auth:       jump.Auth,
-		Proxy:      jump.Proxy,
-		ServerName: jump.Name,
+		Addr:          jump.Addr,
+		User:          jump.User,
+		Auth:          jump.Auth,
+		Proxy:         jump.Proxy,
+		ServerName:    jump.Name,
+		HostKeyVerify: jump.HostKeyVerifyEnabled(),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh connect to jumphost %s: %w", jump.Addr, err)

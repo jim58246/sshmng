@@ -458,3 +458,92 @@ func TestNewServerEndToEndList(t *testing.T) {
 		t.Errorf("got %d servers, want 1", len(arr))
 	}
 }
+
+// --- host_key_verify round-trip ---
+
+func TestUpdateSSHServerHostKeyVerifyPatch(t *testing.T) {
+	svc := newTestService(t, &config.Config{
+		Version: "1", IdleTimeoutS: 300,
+		Jumphosts: []*config.Jumphost{}, Proxies: []*config.Proxy{},
+		Servers: []*config.SSHServer{
+			{Name: "s", Addr: "h:22", User: "u", Auth: config.SSHAuth{Password: "p"}},
+		},
+	})
+
+	// 设置为 false
+	res, _, err := svc.UpdateSSHServer(context.Background(), &mcp.CallToolRequest{}, UpdateArgs{
+		Name:  "s",
+		Patch: map[string]any{"host_key_verify": false},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSHServer: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+
+	cfg, _ := svc.store.Load()
+	s, err := cfg.GetSSHServer("s")
+	if err != nil {
+		t.Fatalf("GetSSHServer: %v", err)
+	}
+	if s.HostKeyVerify == nil || *s.HostKeyVerify {
+		t.Errorf("HostKeyVerify = %v, want *false", s.HostKeyVerify)
+	}
+	if s.HostKeyVerifyEnabled() {
+		t.Errorf("HostKeyVerifyEnabled() = true, want false")
+	}
+
+	// 显式改回 true
+	res, _, err = svc.UpdateSSHServer(context.Background(), &mcp.CallToolRequest{}, UpdateArgs{
+		Name:  "s",
+		Patch: map[string]any{"host_key_verify": true},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSHServer re-enable: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	cfg, _ = svc.store.Load()
+	s, _ = cfg.GetSSHServer("s")
+	if s.HostKeyVerify == nil || !*s.HostKeyVerify {
+		t.Errorf("HostKeyVerify = %v, want *true after re-enable", s.HostKeyVerify)
+	}
+	if !s.HostKeyVerifyEnabled() {
+		t.Errorf("HostKeyVerifyEnabled() = false, want true")
+	}
+}
+
+func TestUpdateJumphostHostKeyVerifyPatch(t *testing.T) {
+	svc := newTestService(t, &config.Config{
+		Version: "1", IdleTimeoutS: 300,
+		Jumphosts: []*config.Jumphost{
+			{Name: "j", Addr: "h:22", User: "u", Auth: config.SSHAuth{Password: "p"}, SSHJ: true},
+		},
+		Proxies: []*config.Proxy{}, Servers: []*config.SSHServer{},
+	})
+
+	res, _, err := svc.UpdateJumphost(context.Background(), &mcp.CallToolRequest{}, UpdateArgs{
+		Name:  "j",
+		Patch: map[string]any{"host_key_verify": false},
+	})
+	if err != nil {
+		t.Fatalf("UpdateJumphost: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+
+	cfg, _ := svc.store.Load()
+	j, err := cfg.GetJumphost("j")
+	if err != nil {
+		t.Fatalf("GetJumphost: %v", err)
+	}
+	if j.HostKeyVerify == nil || *j.HostKeyVerify {
+		t.Errorf("HostKeyVerify = %v, want *false", j.HostKeyVerify)
+	}
+	if j.HostKeyVerifyEnabled() {
+		t.Errorf("HostKeyVerifyEnabled() = true, want false")
+	}
+}
