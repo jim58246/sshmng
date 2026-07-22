@@ -272,7 +272,7 @@ type SSHServer struct {
   {
     "time": "2026-07-17 14:23:45.080",
     "elapsed_ms": 80,
-    "send": "2\n",
+    "send": "2\r",
     "expect": "",
     "output": "Connecting to prod-web...\nPermission denied (publickey)."
   }
@@ -805,6 +805,50 @@ echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_<
 - 命令不响应 SIGINT（vim / less / 交互式 REPL）：drain 超时 → 强制 Close，session 不可用。Agent 需重新 login。这是已知代价——vim 等不响应 SIGINT 的程序无法靠 Ctrl-C 中断
 - SSH 断开：PTY EOF，Read 返回 0 → session 标记 closed，返回部分输出
 - 远端 `.bashrc` 报错：报错信息进 PTY 流但 sentinel 仍会出现，清洗时保留 sentinel 之前内容作为输出
+
+**Send 字节约定：`\r` vs `\n`：**
+
+向远端 PTY 写字节时，"回车"该发 `\r`（CR, 0x0D）还是 `\n`（LF, 0x0A）？结论：**LoginFlow 的 `send` 字段用 `\r`，`run_in_session` 的 `cmd` 内部追加 `\n`**，两者不冲突，理由见下。
+
+**链路：** 我们的 Go 代码 → SSH channel → 远端 PTY master → 远端 PTY 行规范（termios）→ bash / TUI 菜单。我们写什么字节就原样到达远端 PTY master，**本地终端不参与**（SSH 客户端把本地终端切 raw mode 直通）。翻译发生在远端 PTY 的行规范，由 termios 输入标志位控制：
+
+| 标志 | 作用 | 默认 |
+|------|------|------|
+| ICRNL | 输入 `\r` → `\n` | **ON**（canonical 模式）|
+| INLCR | 输入 `\n` → `\r` | **OFF** |
+| IGNCR | 丢弃输入 `\r` | OFF |
+
+**两种字节在不同模式下的行为：**
+
+| 目标 | 模式 | 发 `\r` | 发 `\n` |
+|------|------|---------|---------|
+| bash 提示符（readline，ICRNL on）| 半 canonical | ✅ ICRNL 转 `\n`，bash 收到 `\n` | ✅ INLCR off，bash 收到 `\n` |
+| TUI 菜单 / sudo 提示 / vim / less | raw mode（ICRNL off）| ✅ 菜单匹配 `\r`（真实终端发 `\r`）| ❌ 菜单不认 `\n`，输入卡住 |
+| `\r\n` 到 bash（ICRNL on）| canonical | ⚠️ 两次回车：`\r`→`\n` + 原有 `\n`，第二行空命令 | — |
+
+**核心结论：**
+- 对 bash（ICRNL on），`\r` 和 `\n` 等价——都变成 bash 读到的 `\n`。所以 `run_in_session` 内部 `cmd + "\n"` 对 bash 零风险。
+- 对 TUI 菜单（raw mode），**必须发 `\r`**——真实终端按 Enter 发的就是 `\r`，菜单程序按字节匹配 `\r`，发 `\n` 不认。
+- 混合发 `\r\n` 在 bash 下是两次回车，TUI 下行为不可预测，避免。
+
+**业界约定：**
+- **expect（Don Libes, 1995）**——PTY 自动化鼻祖，文档明确："In most cases, you should use `\r` instead of `\n` when sending to a process. Processes that read from a terminal expect to see carriage returns, not line feeds." `send` 不做转换，用户显式写 `\r`。
+- **OpenSSH 客户端**——把本地终端切 raw mode，Enter 键发 `\r` 透传到远端 PTY。`\r` 约定的来源。
+- **pexpect（Python）**——反面教材。`sendline()` 默认追加 `os.linesep`（Unix 上是 `\n`），在 bash 下能用，遇到 sudo 密码提示或 TUI 菜单就挂。社区 workaround 是 `child.send('foo\r')` 或 `child.linesep = '\r'`。这是"自动处理但选错字节"的教训。
+- **底层 SSH 库**（paramiko / golang.org/x/crypto/ssh / libssh2 / ssh2）——一律不转换，`Write([]byte("ls\n"))` 发 `ls\n`，`Write([]byte("ls\r"))` 发 `ls\r`。传输层语义透明。
+- **telnet（RFC 854）**——协议规定行结束是 `\r\n`，与 PTY 语义不同，不参考。
+
+**sshmng 的设计决策：**
+
+1. **不做全局 `\n`→`\r` 自动替换**——与 paramiko / golang.org/x/crypto/ssh 一致。一旦做自动替换，调试时用户永远要问"我写的 `\n` 到底被换成什么了"，而 PTY 调试偏偏最依赖字节级精确。expect 30 年的经验印证了显式优于隐式。
+
+2. **`PtyConn.Send(s string)`（LoginFlow 用）**：原样写入，不转换。配置里写什么就发什么。`LoginAction.Send` 字段支持 `\r` `\n` `\t` 转义，配置时**回车用 `\r`**（TUI 菜单要求）。
+
+3. **`PtyConn.Run(cmd string)`（run_in_session 用）**：内部 `Write([]byte(cmd + "\n"))`，自动追加 `\n`。因为 target shell 此时已注入 RC、在 canonical 模式下跑，`\n` 是行分隔符，bash 收到 `\n` 执行命令。这里追加 `\r` 也等价（ICRNL 会转），但 `\n` 是 Go 字符串里最自然的换行，保持透明。
+
+4. **配置示例**：LoginFlow 的 `send` 字段统一用 `\r` 表示回车（如 `"send": "1\r"`、`"send": "deploy-password\r"`），不要用 `\n`。`run_in_session` 的 `cmd` 参数按普通 shell 命令写（单行或多行都用 `\n` 分隔），sshmng 内部会追加最终的那个 `\n` 触发执行。
+
+**为什么不给 LoginFlow 也加自动替换**：LoginFlow 几乎总是面对 raw mode 的 TUI 菜单，自动替换 `\n`→`\r` 看似方便，但破坏了"配置里写什么就发什么"的契约。Agent 调试 LoginFlow 失败时看 trace 里的 `send` 字段，必须能直接对照配置文件判断发了什么字节，不能有隐式转换层。显式写 `\r` 是可预测的，自动替换是不可预测的——PTY 自动化工具的 30 年经验一致选择前者。
 
 ### 3.8 日志处理
 
