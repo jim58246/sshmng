@@ -44,6 +44,7 @@ type fakeShellServer struct {
 	hostKey         ssh.Signer
 	enableSftp      bool
 	echoPty         bool
+	alwaysEcho      bool
 	realisticPrompt bool
 	wg              sync.WaitGroup
 }
@@ -64,6 +65,17 @@ func newFakeShellServerWithSftp(t *testing.T) *fakeShellServer {
 func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
 	s := newFakeShellServerOpt(t, false)
 	s.echoPty = true
+	return s
+}
+
+// newFakeShellServerWithAlwaysEcho 创建强制回显的 fake server（忽略 pty-req 的 ECHO=0）。
+// 模拟 ECHO=0 失效场景：Pattern B 非 ssh 堡垒机（target PTY 由菜单程序分配，不传播
+// ECHO=0）、shell RC 执行 stty echo 覆盖、非标 server 忽略 terminal modes。
+// 用于验证 detectShell 的变量化 end marker 防御：即使回显存在，readUntilPattern 也不
+// 会在回显行命中 end marker（回显里是 __DETECT_END_${__sshmng_dr}__，未展开）。
+func newFakeShellServerWithAlwaysEcho(t *testing.T) *fakeShellServer {
+	s := newFakeShellServerOpt(t, false)
+	s.alwaysEcho = true
 	return s
 }
 
@@ -158,7 +170,9 @@ func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request
 		switch req.Type {
 		case "pty-req":
 			ptyRequested = true
-			if s.echoPty {
+			if s.alwaysEcho {
+				echoEnabled = true
+			} else if s.echoPty {
 				echoEnabled = parseEchoMode(req.Payload)
 			}
 			req.Reply(true, nil)
@@ -345,9 +359,11 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, _ bool) {
 	}
 }
 
-// extractRand 从 `echo ...; echo __DETECT_END_<rand>__` 中提取 <rand>。
+// extractRand 从 `__sshmng_dr=<rand>; echo ...` 中提取 <rand>。
+// detectShell 用变量构造 end marker（`__sshmng_dr=<rand>; ... echo __DETECT_END_${__sshmng_dr}__`），
+// rand 在变量赋值处，不在 end marker 字面量里（否则回显会匹配）。
 func extractRand(line string) string {
-	re := regexp.MustCompile(`__DETECT_END_([0-9a-f]+)__`)
+	re := regexp.MustCompile(`__sshmng_dr=([0-9a-f]+)`)
 	m := re.FindStringSubmatch(line)
 	if len(m) > 1 {
 		return m[1]
@@ -550,6 +566,53 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	}
 
 	// 完整跑一条命令验证后续流程也正常（RC 注入、sentinel 识别）。
+	output, _, exitCode, _, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if !strings.Contains(output, "hello") {
+		t.Errorf("output should contain 'hello', got: %q", output)
+	}
+}
+
+// TestIntegrationDetectShellWorksWithEcho 验证 detectShell 在回显存在时仍能正确探测
+// shell 类型（变量化 end marker 防御）。
+//
+// ECHO=0 是主防护，但不一定生效：Pattern B 非 ssh 堡垒机（target PTY 不传播 ECHO=0）、
+// shell RC 执行 stty echo 覆盖、非标 server 忽略 terminal modes。本测试用 alwaysEcho
+// 模拟这些场景：fake server 无视 pty-req ECHO=0，强制回显每行。
+//
+// 旧命令 `echo ...; echo __DETECT_END_<rand>__` 在回显时含 end marker 字面量，
+// readUntilPattern 在回显行命中，ParseShellDetect 只看到未展开的回显，探测失败。
+//
+// 修复：detect 命令改为 `__sshmng_dr=<rand>; echo ...; echo __DETECT_END_${__sshmng_dr}__`，
+// 回显里是 `__DETECT_END_${__sshmng_dr}__`（未展开），readUntilPattern 找的是
+// `__DETECT_END_<rand>__`（展开后），子串不匹配，跳过回显行，只在真正输出处命中。
+func TestIntegrationDetectShellWorksWithEcho(t *testing.T) {
+	srv := newFakeShellServerWithAlwaysEcho(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(),
+		User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v (detectShell should work even with echo via variable-based end marker)", err)
+	}
+	defer ptyConn.Close()
+
+	if ptyConn.Shell() != "bash" {
+		t.Errorf("Shell = %q, want bash", ptyConn.Shell())
+	}
+
 	output, _, exitCode, _, _, _, _, _, err := ptyConn.Run("echo hello", 5000, 0)
 	if err != nil {
 		t.Fatalf("Run: %v", err)

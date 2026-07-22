@@ -169,6 +169,11 @@ func OpenPtyConn(client *ssh.Client, sid string, logger *slog.Logger) (*PtyConn,
 	// __DETECT_END__，ParseShellDetect 看到的是未展开的 `echo __SHELL_DETECT__:$0:...`
 	// （$0 仍是字面量），无法解析 shell 类型。RC 注入里有 stty -echo 但那是 RC 之后
 	// 才生效，detectShell 在 RC 之前执行，必须在 pty-req 阶段就关闭 ECHO。
+	//
+	// ECHO=0 是主防护但不一定生效（Pattern B 非 ssh 堡垒机不传播 ECHO=0、shell RC
+	// 执行 stty echo 覆盖、非标 server 忽略 terminal modes）。detectShell 的变量化
+	// end marker（`__sshmng_dr=<rand>; ... echo __DETECT_END_${__sshmng_dr}__`）是
+	// defense-in-depth：即使回显存在，readUntilPattern 也不在回显行命中 end marker。
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          0,
 		ssh.TTY_OP_ISPEED: 14400,
@@ -345,12 +350,23 @@ func (p *PtyConn) readLoop() {
 func (p *PtyConn) Shell() string { return p.shell }
 
 // detectShell 发送探测命令并解析 shell 类型。
+//
+// end marker 用 shell 变量动态构造（`__sshmng_dr=<rand>; ... echo __DETECT_END_${__sshmng_dr}__`），
+// 而非字面量 `echo __DETECT_END_<rand>__`。原因：ECHO=0 是主防护（pty-req 阶段关闭
+// 回显），但不一定生效（Pattern B 非 ssh 堡垒机不传播 ECHO=0、shell RC 执行
+// stty echo 覆盖、非标 server 忽略 terminal modes）。若回显存在且 end marker 是
+// 字面量，readUntilPattern 做子串匹配会在回显行命中（回显里含 `echo __DETECT_END_<rand>__`），
+// 返回的 output 只有回显行，ParseShellDetect 看不到真正的 echo 命令输出，探测失败。
+//
+// 变量化后：回显行含 `__DETECT_END_${__sshmng_dr}__`（未展开），readUntilPattern 找的是
+// `__DETECT_END_<rand>__`（展开后），子串不匹配，跳过回显行，只在 echo 命令的真正
+// 输出处命中。这是 defense-in-depth，不依赖 ECHO=0。
 func (p *PtyConn) detectShell() (string, error) {
 	rand, err := conn.RandomSID()
 	if err != nil {
 		return "", err
 	}
-	cmd := fmt.Sprintf("echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_%s__\n", rand)
+	cmd := fmt.Sprintf("__sshmng_dr=%s; echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_${__sshmng_dr}__\n", rand)
 	p.logger.Debug("detect shell send", "sid", p.sid, "rand", rand, "cmd", cmd)
 	if _, err := p.stdin.Write([]byte(cmd)); err != nil {
 		return "", fmt.Errorf("write detect cmd: %w", err)

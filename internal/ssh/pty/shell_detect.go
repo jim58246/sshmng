@@ -7,7 +7,8 @@ import (
 )
 
 // ParseShellDetect 从 PTY 流中解析 shell 类型。
-// 探测命令格式：echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_<rand>__
+// 探测命令格式：__sshmng_dr=<rand>; echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_${__sshmng_dr}__
+// end marker 用变量构造（非字面量），防止回显行含 end marker 字面量导致 readUntilPattern 误匹配。
 // 输出形如：__SHELL_DETECT__:/bin/bash:5.2.15(1)-release:
 //
 // 返回 (shell, ok)：shell ∈ {"bash","zsh","dash","ash"}，ok=false 表示未找到 / 未完成。

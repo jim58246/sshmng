@@ -339,7 +339,7 @@ func runFakeShellForMCP(ch cryptossh.Channel) {
 }
 
 func extractRandMCP(line string) string {
-	re := regexp.MustCompile(`__DETECT_END_([0-9a-f]+)__`)
+	re := regexp.MustCompile(`__sshmng_dr=([0-9a-f]+)`)
 	m := re.FindStringSubmatch(line)
 	if len(m) > 1 {
 		return m[1]
