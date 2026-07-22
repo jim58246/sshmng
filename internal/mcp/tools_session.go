@@ -48,7 +48,7 @@ type GetTraceArgs struct {
 //
 // 支持三种形态：
 //   - 直连：srv.Via 为空，直接 SSH 拨号到 srv.Addr；可选 SSHServer.LoginFlow（target 认证后交互）
-//   - Pattern A (srv.Via.SSHJ=true)：经 jumphost 的 direct-tcpip 通道 SSH 到 target（v1.x 实现，当前拒绝）
+//   - Pattern A (srv.Via.SSHJ=true)：经 jumphost 的 direct-tcpip 通道 SSH 到 target（ssh -J 语义）
 //   - Pattern B (srv.Via.SSHJ=false)：交互式堡垒机。拨号到 jumphost → Jumphost.LoginFlow（菜单就绪）
 //     → SSHServer.LoginFlow（选 target + 输入凭据）→ 注入 RC。两段 LoginFlow 共用同一 PTY。
 //
@@ -64,11 +64,6 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		return errorResult("%v", err)
 	}
 
-	if srv.Via != nil && srv.Via.SSHJ {
-		// Pattern A (ssh -J 语义) 留 v1.x 实现
-		return errorResult("pattern A via ssh-j jumphost %q not yet supported (server %q); deferred to v1.x", srv.Via.Name, args.Name)
-	}
-
 	sid, err := conn.RandomSID()
 	if err != nil {
 		s.sessionLogger(req, "").Warn("login failed: generate sid", "server", srv.Name, "err", err.Error())
@@ -80,10 +75,13 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 
 	var ptyConn *pty.PtyConn
 	var loginTrace []loginflow.TraceEntry
-	if srv.Via != nil {
-		ptyConn, loginTrace, err = s.setupPatternB(srv, dialer, sid, logger)
-	} else {
+	switch {
+	case srv.Via == nil:
 		ptyConn, loginTrace, err = s.setupDirect(srv, dialer, sid, logger)
+	case srv.Via.SSHJ:
+		ptyConn, loginTrace, err = s.setupPatternA(srv, dialer, sid, logger)
+	default: // srv.Via.SSHJ == false
+		ptyConn, loginTrace, err = s.setupPatternB(srv, dialer, sid, logger)
 	}
 	if err != nil {
 		// LoginFlow 失败时携带 login_trace 返给 Agent 诊断（设计文档 §3.x）。
@@ -232,6 +230,95 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid 
 		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
 	return ptyConn, trace, nil
 }
+
+// setupPatternA 处理 Pattern A 透明转发场景（ssh -J 语义）：
+// 拨号 jumphost → 经 jumphost 的 direct-tcpip 通道拨号 target → OpenPtyConn（在
+// target 上）→ SetJumpClient（绑定 jumphost 生命周期）→ 可选 SSHServer.LoginFlow
+// （target 认证后交互，如 su / 角色 / PAM）→ DetectShell → InjectRC → TryEnableSftp。
+//
+// 与 setupDirect 的唯一差异：拨号是两层（jumphost + direct-tcpip + target），
+// jumphost client 通过 SetJumpClient 挂到 PtyConn，Close 时随 target 一起关。
+//
+// SSHServer.LoginFlow 在 Pattern A 下可选（承担 target 认证后交互，非登录 target）；
+// Jumphost.LoginFlow 校验阶段已确保为空（ssh_j=true 要求）。
+//
+// 成功返回 ptyConn + LoginFlow trace（若 srv.LoginFlow 为空则 trace 为 nil）。
+// 失败分类：
+//   - jumphost / target SSH 拨号失败（auth / host key / 网络）：error 字符串，无 trace
+//   - SSHServer.LoginFlow 失败：*pty.LoginFlowError 携 trace，Login handler 提取
+//     login_trace 返给 Agent
+func (s *Service) setupPatternA(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, []loginflow.TraceEntry, error) {
+	jump := srv.Via
+
+	// 第一层：拨号 jumphost
+	jumpClient, err := dialer.Dial(conn.DialOptions{
+		Addr:          jump.Addr,
+		User:          jump.User,
+		Auth:          jump.Auth,
+		Proxy:         jump.Proxy,
+		ServerName:    jump.Name,
+		HostKeyVerify: jump.HostKeyVerifyEnabled(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("ssh connect to jumphost %s: %w", jump.Addr, err)
+	}
+
+	// 第二层：经 jumphost 的 direct-tcpip 拨号 target
+	targetClient, err := dialer.DialThrough(jumpClient, conn.DialOptions{
+		Addr:          srv.Addr,
+		User:          srv.User,
+		Auth:          srv.Auth,
+		Proxy:         nil, // Pattern A 下 Server.Proxy 已被 validate.go 拒绝
+		ServerName:    srv.Name,
+		HostKeyVerify: srv.HostKeyVerifyEnabled(),
+	})
+	if err != nil {
+		jumpClient.Close()
+		return nil, nil, fmt.Errorf("ssh connect to target %s through jumphost: %w", srv.Addr, err)
+	}
+
+	// 在 target 上开 PTY
+	ptyConn, err := pty.OpenPtyConnWithTimeout(targetClient, sid, logger, 0)
+	if err != nil {
+		targetClient.Close()
+		jumpClient.Close()
+		return nil, nil, fmt.Errorf("setup pty: %w", err)
+	}
+	// 绑定 jumphost 生命周期：PtyConn.Close 会先关 target client 再关 jumpClient
+	ptyConn.SetJumpClient(jumpClient)
+
+	// 可选：SSHServer.LoginFlow（target 认证后交互）
+	var trace []loginflow.TraceEntry
+	if len(srv.LoginFlow) > 0 {
+		trace, err = ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, pty.LoginFlowOptions{
+			MaxSteps:        srv.MaxSteps,
+			GlobalTimeoutMs: srv.GlobalTimeoutMs,
+		})
+		if err != nil {
+			ptyConn.Close() // 关 target + jumphost
+			return nil, trace, fmt.Errorf("patternA: %w", &pty.LoginFlowError{Stage: "patternA", Trace: trace, Err: err})
+		}
+		logger.Debug("loginflow phase done", "phase", "patternA", "steps", len(trace))
+	}
+
+	// DetectShell + InjectRC（与 setupDirect 完全一致）
+	if err := ptyConn.DetectShell(); err != nil {
+		ptyConn.Close()
+		return nil, trace, fmt.Errorf("detect shell: %w", err)
+	}
+	if err := ptyConn.InjectRC(); err != nil {
+		ptyConn.Close()
+		return nil, trace, fmt.Errorf("inject rc: %w", err)
+	}
+
+	// Pattern A：SFTP 通道是到 target 的（与 setupDirect 一致），探测启用
+	ptyConn.TryEnableSftp()
+	logger.Debug("setup done",
+		"sid", sid, "server", srv.Name, "via", jump.Name,
+		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
+	return ptyConn, trace, nil
+}
+
 func viaDesc(srv *config.SSHServer) string {
 	if srv.Via == nil {
 		return ""

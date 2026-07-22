@@ -70,11 +70,17 @@ type PtyConnOptions struct {
 type PtyConn struct {
 	session *ssh.Session
 	client  *ssh.Client
-	stdin   io.WriteCloser
-	stdout  io.Reader
-	sid     string
-	shell   string
-	logger  *slog.Logger
+	// jumpClient 是 Pattern A 下的 jumphost SSH client。
+	// target 的底层 conn 是 jumpClient 上的 direct-tcpip channel，
+	// jumpClient 必须在 target client 关闭前存活。
+	// Close() 在关闭 target client 后关闭 jumpClient。
+	// direct / Pattern B 路径下为 nil，Close() 跳过。
+	jumpClient *ssh.Client
+	stdin      io.WriteCloser
+	stdout     io.Reader
+	sid        string
+	shell      string
+	logger     *slog.Logger
 
 	// sftpClient 在 OpenPtyConn 时尝试建立，5s 超时；失败留空，SftpAvailable()=false。
 	sftpClient *sftp.Client
@@ -259,6 +265,17 @@ func OpenPtyConnWithTimeout(client *ssh.Client, sid string, logger *slog.Logger,
 		}
 		return nil, fmt.Errorf("open pty timed out after %s", timeout)
 	}
+}
+
+// SetJumpClient 绑定 jumphost SSH client，把其生命周期挂到 PtyConn。
+// Pattern A 调用：target client 的底层 conn 是 jumpClient 上的 channel，
+// jumpClient 必须存活到 target 关闭。Close() 会先关 target client 再关 jumpClient。
+// 必须在 Close() 前调用；重复调用覆盖前值（不预期）。
+// direct / Pattern B 不调用，jumpClient 保持 nil。
+func (p *PtyConn) SetJumpClient(c *ssh.Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jumpClient = c
 }
 
 // LoginFlowOptions 是 RunLoginFlow 的可选参数；零值使用 loginflow 包默认值。
@@ -840,6 +857,7 @@ func (p *PtyConn) Close() error {
 	p.sftpClient = nil
 	session := p.session
 	client := p.client
+	jumpClient := p.jumpClient
 	p.mu.Unlock()
 
 	close(p.doneCh)
@@ -857,6 +875,13 @@ func (p *PtyConn) Close() error {
 	if client != nil {
 		if err := client.Close(); err != nil {
 			errs = append(errs, fmt.Sprintf("client: %v", err))
+		}
+	}
+	// Pattern A：target client 关闭后再关 jumphost client。
+	// 先关 jumphost 会让 target 的底层 channel 立即失效，target client.Close() 报噪声错误。
+	if jumpClient != nil {
+		if err := jumpClient.Close(); err != nil {
+			errs = append(errs, fmt.Sprintf("jumpClient: %v", err))
 		}
 	}
 	if len(errs) > 0 {

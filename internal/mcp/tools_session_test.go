@@ -42,8 +42,11 @@ func TestLoginUnknownServer(t *testing.T) {
 
 // TestLoginRejectsPatternA 校验 v1 phase 4 拒绝 Pattern A（SSHJ=true 的 jumphost），
 // 该形态留 v1.x 实现。Pattern B（SSHJ=false）由 TestIntegrationPatternBEndToEnd 覆盖。
-func TestLoginRejectsPatternA(t *testing.T) {
-	jumphost := &config.Jumphost{Name: "j1", Addr: "1.1.1.1:22", User: "u", SSHJ: true}
+func TestLoginPatternARoutesToSetupPatternA(t *testing.T) {
+	// Pattern A (SSHJ=true) 不再被早期拒绝，而是路由到 setupPatternA 尝试拨号。
+	// jumphost addr 不可达 → 拨号失败 → IsError=true，error 提到 jumphost。
+	// 这验证了三路路由：Via.SSHJ=true 走 setupPatternA（而非 setupDirect / setupPatternB）。
+	jumphost := &config.Jumphost{Name: "j1", Addr: "127.0.0.1:1", User: "u", SSHJ: true}
 	svc := newTestService(t, &config.Config{
 		Version:   "1",
 		Jumphosts: []*config.Jumphost{jumphost},
@@ -63,7 +66,7 @@ func TestLoginRejectsPatternA(t *testing.T) {
 
 	res, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "via-jump"})
 	if !res.IsError {
-		t.Errorf("expected IsError=true for Pattern A (SSHJ=true not yet supported)")
+		t.Errorf("expected IsError=true for Pattern A with unreachable jumphost")
 	}
 	text := resultText(t, res)
 	if !strings.Contains(text, "jumphost") {
