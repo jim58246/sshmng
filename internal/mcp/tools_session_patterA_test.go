@@ -145,9 +145,9 @@ func (s *fakeJumphostForPatternA) handle(c net.Conn) {
 	}
 }
 
-func (s *fakeJumphostForPatternA) Addr() string                     { return s.listener.Addr().String() }
+func (s *fakeJumphostForPatternA) Addr() string                       { return s.listener.Addr().String() }
 func (s *fakeJumphostForPatternA) HostPublicKey() cryptossh.PublicKey { return s.hostPub }
-func (s *fakeJumphostForPatternA) ActiveConns() int32               { return s.activeConns.Load() }
+func (s *fakeJumphostForPatternA) ActiveConns() int32                 { return s.activeConns.Load() }
 
 // fakeTargetForPatternA 是 Pattern A 集成测试用的 fake target SSH server。
 // 支持 shell + 命令执行（run_in_session 能跑通），跟踪活跃连接数（Close 生命周期测试用）。
@@ -268,9 +268,9 @@ func (s *fakeTargetForPatternA) handleSession(ch cryptossh.Channel, reqs <-chan 
 	}
 }
 
-func (s *fakeTargetForPatternA) Addr() string                     { return s.listener.Addr().String() }
+func (s *fakeTargetForPatternA) Addr() string                       { return s.listener.Addr().String() }
 func (s *fakeTargetForPatternA) HostPublicKey() cryptossh.PublicKey { return s.hostPub }
-func (s *fakeTargetForPatternA) ActiveConns() int32               { return s.activeConns.Load() }
+func (s *fakeTargetForPatternA) ActiveConns() int32                 { return s.activeConns.Load() }
 
 // TestIntegrationPatternAEndToEnd 验证 Pattern A 完整路径：
 // login → run_in_session → close，sftp_available=true（区别于 Pattern B）。
