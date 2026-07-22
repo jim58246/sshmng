@@ -1,6 +1,7 @@
 package conn
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/pem"
@@ -163,9 +164,10 @@ func TestDialerPasswordAuthSuccess(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -178,9 +180,10 @@ func TestDialerPasswordAuthFailure(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	_, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wrong"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wrong"},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected auth failure error")
@@ -198,9 +201,10 @@ func TestDialerPublicKeyAuthSuccess(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "bob",
-		Auth: config.SSHAuth{PrivateKey: keyPath},
+		Addr:          srv.Addr(),
+		User:          "bob",
+		Auth:          config.SSHAuth{PrivateKey: keyPath},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -231,9 +235,10 @@ func TestDialerPublicKeyAuthWithPassphrase(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "carol",
-		Auth: config.SSHAuth{PrivateKey: keyPath, Passphrase: "hunter2"},
+		Addr:          srv.Addr(),
+		User:          "carol",
+		Auth:          config.SSHAuth{PrivateKey: keyPath, Passphrase: "hunter2"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial with passphrase: %v", err)
@@ -259,9 +264,10 @@ func TestDialerPublicKeyAuthWrongPassphrase(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	_, err = d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "carol",
-		Auth: config.SSHAuth{PrivateKey: keyPath, Passphrase: "wrong"},
+		Addr:          srv.Addr(),
+		User:          "carol",
+		Auth:          config.SSHAuth{PrivateKey: keyPath, Passphrase: "wrong"},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected error for wrong passphrase")
@@ -278,9 +284,10 @@ func TestDialerPrivateKeyWidePermissionsRejected(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	_, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "bob",
-		Auth: config.SSHAuth{PrivateKey: keyPath},
+		Addr:          srv.Addr(),
+		User:          "bob",
+		Auth:          config.SSHAuth{PrivateKey: keyPath},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected error for wide private key permissions")
@@ -295,9 +302,10 @@ func TestDialerPrivateKeyNotExist(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	_, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "bob",
-		Auth: config.SSHAuth{PrivateKey: "/nonexistent/key"},
+		Addr:          srv.Addr(),
+		User:          "bob",
+		Auth:          config.SSHAuth{PrivateKey: "/nonexistent/key"},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected error for missing private key")
@@ -312,9 +320,10 @@ func TestDialerPrefersPrivateKeyWhenBothConfigured(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "bob",
-		Auth: config.SSHAuth{Password: "wrong", PrivateKey: keyPath},
+		Addr:          srv.Addr(),
+		User:          "bob",
+		Auth:          config.SSHAuth{Password: "wrong", PrivateKey: keyPath},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial should succeed with private key (not fall back to password): %v", err)
@@ -330,9 +339,10 @@ func TestDialerTOFURemembersHostKey(t *testing.T) {
 
 	// 首次连接：host key 写入 known_hosts
 	c1, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("first Dial: %v", err)
@@ -341,9 +351,10 @@ func TestDialerTOFURemembersHostKey(t *testing.T) {
 
 	// 第二次连接：key 匹配
 	c2, err := d.Dial(DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("second Dial: %v", err)
@@ -365,9 +376,10 @@ func TestDialerTOFURejectsChangedHostKey(t *testing.T) {
 	srv1 := newMockSSHServer(t, "alice", "wonderland", nil)
 	d := newDialerWithTempKnownHosts(t)
 	c1, err := d.Dial(DialOptions{
-		Addr: srv1.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv1.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("first Dial: %v", err)
@@ -383,9 +395,10 @@ func TestDialerTOFURejectsChangedHostKey(t *testing.T) {
 	srv2 := newMockSSHServerWithListener(t, l, "alice", "wonderland", nil)
 
 	_, err = d.Dial(DialOptions{
-		Addr: srv2.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv2.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected error for changed host key")
@@ -408,9 +421,10 @@ func TestDialerConnectionRefused(t *testing.T) {
 	l.Close()
 
 	_, err = d.Dial(DialOptions{
-		Addr: addr,
-		User: "alice",
-		Auth: config.SSHAuth{Password: "p"},
+		Addr:          addr,
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "p"},
+		HostKeyVerify: true,
 	})
 	if err == nil {
 		t.Errorf("expected error for connection refused")
@@ -453,3 +467,54 @@ func newMockSSHServerWithListener(t *testing.T, l net.Listener, user, password s
 }
 
 // (unused imports guard removed — all imports are used above)
+
+// --- host key verify 跳过 ---
+
+func TestDialerSkipsHostKeyWhenDisabled(t *testing.T) {
+	// srv1 用 key A，先连一次让 known_hosts 记下 A
+	srv1 := newMockSSHServer(t, "alice", "wonderland", nil)
+	d := newDialerWithTempKnownHosts(t)
+	c1, err := d.Dial(DialOptions{
+		Addr:          srv1.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("first Dial with verify=true: %v", err)
+	}
+	c1.Close()
+	srv1.listener.Close()
+
+	// srv2 复用同端口但 host key 不同；verify=false 应当连上且不写 known_hosts
+	l, err := net.Listen("tcp", srv1.Addr())
+	if err != nil {
+		t.Fatalf("listen on same port: %v", err)
+	}
+	srv2 := newMockSSHServerWithListener(t, l, "alice", "wonderland", nil)
+
+	knownBefore, err := os.ReadFile(d.knownHosts.Path())
+	if err != nil {
+		t.Fatalf("read known_hosts before: %v", err)
+	}
+
+	c2, err := d.Dial(DialOptions{
+		Addr:          srv2.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: false,
+	})
+	if err != nil {
+		t.Fatalf("Dial with verify=false should succeed against mismatched key, got: %v", err)
+	}
+	c2.Close()
+
+	// known_hosts 内容必须未变（没有写入 srv2 的 key）
+	knownAfter, err := os.ReadFile(d.knownHosts.Path())
+	if err != nil {
+		t.Fatalf("read known_hosts after: %v", err)
+	}
+	if !bytes.Equal(knownBefore, knownAfter) {
+		t.Errorf("known_hosts changed when verify=false:\nbefore: %s\nafter:  %s", knownBefore, knownAfter)
+	}
+}

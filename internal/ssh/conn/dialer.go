@@ -33,11 +33,12 @@ func NewDialer(knownHosts *KnownHostsStore, logger *slog.Logger) *Dialer {
 
 // DialOptions 是 Dial 的入参。
 type DialOptions struct {
-	Addr       string         // host:port
-	User       string         // SSH 用户名
-	Auth       config.SSHAuth // 认证信息（Password / PrivateKey + Passphrase）
-	Proxy      *config.Proxy  // 可选：传输层代理（SOCKS5 / HTTP CONNECT）
-	ServerName string         // 可选：仅用于日志关联（dialing / host key verified 等）
+	Addr          string         // host:port
+	User          string         // SSH 用户名
+	Auth          config.SSHAuth // 认证信息（Password / PrivateKey + Passphrase）
+	Proxy         *config.Proxy  // 可选：传输层代理（SOCKS5 / HTTP CONNECT）
+	ServerName    string         // 可选：仅用于日志关联（dialing / host key verified 等）
+	HostKeyVerify bool           // false 时完全跳过 host key 校验（不读不写 known_hosts）
 }
 
 // Dial 建立 SSH 连接。
@@ -68,7 +69,7 @@ func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
 	clientConfig := &ssh.ClientConfig{
 		User:            opts.User,
 		Auth:            authMethods,
-		HostKeyCallback: d.hostKeyCallback(opts.Addr, opts.ServerName),
+		HostKeyCallback: d.hostKeyCallback(opts.Addr, opts.ServerName, opts.HostKeyVerify),
 		Timeout:         10 * time.Second,
 	}
 
@@ -110,9 +111,17 @@ func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) 
 }
 
 // hostKeyCallback 返回 ssh.ClientConfig.HostKeyCallback。
-// 通过 knownHosts.Check 实现 TOFU：首次记录、匹配放行、变更拒绝。
+// verify=true 时通过 knownHosts.Check 实现 TOFU：首次记录、匹配放行、变更拒绝。
+// verify=false 时返回 no-op callback，完全不触碰 known_hosts。
 // serverName 仅用于日志关联。
-func (d *Dialer) hostKeyCallback(addr, serverName string) ssh.HostKeyCallback {
+func (d *Dialer) hostKeyCallback(addr, serverName string, verify bool) ssh.HostKeyCallback {
+	if !verify {
+		d.logger.Debug("host key verification disabled",
+			"server", serverName, "addr", addr)
+		return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			return nil
+		}
+	}
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		fingerprint, err := d.knownHosts.Check(addr, key)
 		if err != nil {
