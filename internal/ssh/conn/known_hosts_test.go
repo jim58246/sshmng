@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,8 +49,10 @@ func TestKnownHostsFirstConnectionRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("perm = %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("perm = %o, want 0600", perm)
+		}
 	}
 
 	// 第二次 Check 应该是 HostKeyMatch
@@ -124,6 +127,9 @@ func TestKnownHostsFileNotExistTreatedAsEmpty(t *testing.T) {
 }
 
 func TestKnownHostsRejectsWidePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("known_hosts permission check skipped on Windows (NTFS ACL model)")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "known_hosts")
 	if err := os.WriteFile(path, []byte("h:22 c29tZWtleQ==\n"), 0644); err != nil {

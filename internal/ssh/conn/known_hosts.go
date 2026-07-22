@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -75,6 +76,9 @@ type knownHostEntry struct {
 
 // load 读取 known_hosts 文件。文件不存在视为空。
 // 权限过宽拒绝加载。
+//
+// Windows 跳过权限检查：NTFS 用 ACL 而非 Unix rwx，os.FileMode.Perm() 的
+// group/other 位恒为 0，检查形同虚设。由 NTFS ACL 负责文件访问控制。
 func (s *KnownHostsStore) load() ([]knownHostEntry, error) {
 	info, err := os.Stat(s.path)
 	if os.IsNotExist(err) {
@@ -83,8 +87,10 @@ func (s *KnownHostsStore) load() ([]knownHostEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat known_hosts: %w", err)
 	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
-		return nil, fmt.Errorf("known_hosts permissions too open: %o, want 0600 (no group/other access)", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			return nil, fmt.Errorf("known_hosts permissions too open: %o, want 0600 (no group/other access)", perm)
+		}
 	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {

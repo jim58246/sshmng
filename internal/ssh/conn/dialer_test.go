@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -268,6 +269,9 @@ func TestDialerPublicKeyAuthWrongPassphrase(t *testing.T) {
 }
 
 func TestDialerPrivateKeyWidePermissionsRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("private key permission check skipped on Windows (NTFS ACL model)")
+	}
 	// 私钥文件权限 0644 应被拒绝
 	keyPath, _, pub := writePrivateKeyFile(t, 0644)
 	srv := newMockSSHServer(t, "bob", "", pub)

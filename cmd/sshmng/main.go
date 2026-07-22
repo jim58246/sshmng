@@ -58,9 +58,10 @@ func main() {
 
 	store := config.NewStore(path)
 	// Windows 上 Load 跳过配置文件权限检查（NTFS ACL 模型不同于 Unix rwx）。
-	// 提示用户用 NTFS ACL 保护配置文件（含密码/私钥）。
+	// 私钥文件 / known_hosts 的权限检查同样在 Windows 上跳过（见 conn 包）。
+	// 提示用户用 NTFS ACL 保护所有敏感文件。
 	if runtime.GOOS == "windows" {
-		bootstrapLogger.Info("config file permission check skipped on Windows; ensure NTFS ACL restricts access to the config file (contains passwords/private keys)", "path", path)
+		bootstrapLogger.Info("Unix permission check skipped on Windows; ensure NTFS ACL restricts access to sensitive files (config.json, private keys, known_hosts)", "path", path)
 	}
 	// 启动时尝试加载一次，提早暴露权限/格式/log_level 配错问题；同时取出 LogPath /
 	// LogLevel 决定日志去向。Load 内部已校验 log_level 合法性。

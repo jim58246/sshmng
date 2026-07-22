@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -147,13 +148,18 @@ func buildAuthMethods(auth config.SSHAuth) ([]ssh.AuthMethod, error) {
 
 // loadPrivateKey 从 path 加载私钥。passphrase 为空表示私钥未加密。
 // 文件权限必须 0600 或更严（防止其他用户读取）。
+//
+// Windows 跳过权限检查：NTFS 用 ACL 而非 Unix rwx，os.FileMode.Perm() 的
+// group/other 位恒为 0，检查形同虚设。由 NTFS ACL 负责文件访问控制。
 func loadPrivateKey(path, passphrase string) (ssh.Signer, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat private key %s: %w", path, err)
 	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
-		return nil, fmt.Errorf("private key %s permissions too open: %o, want 0600 or stricter (no group/other access)", path, perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			return nil, fmt.Errorf("private key %s permissions too open: %o, want 0600 or stricter (no group/other access)", path, perm)
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
