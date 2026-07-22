@@ -513,6 +513,27 @@ func TestUpdateSSHServerHostKeyVerifyPatch(t *testing.T) {
 	if !s.HostKeyVerifyEnabled() {
 		t.Errorf("HostKeyVerifyEnabled() = false, want true")
 	}
+
+	// null → 字段回到 nil（默认 on 语义恢复）
+	// Go 标准 *bool unmarshal 把 null 和缺字段都解为 nil；这里 pin 住 RFC 7396 null→nil→default-on 路径。
+	res, _, err = svc.UpdateSSHServer(context.Background(), &mcp.CallToolRequest{}, UpdateArgs{
+		Name:  "s",
+		Patch: map[string]any{"host_key_verify": nil},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSHServer null patch: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	cfg, _ = svc.store.Load()
+	s, _ = cfg.GetSSHServer("s")
+	if s.HostKeyVerify != nil {
+		t.Errorf("HostKeyVerify = %v, want nil after null patch", s.HostKeyVerify)
+	}
+	if !s.HostKeyVerifyEnabled() {
+		t.Errorf("HostKeyVerifyEnabled() = false, want true (default-on restored)")
+	}
 }
 
 func TestUpdateJumphostHostKeyVerifyPatch(t *testing.T) {

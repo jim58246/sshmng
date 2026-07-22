@@ -280,6 +280,13 @@ func TestJumphostHostKeyVerifyEnabled(t *testing.T) {
 			t.Errorf("nil HostKeyVerify: got false, want true (default secure)")
 		}
 	})
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		j := &Jumphost{HostKeyVerify: &v}
+		if !j.HostKeyVerifyEnabled() {
+			t.Errorf("explicit true: got false, want true")
+		}
+	})
 	t.Run("explicit false", func(t *testing.T) {
 		v := false
 		j := &Jumphost{HostKeyVerify: &v}

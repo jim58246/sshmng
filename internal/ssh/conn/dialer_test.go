@@ -466,8 +466,6 @@ func newMockSSHServerWithListener(t *testing.T, l net.Listener, user, password s
 	return s
 }
 
-// (unused imports guard removed — all imports are used above)
-
 // --- host key verify 跳过 ---
 
 func TestDialerSkipsHostKeyWhenDisabled(t *testing.T) {

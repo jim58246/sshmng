@@ -71,6 +71,8 @@ type Jumphost struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`         // 0 = 默认 50
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"` // 0 = 默认 60000
+	// HostKeyVerify 控制到 jumphost 自身的 SSH dial 是否做 host key 校验。
+	// nil（未配置）→ true（默认 TOFU）；显式 false → 跳过校验。
 	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             *Jumphost              `json:"-"`                           // 多跳递归口子（v1 不实现）
 	Proxy           *Proxy                 `json:"-"`
@@ -93,6 +95,8 @@ type SSHServer struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
+	// HostKeyVerify 仅直连和 Pattern A（via.ssh_j=true）生效；Pattern B（via.ssh_j=false）
+	// 下 target 登录走 PTY 非 SSH dial，此字段不参与。nil → true（默认 TOFU）；显式 false → 跳过。
 	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             *Jumphost              `json:"-"` // 可空，空表示直连
 	Proxy           *Proxy                 `json:"-"` // 可空，空表示不走传输代理

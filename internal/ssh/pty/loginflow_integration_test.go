@@ -239,9 +239,10 @@ func TestIntegrationLoginFlowSuccess(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -296,9 +297,10 @@ func TestIntegrationLoginFlowFailureReturnsTrace(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)

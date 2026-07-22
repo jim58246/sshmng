@@ -120,9 +120,10 @@ func TestOpenPtyConnWithTimeoutHangsOnShell(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "any"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "any"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)

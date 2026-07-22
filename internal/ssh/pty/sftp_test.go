@@ -18,9 +18,10 @@ func TestSftpEstablishedAtLogin(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -41,9 +42,10 @@ func TestSftpUnavailableWhenSubsystemRejected(t *testing.T) {
 	srv := newFakeShellServer(t) // 默认 enableSftp=false
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -66,9 +68,10 @@ func TestUploadNormalPath(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -112,9 +115,10 @@ func TestUploadSftpUnavailable(t *testing.T) {
 	srv := newFakeShellServer(t) // 不支持 sftp
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -140,9 +144,10 @@ func TestUploadTimeout(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -173,9 +178,10 @@ func TestDownloadNormalPath(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -213,9 +219,10 @@ func TestDownloadSftpUnavailable(t *testing.T) {
 	srv := newFakeShellServer(t) // 不支持 sftp
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -242,9 +249,10 @@ func TestDownloadTimeout(t *testing.T) {
 	srv := newFakeShellServerWithSftp(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)

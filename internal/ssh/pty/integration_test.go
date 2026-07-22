@@ -381,9 +381,10 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 	d := newDialerWithTempKnownHosts(t)
 
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -423,9 +424,10 @@ func TestIntegrationRunFailingCommand(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -448,9 +450,10 @@ func TestIntegrationRunTimeout(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -473,9 +476,10 @@ func TestIntegrationMultipleCommands(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -506,9 +510,10 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 	srv := newFakeShellServer(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -547,9 +552,10 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 	srv := newFakeShellServerWithEcho(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -595,9 +601,10 @@ func TestIntegrationDetectShellWorksWithEcho(t *testing.T) {
 	srv := newFakeShellServerWithAlwaysEcho(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -639,9 +646,10 @@ func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 	srv := newFakeShellServerWithRealisticPrompt(t)
 	d := newDialerWithTempKnownHosts(t)
 	client, err := d.Dial(conn.DialOptions{
-		Addr: srv.Addr(),
-		User: "alice",
-		Auth: config.SSHAuth{Password: "wonderland"},
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
