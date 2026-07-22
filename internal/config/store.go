@@ -53,6 +53,11 @@ func (s *Store) Load() (*Config, error) {
 
 // Save 原子写入配置到文件。写临时文件 + rename，避免写一半崩溃损坏原文件。
 // 文件权限强制 0600。
+//
+// Windows fallback：rename 可能因目标文件被外部进程占用（编辑器/Inspector 未共享
+// FILE_SHARE_DELETE）而失败。此时 fallback 到直接 truncate + write（os.WriteFile），
+// 非原子（写一半崩溃会损坏文件），但只需目标文件共享 FILE_SHARE_WRITE（大多数现代
+// 编辑器默认共享）。Unix 不 fallback，保持原子性。
 func (s *Store) Save(c *Config) error {
 	data, err := marshalConfig(c)
 	if err != nil {
@@ -84,6 +89,13 @@ func (s *Store) Save(c *Config) error {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, s.path); err != nil {
+		if runtime.GOOS == "windows" {
+			os.Remove(tmpName)
+			if werr := os.WriteFile(s.path, data, 0600); werr != nil {
+				return fmt.Errorf("rename temp to config: %v (fallback write also failed: %v)", err, werr)
+			}
+			return nil
+		}
 		os.Remove(tmpName)
 		return fmt.Errorf("rename temp to config: %w", err)
 	}

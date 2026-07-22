@@ -502,6 +502,7 @@ type TraceEntry struct {
 - 客户端启动时加载 `config.json` 到内存
 - `update_ssh_server` 等写操作：修改内存 + 持久化到文件
 - 持久化采用原子写（写临时文件 + rename），避免写一半崩溃
+- Windows fallback：rename 因目标文件被外部进程占用失败时，降级为直接 truncate + write（非原子，但只需 FILE_SHARE_WRITE，兼容编辑器打开场景）
 - 文件权限 `0600`
 
 ### 3.5 安全模型
