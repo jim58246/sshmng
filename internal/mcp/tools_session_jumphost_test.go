@@ -202,28 +202,30 @@ func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 			}
 			continue
 		case "target_shell":
-			// RC 阶段：消费 RC 行直到 `export PS1='__P_<sid>__> '`（BuildRC 最后一行）
+			// RC 阶段：消费 RC 行直到 `export PS1='$(echo _$?)__<sid>___]# '`（BuildRC 最后一行）
 			if !rcDone {
-				if strings.Contains(line, "export PS1='__P_") {
-					re := regexp.MustCompile(`__P_([0-9a-f]+)__>`)
+				if strings.Contains(line, "export PS1='$(echo _$?)__") {
+					re := regexp.MustCompile(`__([0-9a-f]+)___\]# `)
 					m := re.FindStringSubmatch(line)
 					if len(m) > 1 {
 						sid = m[1]
 					}
 					rcDone = true
-					fmt.Fprintf(ch, "__P_%s__> ", sid)
+					// emit 初始 PS1 sentinel：`_0__<sid>___]# `（export PS1=... 命令退出 0）
+					fmt.Fprintf(ch, "_0__%s___]# ", sid)
 				}
 				// 其他 RC 行：忽略
 				continue
 			}
-			// setup token 命令：记录 token，emit setup sentinel（含 token）
-			if strings.HasPrefix(line, "__sshmng_tok=") {
-				re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+			// setup 命令：`PS1='$(echo _$?)__<sid>_<token>__]# '`
+			// 记录 token，emit setup sentinel（含 token，exit code 0）
+			if strings.Contains(line, "PS1='$(echo _$?)__") && strings.Contains(line, "__]# '") {
+				re := regexp.MustCompile(`__` + sid + `_([0-9a-f]+)__\]# `)
 				m := re.FindStringSubmatch(line)
 				if len(m) > 1 {
 					tok = m[1]
 				}
-				fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+				fmt.Fprintf(ch, "_0__%s_%s__]# ", sid, tok)
 				continue
 			}
 			cmd := exec.Command("sh", "-c", line)
@@ -240,9 +242,9 @@ func runFakeJumphostShellForMCP(ch cryptossh.Channel) {
 				}
 			}
 			if tok != "" {
-				fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, exitCode, sid, tok)
+				fmt.Fprintf(ch, "_%d__%s_%s__]# ", exitCode, sid, tok)
 			} else {
-				fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, exitCode, sid)
+				fmt.Fprintf(ch, "__P_%s__> ", sid)
 			}
 		}
 	}

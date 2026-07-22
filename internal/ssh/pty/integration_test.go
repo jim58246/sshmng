@@ -68,7 +68,7 @@ func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
 }
 
 // newFakeShellServerWithRealisticPrompt 创建模拟真实 bash prompt 行为的 fake server。
-// 真实 bash 在交互模式下，每行命令执行完都会显示 PS1（先执行 PROMPT_COMMAND）。
+// 真实 bash 在交互模式下，每行命令执行完都会显示 PS1。
 // 这复现 BuildRC 多行 RC 导致 injectRC 提前匹配 sentinel 的 bug：`export PS1=` 在
 // RC 中间，injectRC 等到该行后的 sentinel 就以为 RC 完成，但后续行的 prompt 残留
 // 在 stdoutCh 里被下次 Run 误消费。
@@ -245,7 +245,8 @@ func runSftpServer(ch ssh.Channel) {
 }
 
 // runFakeShell 实现 fake shell：读行、解析 RC 注入、执行命令、发射 sentinel。
-// 模拟真实 shell 在 RC 注入后的行为。
+// 模拟真实 shell 在 RC 注入后的行为（新 PS1-only 设计：`$(echo _$?)` 在 PS1 中
+// 展开 exit code，sentinel 格式 `_<rc>__<sid>_<token>__]# `）。
 //
 // echoEnabled=true 时（对应 sshmng 在 pty-req 中请求 ECHO=1），每读到一行就先把
 // 原始行回显到 stdout，再交给 shell 处理。这模拟真实 SSH server 的 tty driver
@@ -254,20 +255,17 @@ func runSftpServer(ch ssh.Channel) {
 // 等），容易导致 sentinel 误匹配。
 //
 // 状态机：detecting（探测 shell）→ rc_injecting（消费 RC 行）→ command（执行命令）。
-// RC 结束标记是 `export PS1='__P_<sid>__> '` 行（BuildRC 把 PS1 export 放最后，
-// 保证 injectRC 等到 sentinel 时 RC 已全部执行完）。rc_injecting 期间所有行忽略
-// 不执行，避免 RC 行被误当命令跑。
+// RC 结束标记是 `export PS1='$(echo _$?)__<sid>___]# '` 行（BuildRC 把 PS1 export
+// 放最后，保证 injectRC 等到 sentinel 时 RC 已全部执行完）。rc_injecting 期间所有
+// 行忽略不执行，避免 RC 行被误当命令跑。
 //
-// token 化：Run 在写命令前先写 setup 命令 `__sshmng_tok=<token>; ...`。fake shell
-// 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的 sentinel 也含
-// 该 token，模拟真实 bash PROMPT_COMMAND 用 ${__sshmng_tok} 输出 sentinel 的行为。
+// token 化：Run 在写命令前先写 setup 命令 `PS1='$(echo _$?)__<sid>_<token>__]# '`。
+// fake shell 识别此行，记录 token，emit setup sentinel（含 token，exit code 0）。
+// 后续命令的 sentinel 也含该 token 和真实 exit code，模拟真实 bash PS1 展开行为。
 //
-// realisticPrompt=true 时模拟真实 bash 在 RC 期间每行执行后都显示 PS1 的行为，
-// 用于复现 BuildRC 把 `export PS1=` 放在 RC 中间导致 injectRC 提前匹配的 bug：
-// 在 `export PS1=` 行后再额外 emit 若干 `__E_<sid>:0__\r\n__P_<sid>__> ` 模拟
-// 后续 RC 行触发的 prompt。修复后 BuildRC 把 `export PS1=` 放最后，无后续行，
-// 无残留 sentinel。
-func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool) {
+// realisticPrompt 现在是 no-op：新 BuildRC 把 export PS1 放最后，无后续 RC 行触发
+// 额外 prompt。参数保留以避免破坏测试调用，将来可移除。
+func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, _ bool) {
 	reader := bufio.NewReader(ch)
 	var sid string
 	var tok string
@@ -294,35 +292,32 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool
 			continue
 		}
 
-		// RC 注入阶段：消费 RC 行直到 `export PS1='__P_<sid>__> '`（BuildRC 最后一行）
+		// RC 注入阶段：消费 RC 行直到 `export PS1='$(echo _$?)__<sid>___]# '`（BuildRC 最后一行）
 		if !rcDone {
-			if strings.Contains(line, "export PS1='__P_") {
-				re := regexp.MustCompile(`__P_([0-9a-f]+)__>`)
+			if strings.Contains(line, "export PS1='$(echo _$?)__") {
+				re := regexp.MustCompile(`__([0-9a-f]+)___\]# `)
 				m := re.FindStringSubmatch(line)
 				if len(m) > 1 {
 					sid = m[1]
 				}
 				rcDone = true
-				// emit sentinel：PS1 已设置。realisticPrompt 模式下 PROMPT_COMMAND
-				// 已在 export PS1 之前的 if 行设置，会在显示 PS1 前触发，emit exit sentinel。
-				if realisticPrompt {
-					fmt.Fprintf(ch, "__E_%s__:0__\r\n", sid)
-				}
-				fmt.Fprintf(ch, "__P_%s__> ", sid)
+				// emit 初始 PS1 sentinel：`_0__<sid>___]# `（export PS1=... 命令退出 0）
+				fmt.Fprintf(ch, "_0__%s___]# ", sid)
 			}
 			// 其他 RC 行：忽略不执行
 			continue
 		}
 
-		// setup token 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '`
-		// 记录 token，emit setup sentinel（含 token）。不当作正常命令执行。
-		if strings.HasPrefix(line, "__sshmng_tok=") {
-			re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+		// setup 命令：`PS1='$(echo _$?)__<sid>_<token>__]# '`
+		// 记录 token，emit setup sentinel `_0__<sid>_<token>__]# `（setup 命令退出 0）。
+		// 不当作正常命令执行。
+		if strings.Contains(line, "PS1='$(echo _$?)__") && strings.Contains(line, "__]# '") {
+			re := regexp.MustCompile(`__` + sid + `_([0-9a-f]+)__\]# `)
 			m := re.FindStringSubmatch(line)
 			if len(m) > 1 {
 				tok = m[1]
 			}
-			fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+			fmt.Fprintf(ch, "_0__%s_%s__]# ", sid, tok)
 			continue
 		}
 
@@ -341,9 +336,11 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, realisticPrompt bool
 			}
 		}
 		if tok != "" {
-			fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, exitCode, sid, tok)
+			// bash/zsh 路径：单 sentinel 含 exit code 和 token
+			fmt.Fprintf(ch, "_%d__%s_%s__]# ", exitCode, sid, tok)
 		} else {
-			fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, exitCode, sid)
+			// dash/ash 路径（fake shell 不实际跑，保留分支以防未来扩展）
+			fmt.Fprintf(ch, "__P_%s__> ", sid)
 		}
 	}
 }
@@ -567,15 +564,14 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 
 // TestIntegrationRealisticBashPromptsDuringRC 验证 BuildRC 在真实 bash 行为下能正确工作。
 //
-// 真实 bash 在交互模式下，每行 RC 执行完都会显示 PS1（先执行 PROMPT_COMMAND）。
-// 如果 BuildRC 把 `export PS1='__P_<sid>__> '` 放在 RC 中间（第 5 行），injectRC 等
-// 第一个 `__P_<sid>__> ` 时会在该行后立刻匹配，但 RC 还有 if/set/stty 3 行没执行。
-// 后续 3 行的 prompt 输出（`__E_<sid>:0__\r\n__P_<sid>__> `）残留在 stdoutCh，
-// 下次 Run 调用 readUntilPatternTimeout 立刻匹配残留 sentinel，返回空 output +
-// exit_code=0，命令实际未执行。
+// 真实 bash 在交互模式下，每行 RC 执行完都会显示 PS1（PS1 中 `$(echo _$?)` 展开）。
+// 如果 BuildRC 把 `export PS1='$(echo _$?)__<sid>___]# '` 放在 RC 中间，injectRC
+// 等到第一个 sentinel 时 RC 后续行还没执行，后续行的 prompt 残留在 stdoutCh，
+// 下次 Run 立刻匹配残留 sentinel 返回空 output + exit_code=0，命令实际未执行。
 //
-// 修复：BuildRC 把 `export PS1=` 移到 RC 最后一行，确保 injectRC 等到 sentinel 时
-// RC 已全部执行完。
+// 新设计：BuildRC 把 `export PS1=` 放在 RC 最后一行，确保 injectRC 等到 sentinel
+// 时 RC 已全部执行完。realisticPrompt 现在是 no-op（新 BuildRC 无后续 RC 行触发
+// 额外 prompt），但测试保留作为回归检查。
 func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 	srv := newFakeShellServerWithRealisticPrompt(t)
 	d := newDialerWithTempKnownHosts(t)

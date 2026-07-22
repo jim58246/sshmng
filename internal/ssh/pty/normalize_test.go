@@ -35,11 +35,13 @@ func TestStripANSIRemovesCSISequences(t *testing.T) {
 
 // TestStripANSIPreservesSentinels 验证 sentinel 字面量不被剥离。
 // sentinel 是 ASCII 字符串，不含 ANSI 序列，理应原样保留。
+// 新 sentinel 格式：`_<rc>__<sid>_<token>__]# `（bash/zsh）和 `__P_<sid>__> `（dash/ash）。
 func TestStripANSIPreservesSentinels(t *testing.T) {
 	cases := []string{
+		"_0__a3f2b1c9___]# ",
+		"_0__a3f2b1c9_11223344__]# ",
+		"_1__a3f2b1c9_11223344__]# ",
 		"__P_a3f2b1c9__> ",
-		"__E_a3f2b1c9__:0__",
-		"__E_a3f2b1c9__:-1__",
 		"__SHELL_DETECT__:/bin/bash:5.1.0:",
 		"__DETECT_END_1a2b3c4d__",
 	}
@@ -53,8 +55,8 @@ func TestStripANSIPreservesSentinels(t *testing.T) {
 
 // TestStripANSIPreservesSentinelsInMixedOutput 验证混合 ANSI + sentinel 的输出剥离 ANSI 后 sentinel 完整。
 func TestStripANSIPreservesSentinelsInMixedOutput(t *testing.T) {
-	in := "\x1b[0;31mfile1\x1b[0m\r\n__E_a3f2b1c9__:0__\r\n__P_a3f2b1c9__> "
-	want := "file1\r\n__E_a3f2b1c9__:0__\r\n__P_a3f2b1c9__> "
+	in := "\x1b[0;31mfile1\x1b[0m\r\n_0__a3f2b1c9_11223344__]# "
+	want := "file1\r\n_0__a3f2b1c9_11223344__]# "
 	got := StripANSI(in)
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -87,9 +89,11 @@ func TestStripANSIRemovesOSCSequences(t *testing.T) {
 	}
 }
 
-// TestCleanOutputRemovesSentinelLines 验证 CleanOutput 移除 sentinel 行、PS1 残留、ANSI 转义。
+// TestCleanOutputRemovesSentinelLines 验证 CleanOutput 移除 sentinel、ANSI 转义。
+// 新 sentinel 格式：`_<rc>__<sid>_<token>__]# `（单 sentinel，含 exit code 和 token）。
 func TestCleanOutputRemovesSentinelLines(t *testing.T) {
 	sid := "a3f2b1c9"
+	tok := "11223344"
 	cases := []struct {
 		name string
 		in   string
@@ -97,12 +101,12 @@ func TestCleanOutputRemovesSentinelLines(t *testing.T) {
 	}{
 		{
 			name: "command output with sentinel",
-			in:   "file1\r\nfile2\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> ",
+			in:   "file1\r\nfile2\r\n_0__" + sid + "_" + tok + "__]# ",
 			want: "file1\nfile2",
 		},
 		{
 			name: "ansi + sentinel",
-			in:   "\x1b[0;31merror\x1b[0m\r\n__E_" + sid + "__:1__\r\n__P_" + sid + "__> ",
+			in:   "\x1b[0;31merror\x1b[0m\r\n_1__" + sid + "_" + tok + "__]# ",
 			want: "error",
 		},
 		{
@@ -117,8 +121,13 @@ func TestCleanOutputRemovesSentinelLines(t *testing.T) {
 		},
 		{
 			name: "only sentinel",
-			in:   "__E_" + sid + "__:0__\r\n__P_" + sid + "__> ",
+			in:   "_0__" + sid + "_" + tok + "__]# ",
 			want: "",
+		},
+		{
+			name: "initial PS1 sentinel (empty token)",
+			in:   "output\r\n_0__" + sid + "___]# ",
+			want: "output",
 		},
 	}
 	for _, c := range cases {
@@ -134,7 +143,8 @@ func TestCleanOutputRemovesSentinelLines(t *testing.T) {
 // TestCleanOutputNormalizeLineEndings 验证 CleanOutput 把 \r\n 标准化为 \n。
 func TestCleanOutputNormalizeLineEndings(t *testing.T) {
 	sid := "a3f2b1c9"
-	in := "line1\r\nline2\r\nline3\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> "
+	tok := "11223344"
+	in := "line1\r\nline2\r\nline3\r\n_0__" + sid + "_" + tok + "__]# "
 	want := "line1\nline2\nline3"
 	got := CleanOutput(in, sid)
 	if got != want {
@@ -146,7 +156,8 @@ func TestCleanOutputNormalizeLineEndings(t *testing.T) {
 // 命令输出后通常有 \r\n 然后 sentinel，清洗后应去除末尾空行。
 func TestCleanOutputTrailingNewline(t *testing.T) {
 	sid := "a3f2b1c9"
-	in := "output\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> "
+	tok := "11223344"
+	in := "output\r\n_0__" + sid + "_" + tok + "__]# "
 	want := "output"
 	got := CleanOutput(in, sid)
 	if got != want {
@@ -157,7 +168,8 @@ func TestCleanOutputTrailingNewline(t *testing.T) {
 // TestCleanOutputPreservesInternalNewlines 验证命令输出中的多行内容保留。
 func TestCleanOutputPreservesInternalNewlines(t *testing.T) {
 	sid := "a3f2b1c9"
-	in := "line1\r\n\r\nline3\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> "
+	tok := "11223344"
+	in := "line1\r\n\r\nline3\r\n_0__" + sid + "_" + tok + "__]# "
 	want := "line1\n\nline3"
 	got := CleanOutput(in, sid)
 	if got != want {
@@ -166,13 +178,16 @@ func TestCleanOutputPreservesInternalNewlines(t *testing.T) {
 }
 
 // TestCleanOutputWithDifferentSid 验证 CleanOutput 不会误删其他 sid 的 sentinel。
-// 命令输出中可能含字面量 __E_<other>__:0__，不应被清除。
+// 命令输出中可能含字面量 _0__other___]# ，不应被清除。
 func TestCleanOutputWithDifferentSid(t *testing.T) {
 	sid := "a3f2b1c9"
+	tok := "11223344"
 	// 输出含其他 sid 字面量（命令 echo 出来的），不应被当 sentinel 清除
-	in := "echo __E_deadbeef__:0__\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> "
+	// 注意：其他 sid 的 sentinel 字面量含尾随空格，CleanOutput 不清除它（sid 不匹配），
+	// 但 TrimRight 只去 \n 不去空格，所以尾随空格保留。
+	in := "echo _99__deadbeef___]# \r\n_0__" + sid + "_" + tok + "__]# "
 	got := CleanOutput(in, sid)
-	want := "echo __E_deadbeef__:0__"
+	want := "echo _99__deadbeef___]# "
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -182,7 +197,8 @@ func TestCleanOutputWithDifferentSid(t *testing.T) {
 // PTY 流中 \r 可能用于光标回退，清洗后应去除。
 func TestCleanOutputStrayCR(t *testing.T) {
 	sid := "a3f2b1c9"
-	in := "progress\r100%\r\n__E_" + sid + "__:0__\r\n__P_" + sid + "__> "
+	tok := "11223344"
+	in := "progress\r100%\r\n_0__" + sid + "_" + tok + "__]# "
 	got := CleanOutput(in, sid)
 	want := "progress100%"
 	// 或者 "progress\n100%"，取决于实现。我们倾向把 \r 替换为空（PTY 中 \r 通常是光标回退）。

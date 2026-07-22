@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// TestDetectShellReady 验证 PTY 流末尾出现本 sid 的 PS1 sentinel 时判定 shell 就绪。
-// 宽松匹配：允许无 token（injectRC 初始 PS1 `__P_<sid>__> `）和有 token（Run 中 `__P_<sid>_<token>__> `）。
+// TestDetectShellReady 验证 PTY 流末尾出现本 sid 的初始 PS1 sentinel 时判定 shell 就绪。
+// 新 sentinel 格式（bash/zsh）：`_<rc>__<sid>_<token>__]# `，token 可空（injectRC 初始 PS1）。
+// dash/ash 仍用 `__P_<sid>__> `（无 $(echo _$?) 扩展）。
 func TestDetectShellReady(t *testing.T) {
 	sid := "a3f2b1c9"
 	tok := "11223344"
@@ -15,16 +16,16 @@ func TestDetectShellReady(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"ends with PS1 no token", "output\r\n__E_" + sid + "_" + tok + "__:0__\r\n__P_" + sid + "__> ", true},
-		{"only PS1 no token", "__P_" + sid + "__> ", true},
-		{"PS1 with token", "__P_" + sid + "_" + tok + "__> ", true},
-		{"PS1 with token trailing space", "__P_" + sid + "_" + tok + "__>  ", true},
+		{"ends with initial PS1 (empty token)", "output\r\n_0__" + sid + "___]# ", true},
+		{"only initial PS1", "_0__" + sid + "___]# ", true},
+		{"PS1 with token", "_0__" + sid + "_" + tok + "__]# ", true},
+		{"PS1 with token trailing space", "_0__" + sid + "_" + tok + "__]#  ", true},
+		{"exit code 1", "_1__" + sid + "_" + tok + "__]# ", true},
 		{"no sentinel", "some output", false},
 		{"empty", "", false},
-		{"sentinel in middle not ready", "__P_" + sid + "_" + tok + "__> some text", false},
-		{"only exit sentinel not ready", "__E_" + sid + "_" + tok + "__:0__", false},
-		{"other sid not ready", "__P_deadbeef__> ", false},
-		{"other sid with token not ready", "__P_deadbeef_aabb__> ", false},
+		{"sentinel in middle not ready", "_0__" + sid + "_" + tok + "__]# some text", false},
+		{"other sid not ready", "_0__deadbeef___]# ", false},
+		{"other sid with token not ready", "_0__deadbeef_aabb__]# ", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -38,6 +39,7 @@ func TestDetectShellReady(t *testing.T) {
 
 // TestExtractExitCode 验证从 PTY 流中提取本 sid + 本 token 的 exit code。
 // 精确匹配 token：命令输出含旧 token 的 sentinel 字面量不会误匹配。
+// 新 sentinel 格式：`_<rc>__<sid>_<token>__]# `，rc 是数字（exit code）。
 func TestExtractExitCode(t *testing.T) {
 	sid := "a3f2b1c9"
 	tok := "11223344"
@@ -47,16 +49,15 @@ func TestExtractExitCode(t *testing.T) {
 		wantCode  int
 		wantFound bool
 	}{
-		{"zero", "output\r\n__E_" + sid + "_" + tok + "__:0__\r\n", 0, true},
-		{"positive", "__E_" + sid + "_" + tok + "__:42__\r\n", 42, true},
-		{"negative", "__E_" + sid + "_" + tok + "__:-1__\r\n", -1, true},
-		{"two digit", "__E_" + sid + "_" + tok + "__:127__", 127, true},
-		{"large", "__E_" + sid + "_" + tok + "__:255__", 255, true},
+		{"zero", "output\r\n_0__" + sid + "_" + tok + "__]# ", 0, true},
+		{"positive", "_42__" + sid + "_" + tok + "__]# ", 42, true},
+		{"two digit", "_127__" + sid + "_" + tok + "__]# ", 127, true},
+		{"large", "_255__" + sid + "_" + tok + "__]# ", 255, true},
 		{"no sentinel", "output", 0, false},
 		{"empty", "", 0, false},
-		{"other sid", "__E_deadbeef_" + tok + "__:0__", 0, false},
-		{"truncated sentinel", "__E_" + sid + "_" + tok + "__:0", 0, false},
-		{"with ANSI", "\x1b[0m__E_" + sid + "_" + tok + "__:0__\x1b[0m", 0, true},
+		{"other sid", "_0__deadbeef_" + tok + "__]# ", 0, false},
+		{"truncated sentinel", "_0__" + sid + "_" + tok + "__]#", 0, false},
+		{"with ANSI", "\x1b[0m_0__" + sid + "_" + tok + "__]# \x1b[0m", 0, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -75,7 +76,7 @@ func TestExtractExitCode(t *testing.T) {
 func TestExtractExitCodeMultipleSentinels(t *testing.T) {
 	sid := "a3f2b1c9"
 	tok := "11223344"
-	in := "__E_" + sid + "_" + tok + "__:0__\r\n__E_" + sid + "_" + tok + "__:1__\r\n__P_" + sid + "_" + tok + "__> "
+	in := "_0__" + sid + "_" + tok + "__]# \r\n_1__" + sid + "_" + tok + "__]# "
 	code, found := ExtractExitCode(in, sid, tok)
 	if !found || code != 1 {
 		t.Errorf("got code=%d found=%v, want code=1 found=true (last sentinel wins)", code, found)
@@ -88,7 +89,7 @@ func TestExtractExitCodeTokenMismatch(t *testing.T) {
 	sid := "a3f2b1c9"
 	currentTok := "11223344"
 	oldTok := "deadbeef"
-	in := "__E_" + sid + "_" + oldTok + "__:0__\r\n__P_" + sid + "_" + oldTok + "__> "
+	in := "_0__" + sid + "_" + oldTok + "__]# "
 	code, found := ExtractExitCode(in, sid, currentTok)
 	if found {
 		t.Errorf("expected found=false for mismatched token, got code=%d found=%v", code, found)
@@ -101,7 +102,7 @@ func TestExtractExitCodeLiteralCollision(t *testing.T) {
 	sid := "a3f2b1c9"
 	tok := "11223344"
 	// 命令输出含旧 token sentinel 字面量（99），真 sentinel 含当前 token（0）
-	in := "echo __E_" + sid + "_oldtok__:99__\r\n__E_" + sid + "_" + tok + "__:0__\r\n__P_" + sid + "_" + tok + "__> "
+	in := "echo _99__" + sid + "_oldtok__]# \r\n_0__" + sid + "_" + tok + "__]# "
 	code, found := ExtractExitCode(in, sid, tok)
 	if !found || code != 0 {
 		t.Errorf("got code=%d found=%v, want code=0 found=true", code, found)

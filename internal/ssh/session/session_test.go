@@ -91,7 +91,7 @@ func (f *fakeConn) Download(string, io.Writer, int) (int, bool, error) {
 func TestRunInSessionStoresRawOutputInTrace(t *testing.T) {
 	mgr := NewManager()
 	conn := newFakeConn()
-	raw := "hello\r\n\x1b[0m__E_deadbeef__:0__\r\n__P_deadbeef__> "
+	raw := "hello\r\n\x1b[0m_0__deadbeef_11223344__]# "
 	conn.runResult = fakeRunResult{
 		output:    "hello",
 		rawOutput: raw,

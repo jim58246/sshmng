@@ -61,9 +61,9 @@ sshmng/
 │   │   ├── pty/                    # L2 PTY 层：PTY 读写、sentinel 匹配、RC 注入
 │   │   │   ├── pty.go              # PtyConn：OpenPtyConn / Run / Close / Upload / Download
 │   │   │   ├── read.go             # readLoop + readUntilCommandDone + pushback
-│   │   │   ├── sentinel.go         # 组合 sentinel 正则 + ExtractExitCode
+│   │   │   ├── sentinel.go         # PS1-only sentinel 正则 + ExtractExitCode
 │   │   │   ├── normalize.go        # ANSI 过滤 + CleanOutput
-│   │   │   ├── shell_detect.go     # shell 探测 + BuildRC（函数包装器）
+│   │   │   ├── shell_detect.go     # shell 探测 + BuildRC（PS1-only，无 PROMPT_COMMAND）
 │   │   │   └── *_test.go
 │   │   └── session/                # L3 状态机层：session 生命周期 + Manager + trace
 │   │       ├── session.go          # Session 状态机（idle/running/closed）
@@ -119,7 +119,7 @@ sshmng/
 - `PtyConn` 用单 reader goroutine 从 stdout 读取并投递到 channel，避免多 goroutine 竞争 SSH channel 的 `Read`
 - TOFU：首次见到 host key 记录到 `known_hosts`；后续比对；变更拒绝并报 "possible MITM"
 - 私钥文件权限必须 0600 或更严（group/other 任何权限位都拒绝）
-- sentinel：`__P_<sid>__> ` (PS1) + `__E_<sid>__:<exit>__` (PROMPT_COMMAND)；sid 为 8 字节十六进制随机串
+- sentinel：bash/zsh 用 PS1-only `$(echo _$?)__<sid>_<token>__]# `（prompt 展开时捕获 exit code + token）；dash/ash 用固定 `__P_<sid>__> `（无 exit code）；sid 为 8 字节十六进制随机串，token 为每次 Run 生成的 8 字节十六进制随机串
 - session 状态机：`run_in_session` 仅在 idle 时可调；running 时报 "session busy"；closed 时报 "session closed"
 - idle timeout：`time.AfterFunc`，命令执行期间停止 timer，结束后重置
 
@@ -225,8 +225,10 @@ sshmng/
 2. Ctrl-C drain 失败后远端命令仍在跑，下次 Run 的 cmd 被旧命令消费，输出混乱
 
 **修复（A+D 方案）**：
-- **A**：Run 等 exit+PS1 组合 sentinel（`__E_<sid>:N__\r\n__P_<sid>__> ` 正则），而非单独 PS1。避免 PS1 字面量误匹配
+- **A**：Run 等 PS1-only sentinel（`_-?\d+__<sid>_<token>__]# ` 正则，`$(echo _$?)` 在 prompt 展开时捕获 exit code），而非单独 PS1 字面量。避免 PS1 字面量误匹配
 - **D**：drain 超时后强制 Close SSH channel，终止远端命令。session 进 closed，Agent 需重新 login
+
+> 注：阶段 5.1 的 exit+PS1 组合 sentinel（`__E_<sid>:N__\r\n__P_<sid>__> `）已被后续 PS1-only 重构取代——审计机器把 `PROMPT_COMMAND` 设为只读会破坏组合 sentinel 的 PROMPT_COMMAND 路径。新设计见 `docs/ssh-session-manager-design.md` 3.7 节"命令边界识别"。
 
 **测试**：
 - `TestRunIgnoresPS1LiteralInCommandOutput`：命令输出含 PS1 字面量，验证下次 Run 正常执行
@@ -309,7 +311,7 @@ type Manager struct{...}  // map[sid]*Session + graveyard
 
 针对性补测试：
 
-- **sentinel 模块**：组合 sentinel 正则匹配（exit code 变量、字面量碰撞、跨边界）+ token 化匹配（精确 token、旧 token 不匹配）
+- **sentinel 模块**：PS1-only sentinel 正则匹配（exit code 变量、字面量碰撞、跨边界）+ token 化匹配（精确 token、旧 token 不匹配）
 - **PTY 模块**：pushback 跨 Run 持久化、drain 成功/失败、Ctrl-C 发送、setup token 超时返回 connUnusable、sentinel 分片组装
 - **状态机模块**：idle→running→idle 转换、closed 态拒绝所有操作、idle timeout 重置、connUnusable 触发 Session.Close
 - **连接层模块**：Dial 超时、TOFU 新增/变更、代理拨号

@@ -29,7 +29,7 @@ const ctrlCDrainTimeout = 3 * time.Second
 
 // setTokenTimeout 是 Run 写入 setup token 命令后等待 setup sentinel 的超时。
 // 正常情况下 bash/zsh 立即执行 setup 命令并 emit sentinel；超时说明 shell 异常
-// （如 RC 注入失败导致 PROMPT_COMMAND 没设上），session 不可用，强制 Close。
+// （如 RC 注入失败导致 PS1 没设上），session 不可用，强制 Close。
 const setTokenTimeout = 2 * time.Second
 
 // shellDetectTimeout 是 shell 类型探测的超时。
@@ -369,19 +369,38 @@ func (p *PtyConn) detectShell() (string, error) {
 }
 
 // injectRC 发送 RC 脚本并等待首个 PS1 sentinel 出现。
+//
+// bash/zsh：等初始 PS1 sentinel `_<rc>__<sid>___]# `（token 为空，rc 是 RC 最后一行
+// `export PS1=...` 的退出码 0）。用 regex 匹配（因 sentinel 含动态 exit code）。
+//
+// dash/ash：等字面量 `__P_<sid>__> `（无 $(echo _$?) 扩展，无 exit code）。
 func (p *PtyConn) injectRC() error {
 	rc := BuildRC(p.shell, p.sid)
 	p.logger.Debug("inject rc send", "sid", p.sid, "shell", p.shell, "rc", rc)
 	if _, err := p.stdin.Write([]byte(rc)); err != nil {
 		return fmt.Errorf("write rc: %w", err)
 	}
-	ps1Sentinel := fmt.Sprintf("__P_%s__> ", p.sid)
-	_, err := p.readUntilPattern(ps1Sentinel, rcInjectTimeout)
-	if err != nil {
-		return err
+	if p.shell == "bash" || p.shell == "zsh" {
+		re := initialPS1Re(p.sid)
+		_, timedOut := p.readUntilRegexTimeout(re, rcInjectTimeout)
+		if timedOut {
+			return fmt.Errorf("timeout waiting for initial PS1 sentinel after %s", rcInjectTimeout)
+		}
+	} else {
+		ps1Sentinel := fmt.Sprintf("__P_%s__> ", p.sid)
+		if _, err := p.readUntilPattern(ps1Sentinel, rcInjectTimeout); err != nil {
+			return err
+		}
 	}
 	p.logger.Debug("inject rc done", "sid", p.sid, "shell", p.shell)
 	return nil
+}
+
+// initialPS1Re 返回匹配初始 PS1 sentinel 的 regex（bash/zsh）。
+// 格式：`_<rc>__<sid>_<token?>__]# `，token 可空（\w* 允许空或任意 word 字符）。
+// rc 是 exit code（-?\d+ 允许防御性负数）。
+func initialPS1Re(sid string) *regexp.Regexp {
+	return regexp.MustCompile(`_-?\d+__` + regexp.QuoteMeta(sid) + `_\w*__]# `)
 }
 
 // Run 实现 Conn 接口。发送命令、读取输出、解析 exit code、清洗、截断。
@@ -389,9 +408,10 @@ func (p *PtyConn) injectRC() error {
 // bash/zsh 走 token 化流程（runWithToken）：每次 Run 生成唯一 token，sentinel 含
 // token。命令输出不可能预知 token，从根本上杜绝命令/结果错配。
 //
-// dash/ash 走 PS1-only 流程（runPS1Only）：BuildRC 不设 PROMPT_COMMAND，无 exit
-// sentinel，exit code 恒为 -1。仅匹配 PS1（无 token），可能误匹配 PS1 字面量，
-// 但 dash/ash 少见且无 PROMPT_COMMAND 机制，接受此限制。
+// dash/ash 走 PS1-only 流程（runPS1Only）：BuildRC 只覆盖 PS1（`__P_<sid>__> `，
+// 不用 `$(echo _$?)`，因 dash/ash 不展开 PS1 中的 `$(...)`），无 exit sentinel，
+// exit code 恒为 -1。仅匹配 PS1（无 token），可能误匹配 PS1 字面量，但 dash/ash
+// 少见，接受此限制。
 //
 // 超时处理：超时后发 Ctrl-C + drain 等 sentinel。drain 超时说明远端不响应 SIGINT
 // （vim / REPL / 管道阻塞），强制 Close 终止 SSH channel — session 不再可用，
@@ -417,11 +437,11 @@ func (p *PtyConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, st
 
 // runWithToken 实现 bash/zsh 的 token 化 Run 流程（6 步）：
 //  1. 生成 token = RandomSID()（8 字节 hex）
-//  2. 写 setup 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '\n`
-//  3. 等精确 <token> 的 combo sentinel（消费 pushback + stdoutCh 里的旧残留 + setup sentinel）
+//  2. 写 setup 命令：`PS1='$(echo _$?)__<sid>_<token>__]# '\n`（token 直接 bake 进 PS1）
+//  3. 等精确 <token> 的 sentinel（消费 pushback + stdoutCh 里的旧残留 + setup sentinel）
 //  4. 显式清空 pushback（丢弃 setup sentinel 后的任何残留）
 //  5. 写 <cmd>\n
-//  6. 等精确 <token> 的 combo sentinel（cmd 的 sentinel）
+//  6. 等精确 <token> 的 sentinel（cmd 的 sentinel）
 //
 // 关键不变量：
 //   - 步骤 3 用精确 token 匹配，旧 token 的 sentinel 字面量（命令 echo 出来的）不会误匹配。
@@ -435,10 +455,10 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 		return "", "", 0, false, false, false, 0, false, fmt.Errorf("generate token: %w", err)
 	}
 
-	// 步骤 2：写 setup 命令，设置 __sshmng_tok 并升级 PS1 为带 token 的版本。
-	// BuildRC 末尾的 `export PS1='__P_<sid>__> '`（无 token）是 injectRC 等的初始 PS1；
-	// 这里动态升级为 `__P_<sid>_<token>__> `（带 token），后续 PROMPT_COMMAND 用
-	// ${__sshmng_tok} 输出带 token 的 exit sentinel。
+	// 步骤 2：写 setup 命令，升级 PS1 为带 token 的版本。
+	// BuildRC 末尾的 `export PS1='$(echo _$?)__<sid>___]# '`（token 空）是 injectRC 等
+	// 的初始 PS1；这里动态升级为 `$(echo _$?)__<sid>_<token>__]# `（带 token）。
+	// PS1 中 `$(echo _$?)` 在 prompt 展开时输出 exit code，token 直接编码进 PS1 字符串。
 	setupCmd := buildSetupTokenCmd(p.sid, token)
 	p.logger.Debug("run setup token", "sid", p.sid, "token", token)
 	if _, err := p.stdin.Write([]byte(setupCmd)); err != nil {
@@ -447,7 +467,7 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 
 	// 步骤 3：等 setup sentinel（精确 token）。消费 pushback 里的旧残留（旧 token 或
 	// shell 异步输出，不匹配精确 token）+ stdoutCh 直到 setup sentinel 出现。
-	// 超时说明 shell 异常（RC 没注入成功、PROMPT_COMMAND 没设上等），session 不可用。
+	// 超时说明 shell 异常（RC 没注入成功、PS1 没设上等），session 不可用。
 	// 不自己 Close——返回 connUnusable=true 让 Session 决策（close 在状态机层）。
 	setTimeout := p.setTokenTimeout
 	if setTimeout == 0 {
@@ -526,16 +546,18 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	return out, rawOut, code, timedOut, ctrlCSent, wasTruncated, totalBytes, connUnusable, nil
 }
 
-// buildSetupTokenCmd 构造 setup 命令：设置 __sshmng_tok 并升级 PS1 为带 token 的版本。
-// bash/zsh 的 PROMPT_COMMAND 用 ${__sshmng_tok} 输出 exit sentinel，PS1 含 token，
-// 使本次 Run 的 sentinel 唯一可识别。
+// buildSetupTokenCmd 构造 setup 命令：升级 PS1 为带 token 的版本。
+// bash/zsh 的 PS1 用 `$(echo _$?)` 在 prompt 展开时输出 exit code，token 直接
+// 编码进 PS1 字符串，使本次 Run 的 sentinel `_<rc>__<sid>_<token>__]# ` 唯一可识别。
+// 不再使用 __sshmng_tok 变量（token 直接 bake 进 PS1，更简单）。
 func buildSetupTokenCmd(sid string, token string) string {
-	return fmt.Sprintf("__sshmng_tok=%s; export __sshmng_tok; export PS1='__P_%s_%s__> '\n", token, sid, token)
+	return fmt.Sprintf("PS1='$(echo _$?)__%s_%s__]# '\n", sid, token)
 }
 
 // runPS1Only 实现 dash/ash 的 Run 流程：无 token、无 exit sentinel、exit code 恒 -1。
 // 仅匹配 PS1 sentinel（`__P_<sid>__> `，无 token）。可能误匹配命令输出里的 PS1
-// 字面量，但 dash/ash 少见且无 PROMPT_COMMAND 机制，接受此限制。
+// 字面量，但 dash/ash 少见且不展开 PS1 中的 `$(...)`（无法用 `$(echo _$?)` 捕获
+// exit code、无法在 prompt 时动态注入 token），接受此限制。
 func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes int) (string, string, int, bool, bool, bool, int, bool, error) {
 	p.logger.Debug("run cmd (ps1-only)", "sid", p.sid, "shell", p.shell,
 		"cmd", cmd, "timeout_ms", timeout.Milliseconds())
@@ -586,22 +608,18 @@ func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes i
 	return out, rawOut, code, timedOut, ctrlCSent, wasTruncated, totalBytes, connUnusable, nil
 }
 
-// commandDoneReToken 返回匹配精确 token 的 combo sentinel 正则。
-// 组合形式：__E_<sid>_<token>__:<N>__\r?\n__P_<sid>_<token>__>
+// commandDoneReToken 返回匹配精确 token 的 sentinel 正则。
+// 格式：`_<rc>__<sid>_<token>__]# `（单 sentinel，含 exit code 和 token）。
 // 精确匹配 token：命令输出含旧 token 的 sentinel 字面量不会误匹配当前 Run。
-// N 是命令退出码（-?\d+）。
+// rc 是命令退出码（-?\d+ 允许防御性负数）。
 func commandDoneReToken(sid string, token string) *regexp.Regexp {
-	return regexp.MustCompile(`__E_` + regexp.QuoteMeta(sid) + `_` + regexp.QuoteMeta(token) + `__:-?\d+__\r?\n__P_` + regexp.QuoteMeta(sid) + `_` + regexp.QuoteMeta(token) + `__> `)
+	return regexp.MustCompile(`_-?\d+__` + regexp.QuoteMeta(sid) + `_` + regexp.QuoteMeta(token) + `__]# `)
 }
 
-// readUntilCommandDoneToken 从 stdoutCh 读取直到精确 token 的 combo sentinel 出现或超时。
-// 返回 (累积输出到 PS1 末尾, 是否超时)。组合 sentinel 之后的 trailing 存入 pushback。
-//
-// 精确匹配 token：旧 token 的 sentinel 字面量（命令 echo 出来的）不会误匹配，
-// 从根本上杜绝命令/结果错配。
-func (p *PtyConn) readUntilCommandDoneToken(token string, timeout time.Duration) (string, bool) {
+// readUntilRegexTimeout 从 stdoutCh 读取直到 regex 匹配或超时。
+// 返回 (累积输出到 match 末尾, 是否超时)。match 之后的 trailing 存入 pushback。
+func (p *PtyConn) readUntilRegexTimeout(re *regexp.Regexp, timeout time.Duration) (string, bool) {
 	deadline := time.Now().Add(timeout)
-	re := commandDoneReToken(p.sid, token)
 	var buf []byte
 
 	// 先消费 pushback
@@ -644,6 +662,16 @@ func (p *PtyConn) readUntilCommandDoneToken(token string, timeout time.Duration)
 			return string(buf), true
 		}
 	}
+}
+
+// readUntilCommandDoneToken 从 stdoutCh 读取直到精确 token 的 sentinel 出现或超时。
+// 返回 (累积输出到 sentinel 末尾, 是否超时)。sentinel 之后的 trailing 存入 pushback。
+//
+// 精确匹配 token：旧 token 的 sentinel 字面量（命令 echo 出来的）不会误匹配，
+// 从根本上杜绝命令/结果错配。
+func (p *PtyConn) readUntilCommandDoneToken(token string, timeout time.Duration) (string, bool) {
+	re := commandDoneReToken(p.sid, token)
+	return p.readUntilRegexTimeout(re, timeout)
 }
 
 // Read 实现 loginflow.PTY 接口。

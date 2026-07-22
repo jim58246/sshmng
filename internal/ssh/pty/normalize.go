@@ -27,22 +27,27 @@ func StripANSI(s string) string {
 // CleanOutput 把 PTY 原始流清洗为给用户看的命令输出。
 // 处理步骤：
 //  1. 剥离 ANSI CSI 序列
-//  2. 移除 exit-sentinel 行（__E_<sid>_<token>__:<code>__，宽松匹配任意 token，包括无 token）
-//  3. 移除 PS1 sentinel 残留（__P_<sid>_<token>__> 及其变体，宽松匹配）
-//  4. 标准化行结束：\r\n → \n，孤立 \r → "" （PTY 中 \r 通常是光标回退）
-//  5. 去除末尾空行
+//  2. 移除 sentinel 残留（`_<rc>__<sid>_<token?>__]# `，宽松匹配任意 token，包括空 token）
+//  3. 标准化行结束：\r\n → \n，孤立 \r → "" （PTY 中 \r 通常是光标回退）
+//  4. 去除末尾空行
 //
 // sid 是当前 session 的标识，只清除本 sid 的 sentinel；其他 sid 字面量（命令 echo
-// 出来的）保留。宽松匹配 token（(?:_\w+)?）确保 token 化后所有 Run 的 sentinel 都被清掉。
+// 出来的）保留。宽松匹配 token（\w* 允许空或任意 word 字符）确保 token 化后所有 Run
+// 的 sentinel 都被清掉。
+//
+// 新设计：单 sentinel `_<rc>__<sid>_<token>__]# `（替代旧的 exit+PS1 双 sentinel）。
+// dash/ash 路径不调用 CleanOutput 中的此 regex（其 sentinel 是 `__P_<sid>__> `，
+// 由 runPS1Only 流程处理——但为简化，CleanOutput 也保留对 dash/ash sentinel 的清理）。
 func CleanOutput(s string, sid string) string {
 	s = StripANSI(s)
 
-	// 移除 exit-sentinel 行（可能带前后 \r\n / \n）。宽松匹配任意 token（含无 token）。
-	exitRe := regexp.MustCompile(`(?m)^__E_` + regexp.QuoteMeta(sid) + `(?:_\w+)?__:-?\d+__\r?\n?`)
-	s = exitRe.ReplaceAllString(s, "")
+	// 移除 bash/zsh sentinel 残留：`_<rc>__<sid>_<token?>__]# `（宽松匹配任意 token）。
+	sentinelRe := regexp.MustCompile(`_-?\d+__` + regexp.QuoteMeta(sid) + `_\w*__]# `)
+	s = sentinelRe.ReplaceAllString(s, "")
 
-	// 移除 PS1 sentinel 残留（行尾或独立出现）。宽松匹配任意 token（含无 token）。
-	ps1Re := regexp.MustCompile(`__P_` + regexp.QuoteMeta(sid) + `(?:_\w+)?__>\s?`)
+	// 移除 dash/ash PS1 sentinel 残留：`__P_<sid>__> `（宽松匹配，无 token）。
+	// bash/zsh 路径不会产生此 sentinel，但保留清理以防混合场景。
+	ps1Re := regexp.MustCompile(`__P_` + regexp.QuoteMeta(sid) + `__>\s?`)
 	s = ps1Re.ReplaceAllString(s, "")
 
 	// 标准化行结束：\r\n → \n，孤立 \r → ""

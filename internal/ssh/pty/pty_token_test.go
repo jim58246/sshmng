@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// TestRunIgnoresOldTokenSentinelInOutput 验证命令输出含旧 token 的 combo sentinel
+// TestRunIgnoresOldTokenSentinelInOutput 验证命令输出含旧 token 的 sentinel
 // 字面量时，Run 不会误匹配，返回当前命令的真实退出码。
 //
 // 场景：命令 `echo <old-token-sentinel-literal>` 让 shell 输出旧 token 的 sentinel
 // 字面量。当前 Run 的 token 不同，readUntilCommandDoneToken 用精确 token 匹配，
 // 旧 token 字面量不匹配，等真正的 sentinel（当前 token）到达才返回。
 //
-// 修复前（无 token 化）：combo sentinel 无 token，命令输出含 combo 字面量会误匹配，
+// 修复前（无 token 化）：sentinel 无 token，命令输出含 sentinel 字面量会误匹配，
 // 真 sentinel 进 pushback，下次 Run 直接从 pushback 匹配返回——完全错配。
 // 修复后（token 化）：每次 Run token 不同，旧 token 字面量不会误匹配新 Run。
 func TestRunIgnoresOldTokenSentinelInOutput(t *testing.T) {
@@ -56,15 +56,15 @@ func TestRunIgnoresOldTokenSentinelInOutput(t *testing.T) {
 				data := buf[:n]
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte("echo literal\n")) {
-					// 命令 echo 出旧 token 的 sentinel 字面量（oldtok=deadbeef）
-					oldLiteral := fmt.Sprintf("__E_%s_deadbeef__:99__\r\n__P_%s_deadbeef__> ", sid, sid)
+					// 命令 echo 出旧 token 的 sentinel 字面量（oldtok=deadbeef，exit code 99）
+					oldLiteral := fmt.Sprintf("_99__%s_deadbeef__]# ", sid)
 					stdoutWriter.Write([]byte(oldLiteral))
 					// 然后 emit 真 sentinel（当前 token，exit code 0）
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -119,7 +119,7 @@ func TestRunClearsPushbackBeforeCmd(t *testing.T) {
 
 	// 预置 pushback：旧 token 的 sentinel + async 输出
 	// 这些应该被 Run 步骤 3 消费（旧 token 不匹配）+ 步骤 4 清空
-	p.pushback = []byte(fmt.Sprintf("__E_%s_deadbeef__:0__\r\n__P_%s_deadbeef__> async output", sid, sid))
+	p.pushback = []byte(fmt.Sprintf("_0__%s_deadbeef__]# async output", sid))
 
 	// 模拟 shell：setup 记录 token；echo hello 输出 hello + 真 sentinel
 	go func() {
@@ -131,11 +131,11 @@ func TestRunClearsPushbackBeforeCmd(t *testing.T) {
 				data := buf[:n]
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte("echo hello\n")) {
-					stdoutWriter.Write([]byte(fmt.Sprintf("hello\r\n__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("hello\r\n_0__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -202,11 +202,11 @@ func TestRunTokenUniqueness(t *testing.T) {
 					mu.Lock()
 					tokens = append(tokens, tok)
 					mu.Unlock()
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte("echo hi\n")) {
-					stdoutWriter.Write([]byte(fmt.Sprintf("hi\r\n__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("hi\r\n_0__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -237,7 +237,7 @@ func TestRunTokenUniqueness(t *testing.T) {
 // close 决策在 Session 层。
 //
 // 场景：fake shell 收到 setup 命令但不 emit setup sentinel（模拟 shell 异常——
-// RC 注入失败、PROMPT_COMMAND 没设上等）。Run 步骤 3 等 setup sentinel 超时，
+// RC 注入失败、PS1 没设上等）。Run 步骤 3 等 setup sentinel 超时，
 // 返回 connUnusable=true，Session 据此调 Close。
 func TestRunSetTokenTimeoutReturnsConnUnusable(t *testing.T) {
 	stdinReader, stdinWriter := io.Pipe()

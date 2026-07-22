@@ -60,12 +60,12 @@ func TestRunSendsCtrlCOnTimeout(t *testing.T) {
 				// setup 命令：记录 token，emit setup sentinel
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte{0x03}) {
-					// 模拟 shell 收到 SIGINT 后恢复：发送含 token 的 exit sentinel + PS1
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:130__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					// 模拟 shell 收到 SIGINT 后恢复：发送含 token 的 sentinel（exit code 130 = SIGINT）
+					stdoutWriter.Write([]byte(fmt.Sprintf("_130__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -140,11 +140,11 @@ func TestRunReturnsCtrlCSentOnTimeout(t *testing.T) {
 				data := buf[:n]
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte{0x03}) {
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:130__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_130__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -199,11 +199,11 @@ func TestRunReturnsCtrlCSentFalseOnSuccess(t *testing.T) {
 				data := buf[:n]
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
 				if bytes.Contains(data, []byte("echo hi\n")) {
-					stdoutWriter.Write([]byte(fmt.Sprintf("hi\r\n__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("hi\r\n_0__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {
@@ -264,12 +264,12 @@ func TestRunCtrlCNotSentOnSuccess(t *testing.T) {
 				// setup 命令：记录 token，emit setup sentinel
 				if t := extractToken(data); t != "" {
 					tok = t
-					stdoutWriter.Write([]byte(fmt.Sprintf("__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("_0__%s_%s__]# ", sid, tok)))
 					continue
 				}
-				// 模拟 shell：收到命令后输出 hello + 含 token 的 exit sentinel + PS1
+				// 模拟 shell：收到命令后输出 hello + 含 token 的 sentinel
 				if bytes.Contains(data, []byte("echo hello\n")) {
-					stdoutWriter.Write([]byte(fmt.Sprintf("hello\r\n__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)))
+					stdoutWriter.Write([]byte(fmt.Sprintf("hello\r\n_0__%s_%s__]# ", sid, tok)))
 				}
 			}
 			if err != nil {

@@ -89,6 +89,10 @@ func TestParseShellDetect(t *testing.T) {
 }
 
 // TestBuildRCBash 验证 bash RC 包含必要字段。
+//
+// 新设计（PS1-only）：不使用 PROMPT_COMMAND，避免 readonly PROMPT_COMMAND 导致 RC
+// 注入失败（审计机器场景）。PS1 用 `$(echo _$?)` 在 prompt 展开时捕获 exit code，
+// sentinel 含 sid 和 token（token 由 Run 前的 setup 命令动态注入 PS1）。
 func TestBuildRCBash(t *testing.T) {
 	sid := "a3f2b1c9"
 	rc := BuildRC("bash", sid)
@@ -97,12 +101,7 @@ func TestBuildRCBash(t *testing.T) {
 		"export NO_COLOR=1",
 		"export LANG=C.UTF-8",
 		"stty cols 120 rows 100",
-		"export PS1='__P_" + sid + "__> '",
-		"PROMPT_COMMAND",
-		"__sshmng_precmd",
-		"__sshmng_rc=$?",
-		"__sshmng_user_prompt",
-		"__E_" + sid + "_${__sshmng_tok}__:${__sshmng_rc}__",
+		"export PS1='$(echo _$?)__" + sid + "___]# '",
 		"set +o history",
 		"stty -echo",
 	}
@@ -111,18 +110,31 @@ func TestBuildRCBash(t *testing.T) {
 			t.Errorf("bash RC missing %q\nRC:\n%s", s, rc)
 		}
 	}
+	// 必须不使用 PROMPT_COMMAND（readonly 安全）
+	mustNotContain := []string{
+		"PROMPT_COMMAND",
+		"__sshmng_precmd",
+		"__sshmng_user_prompt",
+		"__sshmng_tok",
+		"__sshmng_rc",
+		"__E_" + sid,
+	}
+	for _, s := range mustNotContain {
+		if strings.Contains(rc, s) {
+			t.Errorf("bash RC should NOT contain %q (PS1-only design)\nRC:\n%s", s, rc)
+		}
+	}
 }
 
-// TestBuildRCZsh 验证 zsh RC 用 precmd_functions 而非 PROMPT_COMMAND。
+// TestBuildRCZsh 验证 zsh RC 用 setopt PROMPT_SUBST + PS1-only（无 precmd_functions）。
+//
+// zsh 默认不在 PS1 中展开 $(...)，必须 setopt PROMPT_SUBST 才能展开。
 func TestBuildRCZsh(t *testing.T) {
 	sid := "a3f2b1c9"
 	rc := BuildRC("zsh", sid)
 	mustContain := []string{
-		"export PS1='__P_" + sid + "__> '",
-		"precmd_functions",
-		"_sshmng_precmd",
-		"__sshmng_rc=$?",
-		"__E_" + sid + "_${__sshmng_tok}__:${__sshmng_rc}__",
+		"export PS1='$(echo _$?)__" + sid + "___]# '",
+		"setopt PROMPT_SUBST",
 		"unset HISTFILE",
 		"stty -echo",
 	}
@@ -131,16 +143,23 @@ func TestBuildRCZsh(t *testing.T) {
 			t.Errorf("zsh RC missing %q\nRC:\n%s", s, rc)
 		}
 	}
-	if strings.Contains(rc, "PROMPT_COMMAND") {
-		t.Errorf("zsh RC should not use PROMPT_COMMAND")
+	mustNotContain := []string{
+		"PROMPT_COMMAND",
+		"precmd_functions",
+		"_sshmng_precmd",
+		"__sshmng_tok",
+		"__sshmng_rc",
+		"__E_" + sid,
 	}
-	// 必须前置（而非 += 追加），确保我们的 precmd 在用户 precmd 之前运行，捕获原始 $?
-	if !strings.Contains(rc, "precmd_functions=(_sshmng_precmd $precmd_functions)") {
-		t.Errorf("zsh RC should prepend _sshmng_precmd to precmd_functions to capture $? before user precmds\nRC:\n%s", rc)
+	for _, s := range mustNotContain {
+		if strings.Contains(rc, s) {
+			t.Errorf("zsh RC should NOT contain %q (PS1-only design)\nRC:\n%s", s, rc)
+		}
 	}
 }
 
-// TestBuildRCDash 验证 dash/ash RC 只覆盖 PS1（无 PROMPT_COMMAND）。
+// TestBuildRCDash 验证 dash/ash RC 只覆盖 PS1（无 PROMPT_COMMAND，无 $(echo _$?)）。
+// dash/ash 不展开 $(...) 在 PS1 中，保持简单 PS1 sentinel。
 func TestBuildRCDash(t *testing.T) {
 	sid := "a3f2b1c9"
 	rc := BuildRC("dash", sid)
@@ -152,6 +171,9 @@ func TestBuildRCDash(t *testing.T) {
 	}
 	if strings.Contains(rc, "precmd_functions") {
 		t.Errorf("dash RC should not set precmd_functions (zsh-specific)")
+	}
+	if strings.Contains(rc, "$(echo _$?)") {
+		t.Errorf("dash RC should not use $(echo _$?) (dash/ash don't expand it in PS1)")
 	}
 }
 
@@ -165,95 +187,67 @@ func TestBuildRCUnknownShellFallsBackToPS1Only(t *testing.T) {
 	if strings.Contains(rc, "PROMPT_COMMAND") {
 		t.Errorf("unknown shell RC should not set PROMPT_COMMAND")
 	}
+	if strings.Contains(rc, "$(echo _$?)") {
+		t.Errorf("unknown shell RC should not use $(echo _$?) (unknown shell may not expand it)")
+	}
 }
 
-// TestBuildRCSidEscaped 验证 sid 不被 shell 特殊解释。
-// sid 是十六进制串本身不含特殊字符，但 RC 中应安全使用。
+// TestBuildRCSidEscaped 验证 sid 原样出现在 PS1 中。
 func TestBuildRCSidEscaped(t *testing.T) {
 	sid := "deadbeef"
 	rc := BuildRC("bash", sid)
-	// sid 应原样出现在 PS1 和 PROMPT_COMMAND 中
-	if !strings.Contains(rc, "__P_"+sid+"__> ") {
-		t.Errorf("PS1 should contain sid")
-	}
-	if !strings.Contains(rc, "__E_"+sid+"_${__sshmng_tok}__:${__sshmng_rc}__") {
-		t.Errorf("PROMPT_COMMAND should contain sid")
+	if !strings.Contains(rc, "$(echo _$?)__"+sid+"___]# ") {
+		t.Errorf("PS1 should contain sid, got RC:\n%s", rc)
 	}
 }
 
-// TestBuildRCBashPreservesExitCodeWithUserPromptCommand 验证 bash RC 在用户已有
-// PROMPT_COMMAND 时仍能正确捕获用户命令的退出码。
+// TestBuildRCBashPS1ExpandsExitCode 验证 bash PS1 的 $(echo _$?) 在命令执行后正确
+// 展开为 _<exit_code>。
 //
-// 场景：用户 PROMPT_COMMAND='true'（退出码 0），用户命令 `false`（退出码 1）。
-// 旧实现 `PROMPT_COMMAND="$PROMPT_COMMAND; echo ...$?..."` 会让 $? 反映 `true` 的
-// 退出码（0），sentinel 错误地输出 `__E_<sid>:0__`。
-// 新实现用函数包装器在第一时间保存 $?，sentinel 应输出 `__E_<sid>:1__`。
-//
-// token 化后 sentinel 形如 `__E_<sid>_<token>__:<code>__`。测试需先 export __sshmng_tok
-// 让 ${__sshmng_tok} 展开，sentinel 才含 token。
-func TestBuildRCBashPreservesExitCodeWithUserPromptCommand(t *testing.T) {
+// 用 `${PS1@P}`（bash 4.4+）触发 prompt 展开验证。macOS 自带 bash 3.2 不支持，
+// 用 feature detection 跳过——不影响 CI（Linux 通常 bash 5+）。
+func TestBuildRCBashPS1ExpandsExitCode(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
+	// Feature detection: bash 3.2 不支持 ${PS1@P}
+	probe := exec.Command("bash", "-c", `test "${PS1@P}"`)
+	if err := probe.Run(); err != nil {
+		t.Skip("bash does not support ${PS1@P} (need bash 4.4+)")
+	}
 	sid := "deadbeef"
-	tok := "abc12345"
 	rc := BuildRC("bash", sid)
-
-	script := `export PROMPT_COMMAND='true'
-export __sshmng_tok=` + tok + `
-` + rc + `
+	script := rc + `
 false
-eval "$PROMPT_COMMAND"
+printf '%s\n' "${PS1@P}"
 `
-	cmd := exec.Command("bash", "-c", script)
+	cmd := exec.Command("bash", "--norc", "-c", script)
 	output, _ := cmd.CombinedOutput()
 	out := string(output)
-
-	wantSentinel := fmt.Sprintf("__E_%s_%s__:1__", sid, tok)
-	badSentinel := fmt.Sprintf("__E_%s_%s__:0__", sid, tok)
+	// false 退出码 1，PS1 展开后应为 `_1__deadbeef___]# `
+	wantSentinel := fmt.Sprintf("_1__%s___]# ", sid)
 	if !strings.Contains(out, wantSentinel) {
-		t.Errorf("expected output to contain %q (user command exit code 1), got: %s", wantSentinel, out)
-	}
-	if strings.Contains(out, badSentinel) {
-		t.Errorf("output should NOT contain %q (user PROMPT_COMMAND exit code 0 — means $? was overwritten), got: %s", badSentinel, out)
+		t.Errorf("expected PS1 expansion to contain %q (false exit code 1), got: %s", wantSentinel, out)
 	}
 }
 
-// TestBuildRCZshPreservesExitCodeWithUserPrecmd 验证 zsh RC 在用户已有 precmd_functions
-// 时仍能正确捕获用户命令的退出码。
-//
-// 场景：用户 precmd_functions=(user_precmd)（user_precmd 返回 0），用户命令 `false`
-// （退出码 1）。旧实现 `precmd_functions+=(_sshmng_precmd)` 让 user_precmd 先运行，
-// 覆盖 $?，sentinel 错误地输出 `__E_<sid>:0__`。新实现前置 _sshmng_precmd 并在函数
-// 开头保存 $?，sentinel 应输出 `__E_<sid>:1__`。
-//
-// token 化后 sentinel 形如 `__E_<sid>_<token>__:<code>__`。测试需先 export __sshmng_tok
-// 让 ${__sshmng_tok} 展开，sentinel 才含 token。
-func TestBuildRCZshPreservesExitCodeWithUserPrecmd(t *testing.T) {
+// TestBuildRCZshPS1ExpandsExitCode 验证 zsh PS1 的 $(echo _$?) 在命令执行后正确
+// 展开为 _<exit_code>（需 setopt PROMPT_SUBST）。
+func TestBuildRCZshPS1ExpandsExitCode(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not available")
 	}
 	sid := "deadbeef"
-	tok := "abc12345"
 	rc := BuildRC("zsh", sid)
-
-	script := `function user_precmd() { true; }
-precmd_functions=(user_precmd)
-export __sshmng_tok=` + tok + `
-` + rc + `
+	script := rc + `
 false
-for f in $precmd_functions; do $f; done
+print -P "$PS1"
 `
-	cmd := exec.Command("zsh", "-c", script)
+	cmd := exec.Command("zsh", "-f", "-c", script)
 	output, _ := cmd.CombinedOutput()
 	out := string(output)
-
-	wantSentinel := fmt.Sprintf("__E_%s_%s__:1__", sid, tok)
-	badSentinel := fmt.Sprintf("__E_%s_%s__:0__", sid, tok)
+	wantSentinel := fmt.Sprintf("_1__%s___]# ", sid)
 	if !strings.Contains(out, wantSentinel) {
-		t.Errorf("expected output to contain %q (user command exit code 1), got: %s", wantSentinel, out)
-	}
-	if strings.Contains(out, badSentinel) {
-		t.Errorf("output should NOT contain %q (user precmd exit code 0 — means $? was overwritten), got: %s", badSentinel, out)
+		t.Errorf("expected PS1 expansion to contain %q (false exit code 1), got: %s", wantSentinel, out)
 	}
 }

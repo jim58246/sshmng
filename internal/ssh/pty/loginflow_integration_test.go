@@ -17,8 +17,8 @@ import (
 	"sshmng/internal/ssh/conn"
 )
 
-// shellDetectPS1Re 从 `export PS1='__P_<sid>__> '` 中提取 sid。
-var shellDetectPS1Re = regexp.MustCompile(`__P_([0-9a-f]+)__>`)
+// shellDetectPS1Re 从 `export PS1='$(echo _$?)__<sid>___]# '` 中提取 sid。
+var shellDetectPS1Re = regexp.MustCompile(`__([0-9a-f]+)___\]# `)
 
 // execFakeShellCommand 用 sh -c 执行 line，返回 (output, exitCode)。
 // 与 runFakeShell 中的命令执行逻辑同源，抽出供 LoginFlow 测试复用。
@@ -139,9 +139,9 @@ func (s *fakeShellServerForLoginFlow) handleSession(ch ssh.Channel, reqs <-chan 
 //
 // LoginFlow 完成后响应 shell detect，然后转入正常 RC + 命令阶段（复用 runFakeShell 逻辑）。
 //
-// token 化：Run 在写命令前先写 setup 命令 `__sshmng_tok=<token>; ...`。fake shell
-// 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的 sentinel 也含
-// 该 token。
+// token 化：Run 在写命令前先写 setup 命令 `PS1='$(echo _$?)__<sid>_<token>__]# '`。
+// fake shell 识别此行，记录 token，emit setup sentinel（含 token）。后续命令的
+// sentinel 也含该 token。
 func runFakeShellWithLoginFlow(ch ssh.Channel) {
 	reader := bufio.NewReader(ch)
 	var sid string
@@ -185,29 +185,30 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 			}
 		}
 
-		// RC 阶段：消费 RC 行直到 `export PS1='__P_<sid>__> '`（BuildRC 最后一行）
+		// RC 阶段：消费 RC 行直到 `export PS1='$(echo _$?)__<sid>___]# '`（BuildRC 最后一行）
 		if !rcDone {
-			if strings.Contains(line, "export PS1='__P_") {
+			if strings.Contains(line, "export PS1='$(echo _$?)__") {
 				re := shellDetectPS1Re.FindStringSubmatch(line)
 				if len(re) > 1 {
 					sid = re[1]
 				}
 				rcDone = true
-				fmt.Fprintf(ch, "__P_%s__> ", sid)
+				// emit 初始 PS1 sentinel：`_0__<sid>___]# `（export PS1=... 命令退出 0）
+				fmt.Fprintf(ch, "_0__%s___]# ", sid)
 			}
 			// 其他 RC 行：忽略
 			continue
 		}
 
-		// setup token 命令：`__sshmng_tok=<token>; export __sshmng_tok; export PS1='__P_<sid>_<token>__> '`
-		// 记录 token，emit setup sentinel（含 token）。不当作正常命令执行。
-		if strings.HasPrefix(line, "__sshmng_tok=") {
-			re := regexp.MustCompile(`__sshmng_tok=([0-9a-f]+)`)
+		// setup 命令：`PS1='$(echo _$?)__<sid>_<token>__]# '`
+		// 记录 token，emit setup sentinel `_0__<sid>_<token>__]# `（setup 命令退出 0）。
+		if strings.Contains(line, "PS1='$(echo _$?)__") && strings.Contains(line, "__]# '") {
+			re := regexp.MustCompile(`__` + sid + `_([0-9a-f]+)__\]# `)
 			m := re.FindStringSubmatch(line)
 			if len(m) > 1 {
 				tok = m[1]
 			}
-			fmt.Fprintf(ch, "__E_%s_%s__:0__\r\n__P_%s_%s__> ", sid, tok, sid, tok)
+			fmt.Fprintf(ch, "_0__%s_%s__]# ", sid, tok)
 			continue
 		}
 
@@ -217,9 +218,9 @@ func runFakeShellWithLoginFlow(ch ssh.Channel) {
 			ch.Write(out)
 		}
 		if tok != "" {
-			fmt.Fprintf(ch, "__E_%s_%s__:%d__\r\n__P_%s_%s__> ", sid, tok, code, sid, tok)
+			fmt.Fprintf(ch, "_%d__%s_%s__]# ", code, sid, tok)
 		} else {
-			fmt.Fprintf(ch, "__E_%s__:%d__\r\n__P_%s__> ", sid, code, sid)
+			fmt.Fprintf(ch, "__P_%s__> ", sid)
 		}
 	}
 }

@@ -42,7 +42,7 @@ sshmng/
 
 **关键设计**：
 - **stdio 单进程**：一个 Agent 拉起一个 sshmng 子进程，进程内 `map[sid]*Session`，跨 Agent 不共享
-- **PTY 统一模式**：所有连接（含直连）走 PTY，target shell 就绪后一次性注入 RC（TERM/PS1/PROMPT_COMMAND 等），命令边界靠 sentinel 识别。bash/zsh 走 token 化 sentinel（每次 Run 生成唯一 `<token>`，`__P_<sid>_<token>__> ` / `__E_<sid>_<token>__:<exit>__`），命令输出无法预知 token，从根本上杜绝命令/结果错配；dash/ash 不 token 化（固定 `__P_<sid>__> `，无 exit code）
+- **PTY 统一模式**：所有连接（含直连）走 PTY，target shell 就绪后一次性注入 RC（TERM/PS1 等），命令边界靠 sentinel 识别。bash/zsh 走 PS1-only token 化 sentinel（每次 Run 生成唯一 `<token>` 直接嵌入 PS1，`$(echo _$?)__<sid>_<token>__]# ` 在 prompt 展开时捕获 exit code），命令输出无法预知 token，从根本上杜绝命令/结果错配；dash/ash 不 token 化（固定 `__P_<sid>__> `，无 exit code）
 - **三类失败分类**：SSH auth 失败仅 error 字符串；LoginFlow 失败 error + login_trace；命令失败按需 get_trace
 - **并发安全**：session map 与 config 各自持锁；同一 session 的 `run_in_session` 靠 `state=running` 串行化
 
