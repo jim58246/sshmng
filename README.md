@@ -90,7 +90,6 @@ SSHMNG_HOME=/custom/dir ./sshmng  # 自定义配置目录
       "ssh_j": false,
       "login_flow": {
         "wait_menu": {
-          "name": "wait_menu",
           "expects": [{"pattern": "Your choice:", "next": "success"}]
         }
       },
@@ -116,12 +115,10 @@ SSHMNG_HOME=/custom/dir ./sshmng  # 自定义配置目录
       "proxy": "corp-socks5",
       "login_flow": {
         "select_target": {
-          "name": "select_target",
           "send": "1\n",
           "expects": [{"pattern": "Password:", "next": "input_pass"}]
         },
         "input_pass": {
-          "name": "input_pass",
           "send": "deploy-password\n",
           "expects": [{"pattern": "$ ", "next": "success"}]
         }
