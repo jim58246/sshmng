@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -52,20 +53,29 @@ func (s *Service) UpdateSSHServer(ctx context.Context, req *mcp.CallToolRequest,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logger := s.sessionLogger(req, "")
 	patchJSON, err := marshalPatch(args.Patch)
 	if err != nil {
+		logger.Warn("update ssh server failed: marshal patch", "name", args.Name, "err", err.Error())
 		return errorResult("marshal patch: %v", err)
 	}
+	logger.Debug("update ssh server", "name", args.Name, "patch", string(patchJSON))
 	cfg, err := s.store.Load()
 	if err != nil {
+		logger.Warn("update ssh server failed: load config", "name", args.Name, "err", err.Error())
 		return errorResult("load config: %v", err)
 	}
+	_, getErr := cfg.GetSSHServer(args.Name)
+	existed := getErr == nil
 	if err := cfg.UpdateSSHServer(args.Name, patchJSON); err != nil {
+		logger.Warn("update ssh server failed", "name", args.Name, "err", err.Error())
 		return errorResult("update ssh server: %v", err)
 	}
 	if err := s.store.Save(cfg); err != nil {
+		logger.Warn("update ssh server failed: save config", "name", args.Name, "err", err.Error())
 		return errorResult("save config: %v", err)
 	}
+	logger.Info("ssh server "+updateOp(patchJSON, existed), "name", args.Name)
 	// 返回更新后的实体（含完整 auth）
 	srv, err := cfg.GetSSHServer(args.Name)
 	if err != nil {
@@ -117,20 +127,29 @@ func (s *Service) UpdateJumphost(ctx context.Context, req *mcp.CallToolRequest, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logger := s.sessionLogger(req, "")
 	patchJSON, err := marshalPatch(args.Patch)
 	if err != nil {
+		logger.Warn("update jumphost failed: marshal patch", "name", args.Name, "err", err.Error())
 		return errorResult("marshal patch: %v", err)
 	}
+	logger.Debug("update jumphost", "name", args.Name, "patch", string(patchJSON))
 	cfg, err := s.store.Load()
 	if err != nil {
+		logger.Warn("update jumphost failed: load config", "name", args.Name, "err", err.Error())
 		return errorResult("load config: %v", err)
 	}
+	_, getErr := cfg.GetJumphost(args.Name)
+	existed := getErr == nil
 	if err := cfg.UpdateJumphost(args.Name, patchJSON); err != nil {
+		logger.Warn("update jumphost failed", "name", args.Name, "err", err.Error())
 		return errorResult("update jumphost: %v", err)
 	}
 	if err := s.store.Save(cfg); err != nil {
+		logger.Warn("update jumphost failed: save config", "name", args.Name, "err", err.Error())
 		return errorResult("save config: %v", err)
 	}
+	logger.Info("jumphost "+updateOp(patchJSON, existed), "name", args.Name)
 	j, err := cfg.GetJumphost(args.Name)
 	if err != nil {
 		return textResult(map[string]any{"name": args.Name, "deleted": true})
@@ -179,20 +198,29 @@ func (s *Service) UpdateProxy(ctx context.Context, req *mcp.CallToolRequest, arg
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logger := s.sessionLogger(req, "")
 	patchJSON, err := marshalPatch(args.Patch)
 	if err != nil {
+		logger.Warn("update proxy failed: marshal patch", "name", args.Name, "err", err.Error())
 		return errorResult("marshal patch: %v", err)
 	}
+	logger.Debug("update proxy", "name", args.Name, "patch", string(patchJSON))
 	cfg, err := s.store.Load()
 	if err != nil {
+		logger.Warn("update proxy failed: load config", "name", args.Name, "err", err.Error())
 		return errorResult("load config: %v", err)
 	}
+	_, getErr := cfg.GetProxy(args.Name)
+	existed := getErr == nil
 	if err := cfg.UpdateProxy(args.Name, patchJSON); err != nil {
+		logger.Warn("update proxy failed", "name", args.Name, "err", err.Error())
 		return errorResult("update proxy: %v", err)
 	}
 	if err := s.store.Save(cfg); err != nil {
+		logger.Warn("update proxy failed: save config", "name", args.Name, "err", err.Error())
 		return errorResult("save config: %v", err)
 	}
+	logger.Info("proxy "+updateOp(patchJSON, existed), "name", args.Name)
 	p, err := cfg.GetProxy(args.Name)
 	if err != nil {
 		return textResult(map[string]any{"name": args.Name, "deleted": true})
@@ -208,4 +236,20 @@ func marshalPatch(p any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(data), nil
+}
+
+// isDeletePatch 判断 patch 是否为顶层 null（删除信号）。
+func isDeletePatch(patch json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(patch), []byte("null"))
+}
+
+// updateOp 根据 patch 和 existed（操作前实体是否已存在）返回操作类型：created/updated/deleted。
+func updateOp(patch json.RawMessage, existed bool) string {
+	if isDeletePatch(patch) {
+		return "deleted"
+	}
+	if !existed {
+		return "created"
+	}
+	return "updated"
 }
