@@ -71,6 +71,7 @@ type Jumphost struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`         // 0 = 默认 50
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"` // 0 = 默认 60000
+	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             *Jumphost              `json:"-"`                           // 多跳递归口子（v1 不实现）
 	Proxy           *Proxy                 `json:"-"`
 	Tags            []string               `json:"tags,omitempty"`
@@ -92,6 +93,7 @@ type SSHServer struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
+	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             *Jumphost              `json:"-"` // 可空，空表示直连
 	Proxy           *Proxy                 `json:"-"` // 可空，空表示不走传输代理
 	Tags            []string               `json:"tags,omitempty"`
@@ -122,6 +124,7 @@ type jumphostJSON struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
+	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             string                 `json:"via,omitempty"`
 	Proxy           string                 `json:"proxy,omitempty"`
 	Tags            []string               `json:"tags,omitempty"`
@@ -138,6 +141,7 @@ func (j Jumphost) MarshalJSON() ([]byte, error) {
 		LoginEntry:      j.LoginEntry,
 		MaxSteps:        j.MaxSteps,
 		GlobalTimeoutMs: j.GlobalTimeoutMs,
+		HostKeyVerify:   j.HostKeyVerify,
 		Tags:            j.Tags,
 	}
 	if j.Via != nil {
@@ -163,6 +167,7 @@ func (j *Jumphost) UnmarshalJSON(data []byte) error {
 	j.LoginEntry = jj.LoginEntry
 	j.MaxSteps = jj.MaxSteps
 	j.GlobalTimeoutMs = jj.GlobalTimeoutMs
+	j.HostKeyVerify = jj.HostKeyVerify
 	j.Tags = jj.Tags
 	j.viaName = jj.Via
 	j.proxyName = jj.Proxy
@@ -179,6 +184,7 @@ type serverJSON struct {
 	LoginEntry      string                 `json:"login_entry,omitempty"`
 	MaxSteps        int                    `json:"max_steps,omitempty"`
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
+	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
 	Via             string                 `json:"via,omitempty"`
 	Proxy           string                 `json:"proxy,omitempty"`
 	Tags            []string               `json:"tags,omitempty"`
@@ -194,6 +200,7 @@ func (s SSHServer) MarshalJSON() ([]byte, error) {
 		LoginEntry:      s.LoginEntry,
 		MaxSteps:        s.MaxSteps,
 		GlobalTimeoutMs: s.GlobalTimeoutMs,
+		HostKeyVerify:   s.HostKeyVerify,
 		Tags:            s.Tags,
 	}
 	if s.Via != nil {
@@ -218,6 +225,7 @@ func (s *SSHServer) UnmarshalJSON(data []byte) error {
 	s.LoginEntry = sj.LoginEntry
 	s.MaxSteps = sj.MaxSteps
 	s.GlobalTimeoutMs = sj.GlobalTimeoutMs
+	s.HostKeyVerify = sj.HostKeyVerify
 	s.Tags = sj.Tags
 	s.viaName = sj.Via
 	s.proxyName = sj.Proxy
@@ -274,4 +282,22 @@ func (c *Config) resolveReferences() error {
 		}
 	}
 	return nil
+}
+
+// HostKeyVerifyEnabled 返回是否启用 host key 校验。
+// nil（未配置）→ true（默认安全）；显式 false → false。
+func (s *SSHServer) HostKeyVerifyEnabled() bool {
+	if s.HostKeyVerify == nil {
+		return true
+	}
+	return *s.HostKeyVerify
+}
+
+// HostKeyVerifyEnabled 返回是否启用 host key 校验。
+// nil（未配置）→ true（默认安全）；显式 false → false。
+func (j *Jumphost) HostKeyVerifyEnabled() bool {
+	if j.HostKeyVerify == nil {
+		return true
+	}
+	return *j.HostKeyVerify
 }

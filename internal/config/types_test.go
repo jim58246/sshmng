@@ -247,3 +247,86 @@ func TestConfigResolveReferencesDuplicateJumphostName(t *testing.T) {
 		t.Fatalf("expected error for duplicate jumphost name")
 	}
 }
+
+// --- HostKeyVerify ---
+
+func TestSSHServerHostKeyVerifyEnabled(t *testing.T) {
+	t.Run("nil defaults to true", func(t *testing.T) {
+		s := &SSHServer{}
+		if !s.HostKeyVerifyEnabled() {
+			t.Errorf("nil HostKeyVerify: got false, want true (default secure)")
+		}
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		s := &SSHServer{HostKeyVerify: &v}
+		if !s.HostKeyVerifyEnabled() {
+			t.Errorf("explicit true: got false, want true")
+		}
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		s := &SSHServer{HostKeyVerify: &v}
+		if s.HostKeyVerifyEnabled() {
+			t.Errorf("explicit false: got true, want false")
+		}
+	})
+}
+
+func TestJumphostHostKeyVerifyEnabled(t *testing.T) {
+	t.Run("nil defaults to true", func(t *testing.T) {
+		j := &Jumphost{}
+		if !j.HostKeyVerifyEnabled() {
+			t.Errorf("nil HostKeyVerify: got false, want true (default secure)")
+		}
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		j := &Jumphost{HostKeyVerify: &v}
+		if j.HostKeyVerifyEnabled() {
+			t.Errorf("explicit false: got true, want false")
+		}
+	})
+}
+
+func TestSSHServerHostKeyVerifyJSONRoundTrip(t *testing.T) {
+	t.Run("nil omits field", func(t *testing.T) {
+		s := SSHServer{Name: "s", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}}
+		out, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("remarshal: %v", err)
+		}
+		if _, ok := m["host_key_verify"]; ok {
+			t.Errorf("nil HostKeyVerify should be omitted, got JSON: %s", out)
+		}
+	})
+	t.Run("explicit false marshals and unmarshals", func(t *testing.T) {
+		v := false
+		s := SSHServer{Name: "s", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, HostKeyVerify: &v}
+		out, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("remarshal: %v", err)
+		}
+		if m["host_key_verify"] != false {
+			t.Errorf("host_key_verify = %v, want false", m["host_key_verify"])
+		}
+		var loaded SSHServer
+		if err := json.Unmarshal(out, &loaded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if loaded.HostKeyVerify == nil {
+			t.Fatalf("HostKeyVerify nil after unmarshal, want *false")
+		}
+		if *loaded.HostKeyVerify {
+			t.Errorf("*loaded.HostKeyVerify = true, want false")
+		}
+	})
+}
