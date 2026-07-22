@@ -291,3 +291,56 @@ func TestValidateAuthHelper(t *testing.T) {
 		t.Errorf("SSHAuth with Password should not be considered empty")
 	}
 }
+
+// Pattern A via ssh_j=true jumphost 不支持 Server.Proxy：
+// direct-tcpip 走 jumphost 的 SSH 通道，独立传输代理无意义。
+func TestValidatePatternAViaSSHJRejectsServerProxy(t *testing.T) {
+	jh := &Jumphost{Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"}, SSHJ: true}
+	px := &Proxy{Name: "px", Type: ProxySOCKS5, Addr: "socks:1080"}
+	srv := &SSHServer{
+		Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{Password: "p"},
+		Via:   jh,
+		Proxy: px,
+	}
+	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Proxies: []*Proxy{px}, Servers: []*SSHServer{srv}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatalf("expected error: pattern A via ssh_j=true does not support server.proxy")
+	}
+	if !strings.Contains(err.Error(), "server.proxy") {
+		t.Errorf("error should mention server.proxy, got: %v", err)
+	}
+}
+
+// 直连（Via=nil）仍允许 Server.Proxy —— 合法的代理拨号到 target
+func TestValidatePatternADirectAllowsServerProxy(t *testing.T) {
+	px := &Proxy{Name: "px", Type: ProxySOCKS5, Addr: "socks:1080"}
+	srv := &SSHServer{
+		Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{Password: "p"},
+		Proxy: px,
+	}
+	cfg := &Config{Version: "1", Proxies: []*Proxy{px}, Servers: []*SSHServer{srv}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error for direct + server.proxy: %v", err)
+	}
+}
+
+// Pattern B（Via.SSHJ=false）下 Server.Proxy 不拒绝：
+// Pattern B 不拨号到 target，Server.Proxy 无意义但不冲突，静默忽略比校验拒绝友好
+func TestValidatePatternBIgnoresServerProxy(t *testing.T) {
+	jh := &Jumphost{
+		Name: "jh", Addr: "h:22", User: "u", Auth: SSHAuth{Password: "p"},
+		SSHJ: false, LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a",
+	}
+	px := &Proxy{Name: "px", Type: ProxySOCKS5, Addr: "socks:1080"}
+	srv := &SSHServer{
+		Name: "s", Addr: "t:22", User: "u", Auth: SSHAuth{},
+		Via:       jh,
+		Proxy:     px,
+		LoginFlow: map[string]LoginAction{"a": validAction("success")}, LoginEntry: "a",
+	}
+	cfg := &Config{Version: "1", Jumphosts: []*Jumphost{jh}, Proxies: []*Proxy{px}, Servers: []*SSHServer{srv}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error for pattern B + server.proxy: %v", err)
+	}
+}

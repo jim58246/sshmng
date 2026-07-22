@@ -71,6 +71,12 @@ func validateSSHServer(s *SSHServer) error {
 	if authIsEmpty(s.Auth) {
 		return fmt.Errorf("pattern A requires auth (used for SSH auth to target)")
 	}
+	// Pattern A via ssh_j jumphost 不支持 Server.Proxy：
+	// direct-tcpip 走 jumphost 的 SSH 通道，独立传输代理无意义。
+	// 直连（Via=nil）仍允许 Server.Proxy（合法的代理拨号到 target）。
+	if s.Via != nil && s.Via.SSHJ && s.Proxy != nil {
+		return fmt.Errorf("pattern A (via.ssh_j=true) does not support server.proxy; direct-tcpip tunnels through jumphost's SSH channel, a separate transport proxy is meaningless")
+	}
 	if len(s.LoginFlow) > 0 {
 		if err := validateLoginFlow(s.LoginFlow, s.LoginEntry); err != nil {
 			return err
