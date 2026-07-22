@@ -6,13 +6,16 @@ import (
 	"crypto/rsa"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"sshmng/internal/config"
@@ -514,5 +517,280 @@ func TestDialerSkipsHostKeyWhenDisabled(t *testing.T) {
 	}
 	if !bytes.Equal(knownBefore, knownAfter) {
 		t.Errorf("known_hosts changed when verify=false:\nbefore: %s\nafter:  %s", knownBefore, knownAfter)
+	}
+}
+
+// --- DialThrough (Pattern A / ssh -J) ---
+
+// fakeForwardingJumphost 是支持 direct-tcpip 转发的 fake SSH server。
+// 用途：DialThrough 单元测试。收到 direct-tcpip channel 请求时，
+// 解析目标地址，net.Dial 到真实 target SSH server，双向 pipe。
+// allowForwarding=false 时拒绝 direct-tcpip（模拟 AllowTcpForwarding no）。
+type fakeForwardingJumphost struct {
+	t               *testing.T
+	listener        net.Listener
+	hostKey         ssh.Signer
+	hostPub         ssh.PublicKey
+	allowForwarding bool
+	wg              sync.WaitGroup
+}
+
+func newFakeForwardingJumphost(t *testing.T, allowForwarding bool) *fakeForwardingJumphost {
+	t.Helper()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate host key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(rsaKey)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	pub, err := ssh.NewPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("new pubkey: %v", err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fakeForwardingJumphost{
+		t:               t,
+		listener:        l,
+		hostKey:         signer,
+		hostPub:         pub,
+		allowForwarding: allowForwarding,
+	}
+	s.wg.Add(1)
+	go s.serve()
+	t.Cleanup(func() {
+		l.Close()
+		s.wg.Wait()
+	})
+	return s
+}
+
+func (s *fakeForwardingJumphost) serve() {
+	defer s.wg.Done()
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			return
+		}
+		s.wg.Add(1)
+		go s.handle(conn)
+	}
+}
+
+func (s *fakeForwardingJumphost) handle(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+	cfg := &ssh.ServerConfig{
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if c.User() == "jump-user" && string(pass) == "jump-pass" {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("permission denied")
+		},
+	}
+	cfg.AddHostKey(s.hostKey)
+	sshConn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
+	if err != nil {
+		return
+	}
+	defer sshConn.Close()
+	go ssh.DiscardRequests(reqs)
+	for newCh := range chans {
+		if newCh.ChannelType() != "direct-tcpip" {
+			newCh.Reject(ssh.UnknownChannelType, "unsupported")
+			continue
+		}
+		if !s.allowForwarding {
+			newCh.Reject(ssh.Prohibited, "administratively prohibited")
+			continue
+		}
+		// 解析 direct-tcpip extra data: Addr, Port, OriginAddr, OriginPort
+		var msg struct {
+			Addr       string
+			Port       uint32
+			OriginAddr string
+			OriginPort uint32
+		}
+		if err := ssh.Unmarshal(newCh.ExtraData(), &msg); err != nil {
+			newCh.Reject(ssh.ConnectionFailed, "bad extra data")
+			continue
+		}
+		target := net.JoinHostPort(msg.Addr, strconv.Itoa(int(msg.Port)))
+		upstream, err := net.DialTimeout("tcp", target, 5*time.Second)
+		if err != nil {
+			newCh.Reject(ssh.ConnectionFailed, err.Error())
+			continue
+		}
+		ch, chReqs, err := newCh.Accept()
+		if err != nil {
+			upstream.Close()
+			continue
+		}
+		go ssh.DiscardRequests(chReqs)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			defer ch.Close()
+			defer upstream.Close()
+			// 双向 pipe
+			done := make(chan struct{}, 2)
+			go func() { io.Copy(upstream, ch); done <- struct{}{} }()
+			go func() { io.Copy(ch, upstream); done <- struct{}{} }()
+			<-done
+		}()
+	}
+}
+
+func (s *fakeForwardingJumphost) Addr() string               { return s.listener.Addr().String() }
+func (s *fakeForwardingJumphost) HostPublicKey() ssh.PublicKey { return s.hostPub }
+
+func TestDialThroughSuccess(t *testing.T) {
+	// target: 普通 mockSSHServer（密码 alice/wonderland）
+	target := newMockSSHServer(t, "alice", "wonderland", nil)
+	// jumphost: 转发 direct-tcpip 到 target
+	jump := newFakeForwardingJumphost(t, true)
+	d := newDialerWithTempKnownHosts(t)
+
+	// 先拨号到 jumphost
+	jumpClient, err := d.Dial(DialOptions{
+		Addr:          jump.Addr(),
+		User:          "jump-user",
+		Auth:          config.SSHAuth{Password: "jump-pass"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial jumphost: %v", err)
+	}
+	defer jumpClient.Close()
+
+	// 经 jumphost 拨号到 target
+	targetClient, err := d.DialThrough(jumpClient, DialOptions{
+		Addr:          target.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("DialThrough: %v", err)
+	}
+	defer targetClient.Close()
+
+	// DialThrough 返回 nil error 即已证明 target SSH 握手（kex + auth）成功：
+	// ssh.NewClientConn 只在完整握手后才返回。不再调用 NewSession() 验证，
+	// 因为 mockSSHServer 不接受 session channel（见其注释：只做 SSH 握手）。
+}
+
+func TestDialThroughTargetAuthFails(t *testing.T) {
+	target := newMockSSHServer(t, "alice", "wonderland", nil)
+	jump := newFakeForwardingJumphost(t, true)
+	d := newDialerWithTempKnownHosts(t)
+
+	jumpClient, err := d.Dial(DialOptions{
+		Addr:          jump.Addr(),
+		User:          "jump-user",
+		Auth:          config.SSHAuth{Password: "jump-pass"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial jumphost: %v", err)
+	}
+	defer jumpClient.Close()
+
+	_, err = d.DialThrough(jumpClient, DialOptions{
+		Addr:          target.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wrong"},
+		HostKeyVerify: true,
+	})
+	if err == nil {
+		t.Fatalf("expected auth failure")
+	}
+	if !strings.Contains(err.Error(), "permission denied") && !strings.Contains(err.Error(), "handshake") {
+		t.Errorf("error should mention permission denied or handshake, got: %v", err)
+	}
+}
+
+func TestDialThroughJumphostRejectsForwarding(t *testing.T) {
+	target := newMockSSHServer(t, "alice", "wonderland", nil)
+	jump := newFakeForwardingJumphost(t, false) // 禁用转发
+	d := newDialerWithTempKnownHosts(t)
+
+	jumpClient, err := d.Dial(DialOptions{
+		Addr:          jump.Addr(),
+		User:          "jump-user",
+		Auth:          config.SSHAuth{Password: "jump-pass"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial jumphost: %v", err)
+	}
+	defer jumpClient.Close()
+
+	_, err = d.DialThrough(jumpClient, DialOptions{
+		Addr:          target.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err == nil {
+		t.Fatalf("expected forwarding rejection error")
+	}
+	// ssh 库把 "administratively prohibited" 包成 "ssh: rejected: administratively prohibited"
+	if !strings.Contains(err.Error(), "administratively prohibited") && !strings.Contains(err.Error(), "through jumphost") {
+		t.Errorf("error should mention forwarding rejection, got: %v", err)
+	}
+}
+
+func TestDialThroughTargetHostKeyChanged(t *testing.T) {
+	// 第一次：target1 记录 host key
+	target1 := newMockSSHServer(t, "alice", "wonderland", nil)
+	jump := newFakeForwardingJumphost(t, true)
+	d := newDialerWithTempKnownHosts(t)
+
+	jumpClient, err := d.Dial(DialOptions{
+		Addr:          jump.Addr(),
+		User:          "jump-user",
+		Auth:          config.SSHAuth{Password: "jump-pass"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial jumphost: %v", err)
+	}
+	defer jumpClient.Close()
+	tc1, err := d.DialThrough(jumpClient, DialOptions{
+		Addr:          target1.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("first DialThrough: %v", err)
+	}
+	tc1.Close()
+	target1Addr := target1.Addr()
+	target1.listener.Close()
+
+	// 第二次：target2 复用同端口但 host key 不同
+	l, err := net.Listen("tcp", target1Addr)
+	if err != nil {
+		t.Fatalf("listen on same port: %v", err)
+	}
+	target2 := newMockSSHServerWithListener(t, l, "alice", "wonderland", nil)
+
+	_, err = d.DialThrough(jumpClient, DialOptions{
+		Addr:          target2.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err == nil {
+		t.Fatalf("expected host key changed error")
+	}
+	if !strings.Contains(err.Error(), "host key changed") {
+		t.Errorf("error should mention host key changed, got: %v", err)
 	}
 }

@@ -87,6 +87,73 @@ func (d *Dialer) Dial(opts DialOptions) (*ssh.Client, error) {
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
+// DialThrough 经由 jumphost 的 SSH client 拨号到 target（ssh -J 语义）。
+// 用 jumpClient.Dial("tcp", opts.Addr) 开 direct-tcpip 通道，
+// 再 ssh.NewClientConn 在其上建立第二层 SSH 连接。
+//
+// jumpClient 必须由调用方保持存活——target 的底层 conn 是 jumpClient 上的 channel，
+// jumpClient 关闭会导致 target 不可用。调用方负责在 target 关闭后再关 jumpClient
+// （PtyConn.Close 通过 SetJumpClient 绑定的引用处理此顺序）。
+//
+// 失败时关闭已开的 direct-tcpip conn，调用方只需关闭 jumpClient。
+func (d *Dialer) DialThrough(jumpClient *ssh.Client, opts DialOptions) (*ssh.Client, error) {
+	authMethod := "password"
+	if opts.Auth.PrivateKey != "" {
+		authMethod = "private_key"
+	}
+	d.logger.Debug("dialing through",
+		"server", opts.ServerName,
+		"addr", opts.Addr,
+		"user", opts.User,
+		"auth_method", authMethod,
+		"via_jumphost", true,
+	)
+
+	authMethods, err := buildAuthMethods(opts.Auth)
+	if err != nil {
+		return nil, err
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User:            opts.User,
+		Auth:            authMethods,
+		HostKeyCallback: d.hostKeyCallback(opts.Addr, opts.ServerName, opts.HostKeyVerify),
+		Timeout:         10 * time.Second,
+	}
+
+	// jumpClient.Dial 无 timeout 参数，goroutine + select 兜底 10s。
+	// 超时后 goroutine 阻塞到 jumphost 响应或 jumphost 关闭——jumphost 关闭时
+	// 所有阻塞 Dial 返回 error，goroutine 退出。可接受的泄漏（超时本身已说明 jumphost 异常）。
+	type dialRes struct {
+		c   net.Conn
+		err error
+	}
+	ch := make(chan dialRes, 1)
+	go func() {
+		c, err := jumpClient.Dial("tcp", opts.Addr)
+		ch <- dialRes{c, err}
+	}()
+	var conn net.Conn
+	select {
+	case r := <-ch:
+		conn, err = r.c, r.err
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("dial %s through jumphost: open direct-tcpip timed out after 10s", opts.Addr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dial %s through jumphost: %w", opts.Addr, err)
+	}
+
+	// ssh.NewClientConn 成功后接管 conn；失败时关闭兜底。
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, opts.Addr, clientConfig)
+	if err != nil {
+		conn.Close()
+		return nil, translateDialError(err, opts.Addr)
+	}
+	d.logger.Debug("ssh connected through", "server", opts.ServerName, "addr", opts.Addr)
+	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
 // dialUnderlying 建立底层 TCP 连接。无代理时直连；有代理时走 SOCKS5 或 HTTP CONNECT。
 func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) {
 	if p == nil {
