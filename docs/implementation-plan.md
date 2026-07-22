@@ -19,6 +19,7 @@
 | 6.2 | 模块 3 层目录拆解（conn/ + pty/ + session/） | ✅ 完成 | — |
 | 6.3 | 模块测试补全（sentinel / PTY / 状态机 / 连接层） | ✅ 完成 | — |
 | 6.4 | MCP 描述增强（Instructions + jsonschema）+ 多关键字 AND 搜索 | ✅ 完成 | `5926c70` |
+| 7 | Pattern A（ssh -J 透明转发） | ✅ 完成 | `7c39520` |
 
 ## 项目结构
 
@@ -339,6 +340,24 @@ type Manager struct{...}  // map[sid]*Session + graveyard
 **验证**：`go test -race ./...` 全绿。
 
 **关键文件**：`internal/mcp/server.go`（serverInstructions + NewServer）、`internal/mcp/tools_session.go` + `internal/mcp/tools_file.go`（Args jsonschema）、`internal/config/crud.go`（matchesQuery）、`internal/mcp/server_test.go` + `internal/config/crud_test.go`（测试）
+
+## 阶段 7：Pattern A（ssh -J 透明转发）
+
+**目标**：支持 `Jumphost.SSHJ=true`，客户端经 jumphost 的 direct-tcpip 通道 SSH 到 target（`ssh -J` 语义）。
+
+**实现要点**：
+- `Dialer.DialThrough(jumpClient, opts)`：开 direct-tcpip 通道 + `ssh.NewClientConn` 建第二层 SSH
+- `PtyConn.jumpClient` 字段 + `SetJumpClient`：绑定 jumphost 生命周期，`Close()` 先关 target 再关 jumphost
+- `setupPatternA`：Dial jumphost → DialThrough target → OpenPtyConn → SetJumpClient → 可选 LoginFlow（Stage="patternA"）→ DetectShell → InjectRC → TryEnableSftp
+- Login handler 三分支路由（direct / PatternA / PatternB），替换原 early-refuse
+- 配置校验：Pattern A 下 `Server.Proxy` 非空 → Load 拒绝
+
+**验证**：
+- `go test -race ./...` 全绿
+- DialThrough 单元测试（成功 / target auth 失败 / jumphost 拒绝转发 / host key 变更）
+- Pattern A 集成测试（端到端 / jumphost auth 失败 / target auth 失败 / host key 变更 / Close 释放两层 client / LoginFlow 失败 + trace）
+
+**关键文件**：`internal/ssh/conn/dialer.go`（DialThrough）、`internal/ssh/pty/pty.go`（jumpClient + SetJumpClient + Close 顺序）、`internal/mcp/tools_session.go`（setupPatternA + Login 路由）、`internal/config/validate.go`（Server.Proxy 拒绝）
 
 ## 跨阶段事项
 
