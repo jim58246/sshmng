@@ -35,8 +35,8 @@ import (
 const serverInstructions = `SSH session manager: servers, jumphosts, proxies, sessions.
 
 == Entity model ==
-- SSHServer: name, addr (host:port), user, auth, login_flow?, via?, proxy?, tags.
-- Jumphost: ssh_j=true → transparent (ssh -J, login_flow empty); ssh_j=false → bastion (login_flow required).
+- SSHServer: name, addr (host:port), user, auth, login_flow?, via?, proxy?, tags, host_key_verify? (default true; set false to skip known_hosts TOFU; Pattern B target login via PTY ignores this — only the jumphost's switch applies).
+- Jumphost: ssh_j=true → transparent (ssh -J, login_flow empty); ssh_j=false → bastion (login_flow required). Also has host_key_verify? (default true; set false to skip known_hosts TOFU on dial to this jumphost).
 - Proxy: transport HTTP/SOCKS5. Fields: name, type, addr, auth?, tags.
 - Relationships: SSHServer.via → Jumphost.name; *.proxy → Proxy.name.
 - Auth: password / private_key + passphrase. Prefer NOPASSWD/private_key.
