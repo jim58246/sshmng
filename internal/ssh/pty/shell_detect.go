@@ -17,8 +17,11 @@ func ParseShellDetect(stream string, rand string) (string, bool) {
 	if !endRe.MatchString(stream) {
 		return "", false
 	}
-	// 取最后一条 __SHELL_DETECT__:... 行（可能因 echo 回显出现两次）
-	detectRe := regexp.MustCompile(`(?m)^__SHELL_DETECT__:([^:\r\n]*):([^:\r\n]*):([^:\r\n]*)\r?$`)
+	// 取最后一条 __SHELL_DETECT__:... 行（可能因 echo 回显出现两次）。
+	// 不锚定行首 ^：某些 shell 下 __SHELL_DETECT__ 前面可能紧跟 PS1（同一行），
+	// 锚定行首会漏匹配。$ 仍保留行尾约束避免匹配行中间片段。多个匹配取最后一个
+	// （回显行在前、结果行在后），保证取到真正结果。
+	detectRe := regexp.MustCompile(`(?m)__SHELL_DETECT__:([^:\r\n]*):([^:\r\n]*):([^:\r\n]*)\r?$`)
 	matches := detectRe.FindAllStringSubmatch(stream, -1)
 	if len(matches) == 0 {
 		return "", false

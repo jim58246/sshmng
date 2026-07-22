@@ -50,6 +50,12 @@ func TestParseShellDetect(t *testing.T) {
 			true,
 		},
 		{
+			"ps1 prefix on same line",
+			"user@host:~$ __SHELL_DETECT__:/bin/bash:5.2.15(1)-release:\r\n__DETECT_END_abc12345__\r\n",
+			"bash",
+			true,
+		},
+		{
 			"missing end marker",
 			"__SHELL_DETECT__:/bin/bash:5.2.15:\r\n",
 			"",
