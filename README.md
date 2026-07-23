@@ -61,9 +61,12 @@ go install ./cmd/sshmng
 运行：
 
 ```bash
-./sshmng                          # 用默认配置路径
-./sshmng --config /path/to/config.json
-SSHMNG_HOME=/custom/dir ./sshmng  # 自定义配置目录
+./sshmng                                  # Print help
+./sshmng mcp                              # Start MCP server (what Agent configs use)
+./sshmng install                          # First-time setup wizard
+./sshmng doctor                           # Verify setup
+./sshmng mcp --config /path/to/config.json  # MCP server with custom config
+SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
 ```
 
 ## 配置
@@ -300,37 +303,34 @@ LoginAction 的一个分支。`pattern` 命中后跳转到 `next` 指向的 acti
 
 ## 集成指南
 
-sshmng 是标准 stdio MCP server，任何支持 MCP 的客户端都能接入。
+sshmng 是标准 stdio MCP server，任何支持 MCP 的客户端都能接入。推荐用 `sshmng install` 自动注入到已安装的 Agent；下面也给出各 Agent 的手动配置（`install` 失败时的 fallback）。
 
-### Claude Desktop (macOS)
+所有 Agent 配置都走 `"args": ["mcp"]` 子命令语法——`sshmng` 不带子命令时只打印帮助，必须显式用 `mcp` 启动 MCP server。
 
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+### 推荐：`sshmng install`
+
+```bash
+sshmng install
+```
+
+向导会自动检测已安装的 AI Agent（Claude Code / Hermes Agent / OpenCode），让你勾选要注入哪些，然后在每个 Agent 配置里写入 sshmng entry（带时间戳备份 `.bak.<ts>`）。非交互场景：
+
+```bash
+sshmng install --yes --agents claude-code,hermes
+```
+
+`--agents` 取值：`claude-code` / `hermes` / `opencode`，逗号分隔；`none` 跳过 Agent 注入。详见 `sshmng install -h`。
+
+### Claude Code
+
+编辑 `~/.claude.json`：
 
 ```json
 {
   "mcpServers": {
     "sshmng": {
       "command": "/Users/<you>/go/bin/sshmng",
-      "env": {
-        "SSHMNG_HOME": "/Users/<you>/.sshmng"
-      }
-    }
-  }
-}
-```
-
-重启 Claude Desktop 后，工具面板会出现 `login` / `run_in_session` 等工具。
-
-### Claude Code
-
-在项目根目录或 `~/.claude.json` 中配置：
-
-```json
-{
-  "mcpServers": {
-    "sshmng": {
-      "command": "sshmng",
-      "args": [],
+      "args": ["mcp"],
       "env": {
         "SSHMNG_HOME": "/Users/<you>/.sshmng"
       }
@@ -345,12 +345,73 @@ sshmng 是标准 stdio MCP server，任何支持 MCP 的客户端都能接入。
 claude mcp add sshmng sshmng --env SSHMNG_HOME=/Users/<you>/.sshmng
 ```
 
+注意：CLI 注册方式不会自动加 `args: ["mcp"]`（claude mcp add 把 `sshmng` 当成 server name + command），需要手动改 `~/.claude.json` 补 `"args": ["mcp"]`，或直接用 `sshmng install` 自动写入正确 entry。
+
 启动 `claude` 后用 `/mcp` 查看 sshmng 是否已连接、工具是否加载。
+
+### Hermes Agent
+
+编辑 `~/.hermes/config.yaml`（Unix）或 `%LOCALAPPDATA%\hermes\config.yaml`（Windows）：
+
+```yaml
+mcp_servers:
+  sshmng:
+    command: /Users/<you>/go/bin/sshmng
+    args:
+      - mcp
+    env:
+      SSHMNG_HOME: /Users/<you>/.sshmng
+```
+
+或运行 `sshmng install` 选择 Hermes Agent。Hermes 的 schema 与 Claude Code 一致（`command` 字符串 / `args` 列表 / `env` map），只是顶层 key 用 `mcp_servers`（YAML）而非 `mcpServers`（JSON）。
+
+### OpenCode
+
+编辑 `~/.config/opencode/opencode.json`：
+
+```json
+{
+  "mcp": {
+    "sshmng": {
+      "type": "local",
+      "command": ["/Users/<you>/go/bin/sshmng", "mcp"],
+      "environment": {"SSHMNG_HOME": "/Users/<you>/.sshmng"},
+      "enabled": true
+    }
+  }
+}
+```
+
+或运行 `sshmng install` 选择 OpenCode。OpenCode 的 schema 与前两者不同：
+- 顶层 key 是 `mcp`（不是 `mcpServers` / `mcp_servers`）
+- `command` 是数组（binary + args 合并成一个数组：`["sshmng", "mcp"]`）
+- env 字段叫 `environment`（不叫 `env`）
+- 额外需要 `type: "local"` 和 `enabled: true`
+
+### Claude Desktop (macOS)
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "sshmng": {
+      "command": "/Users/<you>/go/bin/sshmng",
+      "args": ["mcp"],
+      "env": {
+        "SSHMNG_HOME": "/Users/<you>/.sshmng"
+      }
+    }
+  }
+}
+```
+
+重启 Claude Desktop 后，工具面板会出现 `login` / `run_in_session` 等工具。Claude Desktop 目前不在 `sshmng install` 自动注入范围内（install 只覆盖 Claude Code / Hermes Agent / OpenCode），需手动按上面格式编辑配置文件。
 
 ### MCP Inspector（调试用）
 
 ```bash
-npx @modelcontextprotocol/inspector go run ./cmd/sshmng
+npx @modelcontextprotocol/inspector go run ./cmd/sshmng mcp
 ```
 
 Inspector 提供 GUI 直接调用工具、查看请求/响应。首次集成或排查 LoginFlow 时强烈建议先用 Inspector 验证一遍。
@@ -377,24 +438,50 @@ LoginFlow 失败时，`login` 工具响应含 `login_trace` JSON 字段（每步
 
 ### 首次配置流程
 
-1. **准备配置目录**：
-   ```bash
-   mkdir -p ~/.sshmng
-   chmod 700 ~/.sshmng
-   ```
+推荐用 install 向导：
 
-2. **写初始 config.json**（参考上方示例，或留空 `{"version":"1","servers":[]}` 由 Agent 通过 `update_*` 工具逐步填充）：
+```bash
+sshmng install
+```
+
+向导会：
+
+1. 创建 `~/.sshmng/`（0700）含 `config.json`（空 skeleton）和 `config.example.json`（Pattern A/B 示例）
+2. 检测已安装的 AI Agent（Claude Code / Hermes Agent / OpenCode），让你勾选要注入哪些
+3. 往每个选中的 Agent 配置写入 sshmng MCP entry（带时间戳备份 `.bak.<ts>`）
+4. 自动跑 `sshmng doctor` 验证
+
+非交互场景：
+
+```bash
+sshmng install --yes --agents claude-code,hermes
+```
+
+手动 fallback（`install` 失败时）：
+
+1. 创建配置目录：
+   ```bash
+   mkdir -p ~/.sshmng && chmod 700 ~/.sshmng
+   ```
+2. 写 `~/.sshmng/config.json`（参考 `config.example.json` 模板，或用空 skeleton：`{"version":"1","idle_timeout_s":300,"jumphosts":[],"proxies":[],"servers":[]}`）：
    ```bash
    echo '{"version":"1","idle_timeout_s":300,"jumphosts":[],"proxies":[],"servers":[]}' > ~/.sshmng/config.json
    chmod 600 ~/.sshmng/config.json
    ```
-
-3. **私钥文件**（如果用 PrivateKey 认证）：放到任意路径，权限必须 0600：
+3. 私钥文件（如果用 PrivateKey 认证）：放到任意路径，权限必须 0600：
    ```bash
    chmod 600 ~/.ssh/id_ed25519
    ```
+4. 编辑 Agent 的配置文件（参考上方"集成指南"），sshmng 命令用 `"args": ["mcp"]`
+5. 启动 Agent 测试：让 Agent 调一次 `list_ssh_servers`，应返回空数组；再调 `update_ssh_server` 添加第一个目标。
 
-4. **启动 Agent 测试**：让 Agent 调一次 `list_ssh_servers`，应返回空数组；再调 `update_ssh_server` 添加第一个目标。
+### Verifying setup
+
+```bash
+sshmng doctor
+```
+
+检查项：home 目录权限、`config.json` 可加载性、各 Agent 配置中 sshmng entry 存在且 binary path 匹配当前 sshmng 可执行文件。退出码：`0` 全通过 / `1` 至少一个 FAIL / `2` 仅 WARN（无 FAIL）。Windows 下权限检查降级为 WARN（NTFS ACL 需手动设置）。
 
 ### 典型 Agent 调用流程
 
