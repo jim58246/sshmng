@@ -18,15 +18,17 @@ func (p *PtyConn) SftpAvailable() bool {
 	return p.sftpClient != nil
 }
 
-// Upload 把 src 的内容上传到远端 remotePath。
+// Upload 把 src 上传到远端 remotePath。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)
 //   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
-//   - 超时返回已传输字节 + timed_out=true；error 为 context.DeadlineExceeded 包装
+//   - 超时返回已传输字节 + timed_out=true
 //
-// 用 context-aware io.Copy 在 Read/Write 迭代间检查 deadline。
+// 用 io.Copy 触发 *sftp.File.ReadFrom 的内置并发 pipelining——多个 SSH_FXP_WRITE
+// 包同时在飞，ack 异步回收，把跨地域 RTT 摊薄。超时通过 context.AfterFunc 关闭
+// sftp.File 解除 io.Copy 阻塞：在飞的 Write 收到 close 通知后失败返回。
 func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
-	p.logger.Debug("sftp upload start", "remote", remotePath, "timeout_ms", timeoutMs)
+	p.logger.Debug("sftp upload start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
@@ -43,20 +45,22 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 
 	dst, err := sftpClient.Create(remotePath)
 	if err != nil {
-		p.logger.Warn("sftp upload create failed",
-			"remote", remotePath, "err", err.Error())
 		return 0, false, fmt.Errorf("create remote %s: %w", remotePath, err)
 	}
 	defer dst.Close()
 
-	n, err := copyCtx(ctx, dst, src)
-	timedOut := errors.Is(err, context.DeadlineExceeded)
-	if err != nil && !timedOut {
-		p.logger.Warn("sftp upload copy failed",
-			"remote", remotePath, "bytes", n, "err", err.Error())
-	}
+	// ctx 到期时关闭 dst，解除 io.Copy 在 dst.Write（内部 ReadFrom）上的阻塞。
+	// sftp.File.Close 是幂等的——defer 的 Close 在 stop 后不会重复发 SSH_FXP_CLOSE
+	// （已 closed 时直接返回 nil）。
+	stop := context.AfterFunc(ctx, func() {
+		dst.Close()
+	})
+
+	n, err := io.Copy(dst, src)
+	stop()
+	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload done",
-		"remote", remotePath, "bytes", n, "timed_out", timedOut)
+		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
 
