@@ -15,3 +15,8 @@ func isNewer(latest, current string) bool {
 	}
 	return semver.Compare(latest, current) > 0
 }
+
+// IsNewer is the exported wrapper around isNewer for CLI use.
+func IsNewer(latest, current string) bool {
+	return isNewer(latest, current)
+}
