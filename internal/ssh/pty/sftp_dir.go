@@ -5,15 +5,19 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 
 	"sshmng/internal/ssh/conn"
 )
 
 // UploadDir 把本地 localDir 整树上传到远端 remoteDir。
-//   - opts.Concurrency=0 默认 4；本 Task 1 先实现顺序版本（Concurrency 强制 1）
+//   - opts.Concurrency<=0 默认 4；Task 3 起使用并发 worker pool
 //   - opts.Conflict=0 默认 ConflictOverwrite；Task 2 加 skip/rename
 //   - per-file 错误不中断整树传输，用 errors.Join 聚合返回
 //   - symlink 跳过（不计入 Skipped，因为 Skipped 是 ConflictSkip 计数；symlink 不计入任何计数）
+//
+// 两遍扫描：第一遍 Walk 收集文件任务（目录在 Walk 内即时 MkdirAll）；
+// 第二遍 N 个 worker 从 channel 拉任务并发传文件，结果用 mutex 保护的 DirTransferResult 聚合。
 //
 // 返回 DirTransferResult 汇总。
 func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
@@ -35,76 +39,113 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 		return conn.DirTransferResult{}, errors.New("local path is not a directory")
 	}
 
-	var result conn.DirTransferResult
-	var errs []error
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+
+	// 第一遍：Walk 收集所有文件（目录在 Walk 内即时 MkdirAll）
+	type fileTask struct {
+		localPath, remotePath string
+	}
+	var tasks []fileTask
+	var walkErrs []error
 
 	walkErr := filepath.Walk(localDir, func(localPath string, fi os.FileInfo, err error) error {
 		if err != nil {
-			errs = append(errs, err)
-			return nil // continue walking
+			walkErrs = append(walkErrs, err)
+			return nil
 		}
-
-		// 相对路径 → 远端路径
 		rel, err := filepath.Rel(localDir, localPath)
 		if err != nil {
-			errs = append(errs, err)
+			walkErrs = append(walkErrs, err)
 			return nil
 		}
 		remotePath := path.Join(remoteDir, filepath.ToSlash(rel))
 
-		// symlink：跳过（v1 YAGNI）
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return nil
+			return nil // skip symlinks
 		}
-
 		if fi.IsDir() {
 			if err := sftpClient.MkdirAll(remotePath); err != nil {
-				errs = append(errs, err)
+				walkErrs = append(walkErrs, err)
 			}
 			return nil
 		}
-
-		// 文件：按 conflict policy 分派
-		f, err := os.Open(localPath)
-		if err != nil {
-			errs = append(errs, err)
-			return nil
-		}
-		defer f.Close()
-
-		finalPath, action, err := p.resolveConflict(remotePath, opts.Conflict)
-		if err != nil {
-			errs = append(errs, err)
-			return nil
-		}
-		switch action {
-		case conflictSkip:
-			result.Skipped++
-			return nil
-		case conflictRename:
-			result.Renamed++
-		}
-
-		n, timedOut, err := p.Upload(f, finalPath, opts.TimeoutMs)
-		if err != nil {
-			errs = append(errs, err)
-		} else {
-			// 仅成功才计入 Files/Bytes（修复 Task 1 deferred issue：
-			// 原来 Bytes/Files 无条件累加，错误也累加）
-			result.Bytes += int64(n)
-			result.Files++
-		}
-		if timedOut {
-			result.TimedOut++
-		}
+		tasks = append(tasks, fileTask{localPath, remotePath})
 		return nil
 	})
 	if walkErr != nil {
-		errs = append(errs, walkErr)
+		walkErrs = append(walkErrs, walkErr)
 	}
 
+	// 第二遍：并发 worker pool 传文件
+	taskCh := make(chan fileTask)
+	var mu sync.Mutex
+	var result conn.DirTransferResult
+	var errs []error
+	errs = append(errs, walkErrs...)
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			for task := range taskCh {
+				f, err := os.Open(task.localPath)
+				if err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+					continue
+				}
+				finalPath, action, err := p.resolveConflict(task.remotePath, opts.Conflict)
+				if err != nil {
+					f.Close()
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+					continue
+				}
+				if action == conflictSkip {
+					f.Close()
+					mu.Lock()
+					result.Skipped++
+					mu.Unlock()
+					continue
+				}
+				if action == conflictRename {
+					mu.Lock()
+					result.Renamed++
+					mu.Unlock()
+				}
+				n, timedOut, err := p.Upload(f, finalPath, opts.TimeoutMs)
+				f.Close()
+				mu.Lock()
+				result.Bytes += int64(n)
+				result.Files++
+				if err != nil {
+					errs = append(errs, err)
+				}
+				if timedOut {
+					result.TimedOut++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	go func() {
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+	}()
+	wg.Wait()
+
 	p.logger.Debug("sftp upload_dir done",
-		"sid", p.sid, "files", result.Files, "bytes", result.Bytes, "errors", len(errs))
+		"sid", p.sid, "files", result.Files, "bytes", result.Bytes,
+		"skipped", result.Skipped, "renamed", result.Renamed,
+		"errors", len(errs))
 
 	if len(errs) > 0 {
 		return result, errors.Join(errs...)

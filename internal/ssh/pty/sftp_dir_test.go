@@ -11,6 +11,11 @@ import (
 	"sshmng/internal/ssh/conn"
 )
 
+// readAll 是 io.ReadAll 的薄封装，供并发测试读回远端文件内容使用。
+func readAll(r io.Reader) ([]byte, error) {
+	return io.ReadAll(r)
+}
+
 // TestUploadDirBasic: 2 文件 + 1 子目录的本地树上传到 remote，验证：
 // - 目录被创建（MkdirAll）
 // - 文件内容正确
@@ -247,6 +252,63 @@ func TestUploadDirConflictRename(t *testing.T) {
 		f.Close()
 		if string(got) != c.want {
 			t.Errorf("%s = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+// TestUploadDirConcurrency: 10 文件 + Concurrency=4，验证所有文件都正确传输。
+// 不直接测并发（难测），但测并发下不丢文件、不内容错乱。
+func TestUploadDirConcurrency(t *testing.T) {
+	srv := newFakeShellServerWithSftp(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	// 本地树：10 文件，每个 1KB
+	localRoot := t.TempDir()
+	wantFiles := map[string]string{}
+	for i := 0; i < 10; i++ {
+		name := "file_" + string(rune('0'+i)) + ".txt"
+		content := string(bytes.Repeat([]byte{byte('a' + i)}, 1024))
+		if err := os.WriteFile(filepath.Join(localRoot, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		wantFiles["/concurrent/"+name] = content
+	}
+
+	res, err := p.UploadDir(localRoot, "/concurrent", conn.DirTransferOptions{Concurrency: 4})
+	if err != nil {
+		t.Fatalf("UploadDir: %v", err)
+	}
+	if res.Files != 10 {
+		t.Errorf("Files = %d, want 10", res.Files)
+	}
+	if res.Bytes != 10*1024 {
+		t.Errorf("Bytes = %d, want %d", res.Bytes, 10*1024)
+	}
+
+	// 验证每个文件内容
+	for remotePath, want := range wantFiles {
+		f, err := p.sftpClient.Open(remotePath)
+		if err != nil {
+			t.Errorf("Open %s: %v", remotePath, err)
+			continue
+		}
+		got, _ := readAll(f)
+		f.Close()
+		if string(got) != want {
+			t.Errorf("%s content mismatch: got %d bytes, want %d", remotePath, len(got), len(want))
 		}
 	}
 }
