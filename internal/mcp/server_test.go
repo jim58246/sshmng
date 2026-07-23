@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 // TestSessionLoggerReturnsBaseLoggerWithSid 验证 sessionLogger 始终返回 baseLogger
@@ -89,5 +90,52 @@ func TestNewServerSetsInstructions(t *testing.T) {
 		if !strings.Contains(got, kw) {
 			t.Errorf("Instructions missing keyword %q\n--- instructions ---\n%s", kw, got)
 		}
+	}
+}
+
+// TestNewServerReportsVersion 验证 NewServer 把 version.Version 传给 MCP server，
+// 使 Agent 在 initialize 响应的 serverInfo.version 中看到真实构建版本
+// （goreleaser 通过 ldflags 注入；dev 构建为 "dev"）。
+//
+// 修复前：server.go 硬编码 Version: "v1"，与 git tag 脱节，self-update 无法
+// 比对当前版本，Agent 也看不到真实版本号。
+// 修复后：Version: version.Version。
+//
+// 临时覆盖 version.Version 后通过 InMemoryTransport 跑真实 initialize 握手，
+// 从 ClientSession.InitializeResult().ServerInfo.Version 读回——这是 Agent 实际看到的值。
+// （*mcp.Server.impl 是非导出字段、无 Info() 访问器，只能通过握手验证。）
+func TestNewServerReportsVersion(t *testing.T) {
+	// Override version for test isolation; restore after.
+	orig := version.Version
+	version.Version = "v9.9.9-test"
+	defer func() { version.Version = orig }()
+
+	svc := &Service{}
+	server := NewServer(svc)
+
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0"}, nil)
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	result := clientSession.InitializeResult()
+	if result == nil {
+		t.Fatalf("InitializeResult() = nil; initialize not completed")
+	}
+	if result.ServerInfo == nil {
+		t.Fatalf("InitializeResult().ServerInfo = nil")
+	}
+	if got, want := result.ServerInfo.Version, version.Version; got != want {
+		t.Errorf("serverInfo.Version = %q, want %q", got, want)
+	}
+	if result.ServerInfo.Name != "sshmng" {
+		t.Errorf("serverInfo.Name = %q, want %q", result.ServerInfo.Name, "sshmng")
 	}
 }
