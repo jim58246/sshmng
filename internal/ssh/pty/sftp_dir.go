@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"sshmng/internal/ssh/conn"
@@ -247,4 +248,181 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+// DownloadDir 把远端 remoteDir 整树下载到本地 localDir。
+// 与 UploadDir 对称：sftpClient.Walk 遍历，os.MkdirAll 建目录，并发 worker pool 下载。
+//   - opts.Concurrency<=0 默认 4
+//   - opts.Conflict=0 默认 ConflictOverwrite；skip/rename 见 resolveLocalConflict
+//   - per-file 错误不中断整树传输，用 errors.Join 聚合返回
+//   - symlink 跳过（不计入任何计数）
+//   - 成功才计入 result.Bytes/result.Files；超时计入 TimedOut；失败计入 errs
+//
+// 返回 DirTransferResult 汇总。
+func (p *PtyConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
+	p.logger.Debug("sftp download_dir start", "sid", p.sid, "local", localDir, "remote", remoteDir, "opts", opts)
+
+	p.mu.Lock()
+	sftpClient := p.sftpClient
+	p.mu.Unlock()
+	if sftpClient == nil {
+		return conn.DirTransferResult{}, conn.ErrSftpUnavailable
+	}
+
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+
+	// 第一遍：Walk 收集所有文件（目录在 Walk 内即时 os.MkdirAll）
+	type fileTask struct {
+		localPath, remotePath string
+	}
+	var tasks []fileTask
+	var walkErrs []error
+
+	walker := sftpClient.Walk(remoteDir)
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			walkErrs = append(walkErrs, err)
+			continue
+		}
+		remotePath := walker.Path()
+		fi := walker.Stat()
+
+		rel := strings.TrimPrefix(remotePath, remoteDir)
+		rel = strings.TrimPrefix(rel, "/")
+		localPath := filepath.Join(localDir, filepath.FromSlash(rel))
+
+		if fi.Mode()&os.ModeSymlink != 0 {
+			continue // skip symlinks
+		}
+		if fi.IsDir() {
+			if err := os.MkdirAll(localPath, 0755); err != nil {
+				walkErrs = append(walkErrs, err)
+			}
+			continue
+		}
+		tasks = append(tasks, fileTask{localPath, remotePath})
+	}
+
+	// 第二遍：并发 worker pool 下载
+	taskCh := make(chan fileTask)
+	var mu sync.Mutex
+	var result conn.DirTransferResult
+	var errs []error
+	errs = append(errs, walkErrs...)
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			for task := range taskCh {
+				finalPath, action, err := p.resolveLocalConflict(task.localPath, opts.Conflict)
+				if err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+					continue
+				}
+				if action == conflictSkip {
+					mu.Lock()
+					result.Skipped++
+					mu.Unlock()
+					continue
+				}
+				if action == conflictRename {
+					mu.Lock()
+					result.Renamed++
+					mu.Unlock()
+				}
+				f, err := os.Create(finalPath)
+				if err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+					continue
+				}
+				n, timedOut, err := p.Download(task.remotePath, f, opts.TimeoutMs)
+				f.Close()
+				mu.Lock()
+				if err != nil {
+					errs = append(errs, err)
+				} else {
+					result.Bytes += int64(n)
+					result.Files++
+				}
+				if timedOut {
+					result.TimedOut++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	go func() {
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+	}()
+	wg.Wait()
+
+	p.logger.Debug("sftp download_dir done",
+		"sid", p.sid, "files", result.Files, "bytes", result.Bytes,
+		"skipped", result.Skipped, "renamed", result.Renamed,
+		"errors", len(errs))
+
+	if len(errs) > 0 {
+		return result, errors.Join(errs...)
+	}
+	return result, nil
+}
+
+// resolveLocalConflict 是 resolveConflict 的本地文件版本。
+//   - ConflictOverwrite: 直接返回 localPath
+//   - ConflictSkip: 本地存在则跳过
+//   - ConflictRename: 找 name_1、name_2...
+//
+// 与 resolveConflict 区别：用 os.Stat + os.IsNotExist 而非 sftpClient.Stat。
+func (p *PtyConn) resolveLocalConflict(localPath string, policy conn.ConflictPolicy) (finalPath string, action conflictAction, err error) {
+	if policy == conn.ConflictOverwrite {
+		return localPath, conflictOverwrite, nil
+	}
+
+	_, statErr := os.Stat(localPath)
+	notExist := os.IsNotExist(statErr)
+
+	if policy == conn.ConflictSkip {
+		if notExist {
+			return localPath, conflictOverwrite, nil
+		}
+		if statErr != nil {
+			return "", 0, statErr
+		}
+		return localPath, conflictSkip, nil
+	}
+
+	// ConflictRename
+	if notExist {
+		return localPath, conflictOverwrite, nil
+	}
+	if statErr != nil {
+		return "", 0, statErr
+	}
+	dir := filepath.Dir(localPath)
+	base := filepath.Base(localPath)
+	ext := ""
+	if dot := strings.LastIndex(base, "."); dot >= 0 {
+		ext = base[dot:]
+		base = base[:dot]
+	}
+	for i := 1; ; i++ {
+		candidate := filepath.Join(dir, base+"_"+itoa(i)+ext)
+		if _, e := os.Stat(candidate); os.IsNotExist(e) {
+			return candidate, conflictRename, nil
+		} else if e != nil {
+			return "", 0, e
+		}
+	}
 }
