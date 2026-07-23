@@ -54,7 +54,7 @@ func (c *ClaudeCodeInjector) Inject(path string, entry MCPEntry) error {
 	return nil
 }
 
-func (c *ClaudeCodeInjector) Verify(path string, expectedBinary string) error {
+func (c *ClaudeCodeInjector) Verify(path string, expected MCPEntry) error {
 	m, err := loadJSONMap(path)
 	if err != nil {
 		return err
@@ -68,8 +68,15 @@ func (c *ClaudeCodeInjector) Verify(path string, expectedBinary string) error {
 		return fmt.Errorf("no sshmng entry in mcpServers")
 	}
 	cmd, _ := sshmng["command"].(string)
-	if cmd != expectedBinary {
-		return fmt.Errorf("stale: expected command %q, got %q", expectedBinary, cmd)
+	if cmd != expected.BinaryPath {
+		return fmt.Errorf("stale: expected command %q, got %q", expected.BinaryPath, cmd)
+	}
+	if !argsEqual(sshmng["args"], expected.Args) {
+		return fmt.Errorf("stale: expected args %q, got %v", expected.Args, sshmng["args"])
+	}
+	env, _ := sshmng["env"].(map[string]any)
+	if env == nil || env["SSHMNG_HOME"] != expectedHome(expected) {
+		return fmt.Errorf("stale: expected env.SSHMNG_HOME %q, got %v", expectedHome(expected), env["SSHMNG_HOME"])
 	}
 	return nil
 }

@@ -62,7 +62,7 @@ func (o *OpenCodeInjector) Inject(path string, entry MCPEntry) error {
 	return nil
 }
 
-func (o *OpenCodeInjector) Verify(path string, expectedBinary string) error {
+func (o *OpenCodeInjector) Verify(path string, expected MCPEntry) error {
 	m, err := loadJSONMap(path)
 	if err != nil {
 		return err
@@ -83,8 +83,20 @@ func (o *OpenCodeInjector) Verify(path string, expectedBinary string) error {
 		return fmt.Errorf("sshmng.command array is empty")
 	}
 	first, _ := cmdArr[0].(string)
-	if first != expectedBinary {
-		return fmt.Errorf("stale: expected command[0] %q, got %q", expectedBinary, first)
+	if first != expected.BinaryPath {
+		return fmt.Errorf("stale: expected command[0] %q, got %q", expected.BinaryPath, first)
+	}
+	rest := make([]string, 0, len(cmdArr)-1)
+	for _, v := range cmdArr[1:] {
+		s, _ := v.(string)
+		rest = append(rest, s)
+	}
+	if !stringSliceEqual(rest, expected.Args) {
+		return fmt.Errorf("stale: expected command args %q, got %v", expected.Args, rest)
+	}
+	env, _ := sshmng["environment"].(map[string]any)
+	if env == nil || env["SSHMNG_HOME"] != expectedHome(expected) {
+		return fmt.Errorf("stale: expected environment.SSHMNG_HOME %q, got %v", expectedHome(expected), env["SSHMNG_HOME"])
 	}
 	return nil
 }

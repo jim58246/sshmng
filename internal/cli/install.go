@@ -121,13 +121,14 @@ func RunInstall(opts InstallOpts, out io.Writer) int {
 		fmt.Fprintf(out, "  [ok] Injected sshmng into %s\n", path)
 	}
 
-	// Run doctor at end
+	// Run doctor at end. Pass the same entry used for injection so doctor can
+	// verify command, args, and env.SSHMNG_HOME match what we just wrote.
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Verifying (doctor):")
 	docCode := RunDoctor(DoctorOpts{
-		Home:           opts.Home,
-		ExpectedBinary: opts.Binary,
-		AgentFilter:    nil,
+		Home:          opts.Home,
+		ExpectedEntry: entry,
+		AgentFilter:   nil,
 	}, out)
 	if docCode != 0 {
 		fmt.Fprintf(out, "\nSetup completed with warnings/errors. Run 'sshmng doctor' for details.\n")

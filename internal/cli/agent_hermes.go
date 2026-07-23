@@ -70,7 +70,7 @@ func (h *HermesInjector) Inject(path string, entry MCPEntry) error {
 	return nil
 }
 
-func (h *HermesInjector) Verify(path string, expectedBinary string) error {
+func (h *HermesInjector) Verify(path string, expected MCPEntry) error {
 	m, err := loadYAMLMap(path)
 	if err != nil {
 		return err
@@ -84,8 +84,15 @@ func (h *HermesInjector) Verify(path string, expectedBinary string) error {
 		return fmt.Errorf("no sshmng entry in mcp_servers")
 	}
 	cmd, _ := sshmng["command"].(string)
-	if cmd != expectedBinary {
-		return fmt.Errorf("stale: expected command %q, got %q", expectedBinary, cmd)
+	if cmd != expected.BinaryPath {
+		return fmt.Errorf("stale: expected command %q, got %q", expected.BinaryPath, cmd)
+	}
+	if !argsEqualYAML(sshmng["args"], expected.Args) {
+		return fmt.Errorf("stale: expected args %q, got %v", expected.Args, sshmng["args"])
+	}
+	env, _ := sshmng["env"].(map[string]any)
+	if env == nil || env["SSHMNG_HOME"] != expectedHome(expected) {
+		return fmt.Errorf("stale: expected env.SSHMNG_HOME %q, got %v", expectedHome(expected), env["SSHMNG_HOME"])
 	}
 	return nil
 }
@@ -144,11 +151,14 @@ func writeYAMLMapAtomic(path string, m map[string]any) error {
 				return fmt.Errorf("remove old %s: %w (rename err: %v)", path, rmErr, err)
 			}
 			if err := os.Rename(tmpName, path); err != nil {
-				return fmt.Errorf("rename temp to %s: %w", path, err)
+				// Original config was deleted above; restore from newest backup.
+				// Spec line 288: "写入失败：从最新备份恢复，报错退出".
+				restoreErr := restoreFromBackup(path)
+				return fmt.Errorf("rename temp to %s: %w (restore from backup: %v; backup at %s.bak.<ts>)", path, err, restoreErr, path)
 			}
 			return nil
 		}
-		return fmt.Errorf("rename temp to %s: %w", path, err)
+		return fmt.Errorf("rename temp to %s: %w (backup at %s.bak.<ts> if exists)", path, err, path)
 	}
 	return nil
 }

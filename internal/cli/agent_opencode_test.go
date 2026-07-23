@@ -117,23 +117,52 @@ func TestOpenCodeInjectPreservesOtherServers(t *testing.T) {
 
 func TestOpenCodeVerifyMatches(t *testing.T) {
 	inj, path := newOpenCodeInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{
+		BinaryPath: "/sshmng",
+		Args:       []string{"mcp"},
+		Env:        map[string]string{"SSHMNG_HOME": "/home"},
+	}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	if err := inj.Verify(path, "/sshmng"); err != nil {
+	if err := inj.Verify(path, entry); err != nil {
 		t.Errorf("Verify should pass: %v", err)
 	}
 }
 
 func TestOpenCodeVerifyStaleBinary(t *testing.T) {
 	inj, path := newOpenCodeInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	if err := inj.Verify(path, "/new/bin/sshmng"); err == nil {
+	expected := MCPEntry{BinaryPath: "/new/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Verify(path, expected); err == nil {
 		t.Error("Verify should fail for stale binary")
+	}
+}
+
+func TestOpenCodeVerifyStaleArgs(t *testing.T) {
+	inj, path := newOpenCodeInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"old"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Verify(path, expected); err == nil {
+		t.Error("Verify should fail for stale command args")
+	}
+}
+
+func TestOpenCodeVerifyStaleEnv(t *testing.T) {
+	inj, path := newOpenCodeInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/other"}}
+	if err := inj.Verify(path, expected); err == nil {
+		t.Error("Verify should fail for stale environment.SSHMNG_HOME")
 	}
 }
 
@@ -147,7 +176,7 @@ func TestOpenCodeVerifyCommandNotArray(t *testing.T) {
 	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := inj.Verify(path, "/sshmng"); err == nil {
+	if err := inj.Verify(path, MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}); err == nil {
 		t.Error("Verify should fail when command is not an array")
 	}
 }

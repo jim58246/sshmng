@@ -133,23 +133,52 @@ func TestHermesInjectCreatesBackup(t *testing.T) {
 
 func TestHermesVerifyMatches(t *testing.T) {
 	inj, path := newHermesInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{
+		BinaryPath: "/sshmng",
+		Args:       []string{"mcp"},
+		Env:        map[string]string{"SSHMNG_HOME": "/home"},
+	}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	if err := inj.Verify(path, "/sshmng"); err != nil {
+	if err := inj.Verify(path, entry); err != nil {
 		t.Errorf("Verify should pass: %v", err)
 	}
 }
 
 func TestHermesVerifyStaleBinary(t *testing.T) {
 	inj, path := newHermesInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	if err := inj.Verify(path, "/new/bin/sshmng"); err == nil {
+	expected := MCPEntry{BinaryPath: "/new/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Verify(path, expected); err == nil {
 		t.Error("Verify should fail for stale binary")
+	}
+}
+
+func TestHermesVerifyStaleArgs(t *testing.T) {
+	inj, path := newHermesInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"old"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Verify(path, expected); err == nil {
+		t.Error("Verify should fail for stale args")
+	}
+}
+
+func TestHermesVerifyStaleEnv(t *testing.T) {
+	inj, path := newHermesInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/other"}}
+	if err := inj.Verify(path, expected); err == nil {
+		t.Error("Verify should fail for stale env.SSHMNG_HOME")
 	}
 }
 
@@ -161,7 +190,7 @@ func TestHermesVerifyMissingEntry(t *testing.T) {
 	if err := os.WriteFile(path, []byte("mcp_servers: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := inj.Verify(path, "/sshmng"); err == nil {
+	if err := inj.Verify(path, MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}); err == nil {
 		t.Error("Verify should fail when sshmng entry missing")
 	}
 }

@@ -23,7 +23,7 @@ type AgentInjector interface {
 	DisplayName() string                         // human-friendly, e.g. "Claude Code"
 	Detect() (configPath string, installed bool) // check if Agent is installed
 	Inject(path string, entry MCPEntry) error    // merge sshmng entry into config
-	Verify(path string, expectedBinary string) error
+	Verify(path string, expected MCPEntry) error
 }
 
 // backupFile copies path to <path>.bak.<YYYYMMDD-HHMMSS>. Does not delete old
@@ -105,11 +105,18 @@ func writeJSONMapAtomic(path string, m map[string]any) error {
 				return fmt.Errorf("remove old %s: %w (rename err: %v)", path, rmErr, err)
 			}
 			if err := os.Rename(tmpName, path); err != nil {
-				return fmt.Errorf("rename temp to %s: %w", path, err)
+				// The original config has been deleted above; restore from the
+				// newest backup (created by backupFile before write) so the user
+				// does not lose their Agent config. Spec line 288: "写入失败：
+				// 从最新备份恢复，报错退出".
+				restoreErr := restoreFromBackup(path)
+				return fmt.Errorf("rename temp to %s: %w (restore from backup: %v; backup at %s.bak.<ts>)", path, err, restoreErr, path)
 			}
 			return nil
 		}
-		return fmt.Errorf("rename temp to %s: %w", path, err)
+		// Non-Windows: rename is atomic, original is intact on failure. Include
+		// the backup path in the error for diagnosability.
+		return fmt.Errorf("rename temp to %s: %w (backup at %s.bak.<ts> if exists)", path, err, path)
 	}
 	return nil
 }
@@ -123,4 +130,97 @@ func mergeEntry(m map[string]any, topKey string, entryMap map[string]any) {
 	}
 	servers["sshmng"] = entryMap
 	m[topKey] = servers
+}
+
+// restoreFromBackup copies the newest <path>.bak.* backup back over path. Used
+// to recover the user's Agent config when an atomic write fails after the
+// original has been deleted (Windows rename-after-delete branch). Returns an
+// error if no backup exists or the copy fails; the error includes the backup
+// glob for diagnosis.
+func restoreFromBackup(path string) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path) + ".bak.*"
+	matches, err := filepath.Glob(filepath.Join(dir, base))
+	if err != nil {
+		return fmt.Errorf("glob backups: %w", err)
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no backup found matching %s.bak.*", path)
+	}
+	newest := matches[0]
+	newestStat, err := os.Stat(newest)
+	if err != nil {
+		return fmt.Errorf("stat backup %s: %w", newest, err)
+	}
+	for _, m := range matches[1:] {
+		st, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if st.ModTime().After(newestStat.ModTime()) {
+			newest = m
+			newestStat = st
+		}
+	}
+	data, err := os.ReadFile(newest)
+	if err != nil {
+		return fmt.Errorf("read backup %s: %w", newest, err)
+	}
+	perm := os.FileMode(0600)
+	if runtime.GOOS == "windows" {
+		perm = 0644
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return fmt.Errorf("restore %s from %s: %w", path, newest, err)
+	}
+	return nil
+}
+
+// expectedHome returns the SSHMNG_HOME value from entry.Env, or "" if unset.
+func expectedHome(entry MCPEntry) string {
+	if entry.Env == nil {
+		return ""
+	}
+	return entry.Env["SSHMNG_HOME"]
+}
+
+// argsEqual reports whether a JSON-parsed args field ([]any of strings) equals
+// the expected []string. JSON arrays always decode to []any; nil and empty are
+// treated as equal to match how an absent args field round-trips.
+func argsEqual(got any, want []string) bool {
+	arr, ok := got.([]any)
+	if !ok {
+		return want == nil || len(want) == 0
+	}
+	if len(arr) != len(want) {
+		return false
+	}
+	for i, v := range arr {
+		s, _ := v.(string)
+		if s != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// argsEqualYAML reports whether a YAML-parsed args field equals the expected
+// []string. yaml.v3 decodes sequences to []any with each element as the
+// decoded type (strings for scalar string elements).
+func argsEqualYAML(got any, want []string) bool {
+	return argsEqual(got, want)
+}
+
+// stringSliceEqual reports whether two []string slices are equal, treating nil
+// and empty as equal.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

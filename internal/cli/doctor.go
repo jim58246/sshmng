@@ -15,9 +15,9 @@ import (
 
 // DoctorOpts configures RunDoctor.
 type DoctorOpts struct {
-	Home           string   // sshmng home dir
-	ExpectedBinary string   // expected sshmng binary path in Agent configs
-	AgentFilter    []string // restrict to specific Agents; nil = all
+	Home          string   // sshmng home dir
+	ExpectedEntry MCPEntry // expected sshmng MCP entry in Agent configs
+	AgentFilter   []string // restrict to specific Agents; nil = all
 }
 
 // RunDoctor verifies setup and writes results to out. Returns exit code:
@@ -28,9 +28,18 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 	if opts.Home == "" {
 		opts.Home = defaultHome()
 	}
-	if opts.ExpectedBinary == "" {
+	if opts.ExpectedEntry.BinaryPath == "" {
 		bin, _ := os.Executable()
-		opts.ExpectedBinary = bin
+		opts.ExpectedEntry.BinaryPath = bin
+	}
+	if opts.ExpectedEntry.Args == nil {
+		opts.ExpectedEntry.Args = []string{"mcp"}
+	}
+	if opts.ExpectedEntry.Env == nil {
+		opts.ExpectedEntry.Env = map[string]string{}
+	}
+	if opts.ExpectedEntry.Env["SSHMNG_HOME"] == "" {
+		opts.ExpectedEntry.Env["SSHMNG_HOME"] = opts.Home
 	}
 	failCount, warnCount, passCount := 0, 0, 0
 	print := func(level, msg string) {
@@ -98,10 +107,10 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 	}
 
 	// binary
-	if _, err := os.Stat(opts.ExpectedBinary); err != nil {
-		print("FAIL", fmt.Sprintf("binary %s not executable - rebuild with 'go build'", opts.ExpectedBinary))
+	if _, err := os.Stat(opts.ExpectedEntry.BinaryPath); err != nil {
+		print("FAIL", fmt.Sprintf("binary %s not executable - rebuild with 'go build'", opts.ExpectedEntry.BinaryPath))
 	} else {
-		print("OK", fmt.Sprintf("binary at %s", opts.ExpectedBinary))
+		print("OK", fmt.Sprintf("binary at %s", opts.ExpectedEntry.BinaryPath))
 	}
 
 	// known_hosts (if exists)
@@ -140,10 +149,10 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 				inj.DisplayName(), inj.Name())
 			continue
 		}
-		if err := inj.Verify(path, opts.ExpectedBinary); err != nil {
+		if err := inj.Verify(path, opts.ExpectedEntry); err != nil {
 			print("FAIL", fmt.Sprintf("%s: %v", inj.DisplayName(), err))
 		} else {
-			print("OK", fmt.Sprintf("%s config has sshmng entry, command matches", inj.DisplayName()))
+			print("OK", fmt.Sprintf("%s config has sshmng entry, command/args/env match", inj.DisplayName()))
 		}
 	}
 

@@ -20,7 +20,7 @@ func TestDoctorEmptyHomeFails(t *testing.T) {
 	home := filepath.Join(tmp, ".sshmng")
 	bin, _ := os.Executable()
 	var out bytes.Buffer
-	code := RunDoctor(DoctorOpts{Home: home, ExpectedBinary: bin}, &out)
+	code := RunDoctor(DoctorOpts{Home: home, ExpectedEntry: MCPEntry{BinaryPath: bin, Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": home}}}, &out)
 	if code != 1 {
 		t.Errorf("code = %d, want 1 (fail). Output:\n%s", code, out.String())
 	}
@@ -50,7 +50,7 @@ func TestDoctorPassesAfterInstall(t *testing.T) {
 		t.Fatalf("install failed: %s", installOut.String())
 	}
 	var out bytes.Buffer
-	code = RunDoctor(DoctorOpts{Home: home, ExpectedBinary: bin}, &out)
+	code = RunDoctor(DoctorOpts{Home: home, ExpectedEntry: MCPEntry{BinaryPath: bin, Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": home}}}, &out)
 	if code != 0 {
 		t.Errorf("code = %d, want 0. Output:\n%s", code, out.String())
 	}
@@ -74,7 +74,7 @@ func TestDoctorWarnsOnMissingExample(t *testing.T) {
 	os.Remove(filepath.Join(home, "config.example.json"))
 
 	var out bytes.Buffer
-	code := RunDoctor(DoctorOpts{Home: home, ExpectedBinary: bin}, &out)
+	code := RunDoctor(DoctorOpts{Home: home, ExpectedEntry: MCPEntry{BinaryPath: bin, Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": home}}}, &out)
 	if code != 2 {
 		t.Errorf("code = %d, want 2 (warn-only). Output:\n%s", code, out.String())
 	}
@@ -112,7 +112,7 @@ func TestDoctorDetectsStaleAgentEntry(t *testing.T) {
 
 	// Now run doctor with a different expected binary — should FAIL
 	var out bytes.Buffer
-	code := RunDoctor(DoctorOpts{Home: home, ExpectedBinary: "/different/bin/sshmng"}, &out)
+	code := RunDoctor(DoctorOpts{Home: home, ExpectedEntry: MCPEntry{BinaryPath: "/different/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": home}}}, &out)
 	if code != 1 {
 		t.Errorf("code = %d, want 1 (stale fail). Output:\n%s", code, out.String())
 	}
@@ -133,7 +133,7 @@ func TestDoctorSkipsUninstalledAgents(t *testing.T) {
 	var installOut bytes.Buffer
 	RunInstall(InstallOpts{Home: home, Binary: bin, Yes: true, SkipAgents: true}, &installOut)
 	var out bytes.Buffer
-	code := RunDoctor(DoctorOpts{Home: home, ExpectedBinary: bin}, &out)
+	code := RunDoctor(DoctorOpts{Home: home, ExpectedEntry: MCPEntry{BinaryPath: bin, Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": home}}}, &out)
 	if code != 0 {
 		t.Errorf("code = %d, want 0. Output:\n%s", code, out.String())
 	}

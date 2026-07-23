@@ -134,24 +134,55 @@ func TestClaudeCodeInjectCreatesBackup(t *testing.T) {
 
 func TestClaudeCodeVerifyMatches(t *testing.T) {
 	inj, path := newClaudeCodeInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{
+		BinaryPath: "/sshmng",
+		Args:       []string{"mcp"},
+		Env:        map[string]string{"SSHMNG_HOME": "/home"},
+	}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	if err := inj.Verify(path, "/sshmng"); err != nil {
+	if err := inj.Verify(path, entry); err != nil {
 		t.Errorf("Verify should pass: %v", err)
 	}
 }
 
 func TestClaudeCodeVerifyStaleBinary(t *testing.T) {
 	inj, path := newClaudeCodeInjectorForTest(t)
-	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}}
+	entry := MCPEntry{BinaryPath: "/old/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
 	if err := inj.Inject(path, entry); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
-	err := inj.Verify(path, "/new/bin/sshmng")
+	expected := MCPEntry{BinaryPath: "/new/bin/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	err := inj.Verify(path, expected)
 	if err == nil {
 		t.Error("Verify should fail for stale binary path")
+	}
+}
+
+func TestClaudeCodeVerifyStaleArgs(t *testing.T) {
+	inj, path := newClaudeCodeInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"old"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	err := inj.Verify(path, expected)
+	if err == nil {
+		t.Error("Verify should fail for stale args")
+	}
+}
+
+func TestClaudeCodeVerifyStaleEnv(t *testing.T) {
+	inj, path := newClaudeCodeInjectorForTest(t)
+	entry := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}}
+	if err := inj.Inject(path, entry); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	expected := MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/other"}}
+	err := inj.Verify(path, expected)
+	if err == nil {
+		t.Error("Verify should fail for stale env.SSHMNG_HOME")
 	}
 }
 
@@ -160,7 +191,7 @@ func TestClaudeCodeVerifyMissingEntry(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"mcpServers":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	err := inj.Verify(path, "/sshmng")
+	err := inj.Verify(path, MCPEntry{BinaryPath: "/sshmng", Args: []string{"mcp"}, Env: map[string]string{"SSHMNG_HOME": "/home"}})
 	if err == nil {
 		t.Error("Verify should fail when sshmng entry missing")
 	}
