@@ -200,11 +200,11 @@ func NewServer(svc *Service) *mcp.Server {
 	}, svc.Download)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "upload_dir",
-		Description: "Upload a local directory tree to the remote host via sftp. Walks the local tree, creates remote dirs (MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session.",
+		Description: "Upload a local directory tree to the remote host via sftp. Walks the local tree, creates remote dirs (MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session. Note: partial failures return ok:false in the result body with IsError not set; check the ok field, not the MCP error flag.",
 	}, svc.UploadDir)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "download_dir",
-		Description: "Download a remote directory tree to local via sftp. Walks the remote tree (sftp.Walk), creates local dirs (os.MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session.",
+		Description: "Download a remote directory tree to local via sftp. Walks the remote tree (sftp.Walk), creates local dirs (os.MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session. Note: partial failures return ok:false in the result body with IsError not set; check the ok field, not the MCP error flag.",
 	}, svc.DownloadDir)
 	return server
 }

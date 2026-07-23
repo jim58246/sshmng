@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pkg/sftp"
 	"sshmng/internal/ssh/conn"
 )
 
@@ -100,7 +101,7 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 					mu.Unlock()
 					continue
 				}
-				finalPath, action, err := p.resolveConflict(task.remotePath, opts.Conflict)
+				finalPath, action, err := p.resolveConflict(sftpClient, task.remotePath, opts.Conflict)
 				if err != nil {
 					f.Close()
 					mu.Lock()
@@ -169,14 +170,15 @@ const (
 //   - ConflictSkip: Stat 检查存在；存在返回 skip，不存在返回 overwrite
 //   - ConflictRename: 找无冲突路径 name_1.ext、name_2.ext...
 //
-// 调用前 sftpClient 必须非 nil。
-func (p *PtyConn) resolveConflict(remotePath string, policy conn.ConflictPolicy) (finalPath string, action conflictAction, err error) {
+// sftpClient 由调用方传入（已在 p.mu 下捕获），避免 resolveConflict 直接读 p.sftpClient
+// 与 Close() 竞争（Close 会置 p.sftpClient=nil）。
+func (p *PtyConn) resolveConflict(sftpClient *sftp.Client, remotePath string, policy conn.ConflictPolicy) (finalPath string, action conflictAction, err error) {
 	if policy == conn.ConflictOverwrite {
 		return remotePath, conflictOverwrite, nil
 	}
 
 	// Stat 检查存在性
-	_, statErr := p.sftpClient.Stat(remotePath)
+	_, statErr := sftpClient.Stat(remotePath)
 	notExist := isNotExist(statErr)
 
 	if policy == conn.ConflictSkip {
@@ -206,7 +208,7 @@ func (p *PtyConn) resolveConflict(remotePath string, policy conn.ConflictPolicy)
 	}
 	for i := 1; ; i++ {
 		candidate := path.Join(dir, base+"_"+itoa(i)+ext)
-		if _, e := p.sftpClient.Stat(candidate); e != nil {
+		if _, e := sftpClient.Stat(candidate); e != nil {
 			if isNotExist(e) {
 				return candidate, conflictRename, nil
 			}
