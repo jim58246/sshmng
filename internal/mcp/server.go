@@ -125,7 +125,7 @@ type UpdateArgs struct {
 	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges (or creates if name not found). Structure mirrors get_* output; via/proxy fields are name strings"`
 }
 
-// NewServer 创建 MCP server 并注册 14 个工具（9 CRUD + 5 session/file）。
+// NewServer 创建 MCP server 并注册 16 个工具（9 CRUD + 5 session/file + 2 dir transfer）。
 func NewServer(svc *Service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: "v1"}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
@@ -198,6 +198,14 @@ func NewServer(svc *Service) *mcp.Server {
 		Name:        "download",
 		Description: "Download a remote file to local via sftp. Requires sftp_available=true on the session (check stat first). Returns {bytes, timed_out}. Fails with 'sftp not available' if session's sftp channel wasn't established.",
 	}, svc.Download)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "upload_dir",
+		Description: "Upload a local directory tree to the remote host via sftp. Walks the local tree, creates remote dirs (MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session.",
+	}, svc.UploadDir)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "download_dir",
+		Description: "Download a remote directory tree to local via sftp. Walks the remote tree (sftp.Walk), creates local dirs (os.MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session.",
+	}, svc.DownloadDir)
 	return server
 }
 

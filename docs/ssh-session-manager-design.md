@@ -339,6 +339,21 @@ upload(sid, src, dst, timeout_ms?) → {ok, bytes, err, timed_out?}
   - sftp 通道不可用时 err="sftp not available for this session"
 download(sid, src, dst, timeout_ms?) → {ok, bytes, err, timed_out?}
   - 同上；src=远端路径，dst=本地路径
+upload_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?) → {sid, ok, bytes, files, skipped, renamed, timed_out, err?}
+  - 把本地 src 目录整树上传到远端 dst
+  - 走 sftp 通道（与 upload 单文件一致），filepath.Walk 遍历 + MkdirAll 建目录 + 并发 worker pool 传文件
+  - conflict policy：overwrite（默认，sftp.Create 语义）/ skip（跳过已存在）/ rename（自动重命名 name_1、name_2...）
+  - concurrency 默认 4，0 = 默认 4
+  - timeout_ms 默认 300s，per-file 超时
+  - per-file 错误不中断整树传输，继续其他文件；err 字段聚合所有错误（errors.Join）
+  - 返回 bytes（成功传输字节总数）/ files（成功文件数）/ skipped（跳过数）/ renamed（重命名数）/ timed_out（per-file 超时数）
+  - sftp 通道不可用时 err="sftp not available for this session"
+download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?) → 同上，方向相反
+  - 把远端 src 目录整树下载到本地 dst
+  - 走 sftp 通道，sftpClient.Walk 遍历 + os.MkdirAll 建目录 + 并发 worker pool 传文件
+  - 其余语义同 upload_dir
+
+**为什么加 upload_dir/download_dir：** 单文件 upload 强迫 Agent 用 N 次 MCP 往返编排文件夹传输——每个文件一次 SSH channel 操作，慢且容易半途失败留脏状态。upload_dir 把 Walk + MkdirAll + 并发 + conflict policy 封装成一次调用，Agent 编排复杂度降下来，trace 也集中在一条调用里便于诊断。sftp 协议本身没有"递归传输"原语，专业 sftp 工具都是这样自己实现的。
 
 ========== 配置查询/更新 ==========
 list_ssh_servers(query?) → [{name, addr, via, proxy, tags}]
