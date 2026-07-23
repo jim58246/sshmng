@@ -22,6 +22,8 @@ func Dispatch(ctx context.Context, args []string, out io.Writer) int {
 		return runMCP(ctx, args[1:], out)
 	case "install":
 		return runInstall(ctx, args[1:], out)
+	case "doctor":
+		return runDoctor(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		printHelp(out)
 		return 0
