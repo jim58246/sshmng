@@ -481,7 +481,7 @@ func TestDownloadDirConcurrency(t *testing.T) {
 	// 本地源：10 文件
 	localSrc := t.TempDir()
 	wantFiles := map[string]string{}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		name := "file_" + string(rune('0'+i)) + ".txt"
 		content := string(bytes.Repeat([]byte{byte('a' + i)}, 1024))
 		os.WriteFile(filepath.Join(localSrc, name), []byte(content), 0644)
