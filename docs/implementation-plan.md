@@ -401,7 +401,7 @@ type Manager struct{...}  // map[sid]*Session + graveyard
 每阶段交付后用 MCP Inspector 验证：
 
 ```bash
-npx @modelcontextprotocol/inspector go run ./cmd/sshmng
+npx @modelcontextprotocol/inspector go run ./cmd/sshmng mcp
 ```
 
 阶段 5 完成后做完整端到端：
