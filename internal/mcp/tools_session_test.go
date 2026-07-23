@@ -18,8 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // --- 错误路径单元测试（不需要真实 SSH server） ---

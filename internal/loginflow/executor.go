@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 // PTY 是执行器依赖的 PTY 抽象，便于测试用 fake 替身。

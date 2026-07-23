@@ -19,9 +19,9 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
-	"sshmng/internal/ssh/session"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/session"
 )
 
 // serverInstructions 是 MCP server 的整体说明，发送给 client（Agent）作为

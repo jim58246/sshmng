@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // helper: 登录到 fake sftp server，返回 sid + svc + 清理函数。

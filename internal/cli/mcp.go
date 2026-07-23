@@ -12,9 +12,9 @@ import (
 	"runtime"
 	"syscall"
 
-	"sshmng/internal/config"
-	"sshmng/internal/mcp"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/mcp"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // runMCP starts the stdio MCP server. Mirrors the pre-refactor main.go behavior.

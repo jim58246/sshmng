@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 // DoctorOpts configures RunDoctor.

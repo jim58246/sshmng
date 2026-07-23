@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // --- sftp 通道建立 ---

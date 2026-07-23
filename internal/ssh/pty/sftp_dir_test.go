@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // readAll 是 io.ReadAll 的薄封装，供并发测试读回远端文件内容使用。

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"sshmng/internal/config"
-	"sshmng/internal/loginflow"
-	"sshmng/internal/ssh/conn"
-	"sshmng/internal/ssh/pty"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/loginflow"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/pty"
 )
 
 // LoginArgs 是 login 工具的入参。

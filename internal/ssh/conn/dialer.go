@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 // Dialer 封装 SSH 拨号逻辑：私钥加载 + auth method 装配 + TOFU host key 校验 + 代理。

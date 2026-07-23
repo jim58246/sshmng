@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // BenchmarkSftpUpload 测 sftp 上传吞吐量，用 *os.File 作为 src（真实场景：

@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // SftpAvailable 返回 sftp 通道是否在 login 时成功建立。

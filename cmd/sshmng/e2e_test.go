@@ -181,7 +181,7 @@ func TestE2ECreateAndListSSHServer(t *testing.T) {
 			"arguments": map[string]any{
 				"name": "s1",
 				"patch": map[string]any{
-					"addr": "1.1.1.1:22",
+					"addr": "192.0.2.1:22",
 					"user": "u",
 					"auth": map[string]any{"password": "secret"},
 				},

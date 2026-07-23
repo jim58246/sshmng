@@ -7,7 +7,7 @@ import (
 	"context"
 	"os"
 
-	"sshmng/internal/cli"
+	"github.com/jim58246/sshmng/internal/cli"
 )
 
 func main() {

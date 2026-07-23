@@ -21,11 +21,13 @@ SSH 会话管理工具，以 MCP (Model Context Protocol) server 形式对外提
 要求 Go 1.25+。
 
 ```bash
-# 编译
-go build -o sshmng ./cmd/sshmng
+# 不克隆仓库直接装最新版
+go install github.com/jim58246/sshmng/cmd/sshmng@latest
 
-# 或直接 install
-go install ./cmd/sshmng
+# 或克隆后本地编译
+git clone https://github.com/jim58246/sshmng.git
+cd sshmng
+go build -o sshmng ./cmd/sshmng
 ```
 
 运行：
@@ -116,4 +118,4 @@ go test -race ./...
 
 ## License
 
-私有项目，未发布。
+[MIT](LICENSE) — Copyright (c) 2026 jim58246

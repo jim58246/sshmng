@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 // mockSSHServer 是用于测试的本地 SSH server。支持密码 / 公钥认证。

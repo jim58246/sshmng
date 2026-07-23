@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // fakeShellServerHangOnShell 是 fake SSH server，完成握手 + auth + pty-req，

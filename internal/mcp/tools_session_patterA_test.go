@@ -15,9 +15,9 @@ import (
 	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
-	"sshmng/internal/ssh/pty"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/pty"
 )
 
 // testLogger 返回一个写向 io.Discard 的 slog.Logger，供 mcp 测试包内需要 logger 入参的场景复用。

@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/pkg/sftp"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // UploadDir 把本地 localDir 整树上传到远端 remoteDir。

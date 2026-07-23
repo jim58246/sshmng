@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 // fakePTY 是测试用的 PTY 替身：Send 累积输入；Read 把队列化输出投递给 matchers。

@@ -3,7 +3,7 @@ package mcp
 import (
 	"testing"
 
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // TestParseConflictPolicyFromArgs: "skip" → ConflictSkip，"rename" → ConflictRename，"" / "overwrite" / "unknown" → ConflictOverwrite

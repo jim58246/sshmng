@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // fakeConn 是 Conn 接口的测试替身，记录所有调用并允许控制 Run 的行为。

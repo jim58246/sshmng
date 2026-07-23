@@ -16,8 +16,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	cryptossh "golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // fakeJumphostServerForMCP 是 Pattern B 测试用的 fake SSH server。

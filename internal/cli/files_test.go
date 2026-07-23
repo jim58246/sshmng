@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/config"
 )
 
 func TestScaffoldHomeCreatesDirAndFiles(t *testing.T) {

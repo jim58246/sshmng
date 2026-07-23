@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // shellDetectPS1Re 从 `export PS1='$(echo _$?)__<sid>___]# '` 中提取 sid。

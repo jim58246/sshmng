@@ -5,7 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // UploadDirArgs 是 upload_dir 工具的入参。

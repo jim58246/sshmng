@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"sshmng/internal/loginflow"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/loginflow"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // SessionState 表示 session 的当前状态。

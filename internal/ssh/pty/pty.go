@@ -13,9 +13,9 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
-	"sshmng/internal/config"
-	"sshmng/internal/loginflow"
-	"sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/loginflow"
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // 默认超时：未指定 timeoutMs 时使用。
