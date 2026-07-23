@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 // setupInstallTest creates a temp HOME and returns (home, claudePath).
@@ -25,6 +27,9 @@ func setupInstallTest(t *testing.T) (home string, claudePath string) {
 
 func TestRunInstallCreatesFiles(t *testing.T) {
 	home, _ := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	bin, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +55,9 @@ func TestRunInstallCreatesFiles(t *testing.T) {
 
 func TestRunInstallInjectsClaudeCode(t *testing.T) {
 	home, claudePath := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	// Pre-create claude.json so Detect finds it
 	if err := os.WriteFile(claudePath, []byte(`{"mcpServers":{}}`), 0600); err != nil {
 		t.Fatal(err)
@@ -82,6 +90,9 @@ func TestRunInstallInjectsClaudeCode(t *testing.T) {
 
 func TestRunInstallPreservesExistingConfigJSON(t *testing.T) {
 	home, _ := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	original := `{"version":"1","idle_timeout_s":600,"jumphosts":[],"proxies":[],"servers":[]}`
 	if err := os.MkdirAll(home, 0700); err != nil {
 		t.Fatal(err)
@@ -109,6 +120,9 @@ func TestRunInstallPreservesExistingConfigJSON(t *testing.T) {
 
 func TestRunInstallCreatesBackupBeforeInject(t *testing.T) {
 	home, claudePath := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	original := `{"mcpServers":{"other":{"command":"x"}}}`
 	if err := os.WriteFile(claudePath, []byte(original), 0600); err != nil {
 		t.Fatal(err)
@@ -144,6 +158,9 @@ func TestRunInstallCreatesBackupBeforeInject(t *testing.T) {
 // Agents. This matches the spec default "auto-detect" for the --agents flag.
 func TestRunInstallYesAutoDetectsAgents(t *testing.T) {
 	home, claudePath := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	// Pre-create claude.json so Detect finds it
 	if err := os.WriteFile(claudePath, []byte(`{"mcpServers":{}}`), 0600); err != nil {
 		t.Fatal(err)
