@@ -2,7 +2,6 @@ package pty
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -64,13 +63,16 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 	return int(n), timedOut, err
 }
 
-// Download 把远端 remotePath 的内容下载到 dst。
+// Download 把远端 remotePath 下载到 dst。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)
 //   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
 //   - 超时返回已传输字节 + timed_out=true
+//
+// 用 io.Copy 触发 *sftp.File.WriteTo 的内置并发 pipelining——多个 SSH_FXP_READ
+// 请求同时在飞。超时通过 context.AfterFunc 关闭 src（sftp.File）解除 io.Copy 阻塞。
 func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
-	p.logger.Debug("sftp download start", "remote", remotePath, "timeout_ms", timeoutMs)
+	p.logger.Debug("sftp download start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
@@ -87,50 +89,18 @@ func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 
 	src, err := sftpClient.Open(remotePath)
 	if err != nil {
-		p.logger.Warn("sftp download open failed",
-			"remote", remotePath, "err", err.Error())
 		return 0, false, fmt.Errorf("open remote %s: %w", remotePath, err)
 	}
 	defer src.Close()
 
-	n, err := copyCtx(ctx, dst, src)
-	timedOut := errors.Is(err, context.DeadlineExceeded)
-	if err != nil && !timedOut {
-		p.logger.Warn("sftp download copy failed",
-			"remote", remotePath, "bytes", n, "err", err.Error())
-	}
-	p.logger.Debug("sftp download done",
-		"remote", remotePath, "bytes", n, "timed_out", timedOut)
-	return int(n), timedOut, err
-}
+	stop := context.AfterFunc(ctx, func() {
+		src.Close()
+	})
 
-// copyCtx 是 context-aware 版的 io.Copy：每次 Read/Write 前检查 ctx.Err()。
-// 超时时返回已传输字节 + context.DeadlineExceeded，调用方可据 errors.Is 判断。
-// 不用 io.Copy + context.AfterFunc 是因为后者无法中断阻塞中的 sftp.Write（SSH
-// channel 上的同步写），但可在每次迭代间早退，避免无限等待。
-func copyCtx(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	buf := make([]byte, 32*1024)
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return total, err
-		}
-		nr, rerr := src.Read(buf)
-		if nr > 0 {
-			nw, werr := dst.Write(buf[:nr])
-			total += int64(nw)
-			if werr != nil {
-				return total, werr
-			}
-			if nw < nr {
-				return total, io.ErrShortWrite
-			}
-		}
-		if rerr == io.EOF {
-			return total, nil
-		}
-		if rerr != nil {
-			return total, rerr
-		}
-	}
+	n, err := io.Copy(dst, src)
+	stop()
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	p.logger.Debug("sftp download done",
+		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
+	return int(n), timedOut, err
 }

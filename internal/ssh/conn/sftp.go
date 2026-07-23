@@ -30,8 +30,14 @@ var ErrSftpUnavailable = fmt.Errorf("sftp not available for this session")
 //
 // UseConcurrentWrites(true) 启用 *sftp.File.ReadFrom 的并发 pipelining——
 // 多个 SSH_FXP_WRITE 包同时在飞。否则 ReadFrom 退化为串行 writeChunkAt 循环，
-// 每包阻塞等 ack，与 copyCtx 等价。对 Create-then-write 场景安全（不同 offset
-// 的乱序写不影响最终文件）。
+// 每包阻塞等 ack（与手写 read-then-write 循环等价）。对 Create-then-write 场景
+// 安全（不同 offset 的乱序写不影响最终文件）。
+//
+// UseConcurrentReads(true) 显式声明启用 *sftp.File.WriteTo 的并发 pipelining——
+// 多个 SSH_FXP_READ 包同时在飞，ack 异步回收，把跨地域 RTT 摊薄。Download 路径
+// 依赖它。注意：pkg/sftp v1.13.11 的 Read 默认就是并发的（disableConcurrentReads
+// 默认 false），此处显式 opt-in 是防御性写法，避免未来库默认变更时性能悄悄退化。
+// 对 Open-then-read 场景安全（不同 offset 的乱序读由 WriteTo 内部按 offset 重组）。
 const SftpMaxPacket = 64 * 1024
 
 // NewSftpClient 在已有 SSH 连接上建立 sftp 通道，5s 超时。
@@ -58,6 +64,7 @@ func NewSftpClient(client *ssh.Client) (*sftp.Client, error) {
 			client,
 			sftp.MaxPacketUnchecked(SftpMaxPacket),
 			sftp.UseConcurrentWrites(true),
+			sftp.UseConcurrentReads(true),
 		)
 		ch <- result{c, err}
 	}()
