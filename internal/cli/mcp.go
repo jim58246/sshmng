@@ -15,6 +15,8 @@ import (
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/mcp"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/jim58246/sshmng/internal/update"
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 // runMCP starts the stdio MCP server. Mirrors the pre-refactor main.go behavior.
@@ -64,6 +66,30 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 
 	svc := mcp.NewService(store, knownHosts, logger)
 	logger.Info("sshmng MCP server starting", "config", path, "log_level", level.String(), "log_path", cfg.LogPath)
+	// Auto-update goroutine: silent, never writes to stdout/stderr (MCP
+	// server invariant). Skipped when auto_update_enabled=false or dev build.
+	if cfg.AutoUpdateEnabled && version.Version != "dev" {
+		go func() {
+			u, err := update.New(update.Config{
+				RepoOwner: version.RepoOwner,
+				RepoName:  version.RepoName,
+				UpdateURL: cfg.UpdateURL,
+				CachePath: filepath.Join(filepath.Dir(path), "update_cache.json"),
+			})
+			if err != nil {
+				logger.Warn("auto-update init failed", "err", err)
+				return
+			}
+			latest, applied, err := u.UpdateToLatest(ctx)
+			if err != nil {
+				logger.Warn("auto-update failed", "err", err)
+				return
+			}
+			if applied {
+				logger.Info("auto-update applied", "old", version.Version, "new", latest)
+			}
+		}()
+	}
 	if err := svc.Run(ctx); err != nil {
 		logger.Error("server", "err", err)
 		return 1
