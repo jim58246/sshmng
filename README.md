@@ -18,17 +18,22 @@ SSH 会话管理工具，以 MCP (Model Context Protocol) server 形式对外提
 
 ## 安装与构建
 
-要求 Go 1.25+。
+sshmng 是单二进制工具，无运行时依赖。任选一种方式获取：
 
 ```bash
-# 不克隆仓库直接装最新版
+# 方式一：下载 release 二进制（推荐，无需 Go 环境）
+#   从 https://github.com/jim58246/sshmng/releases 下载对应 OS/Arch 的二进制
+chmod +x sshmng
+
+# 方式二：go install（需要 Go 1.25+）
 go install github.com/jim58246/sshmng/cmd/sshmng@latest
 
-# 或克隆后本地编译
+# 方式三：克隆后本地编译
 git clone https://github.com/jim58246/sshmng.git
-cd sshmng
-go build -o sshmng ./cmd/sshmng
+cd sshmng && go build -o sshmng ./cmd/sshmng
 ```
+
+拿到二进制后执行 `sshmng install` 即可创建 `~/.sshmng/` 配置目录并注入到已安装的 AI Agent（Claude Code / Hermes / OpenCode 等），详见 [快速上手](#快速上手)。
 
 运行：
 
