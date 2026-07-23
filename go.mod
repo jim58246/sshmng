@@ -1,6 +1,6 @@
 module github.com/jim58246/sshmng
 
-go 1.25.12
+go 1.25.0
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
