@@ -116,10 +116,9 @@ go test -race ./...
 - [设计文档](docs/ssh-session-manager-design.md) — 完整设计规范（PTY sentinel、LoginFlow、session 状态机等）
 - [实施计划](docs/implementation-plan.md) — v1 实施进度
 
-## 后续迭代
+## 贡献
 
-- **v2**：服务端 + 同步（gRPC over TLS、多用户认证、存储加密）；Xshell `.xsh` 导入导出；只读模式开关
-- **认证扩展**：keyboard-interactive / SSH agent / SSH certificate / 2FA（若 v1 LoginFlow 硬编码方案不够用）
+欢迎开 [issue](https://github.com/jim58246/sshmng/issues) 反馈 bug 和 feature request。暂不接受 PR。
 
 ## License
 
