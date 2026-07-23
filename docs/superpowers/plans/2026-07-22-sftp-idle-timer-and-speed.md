@@ -36,7 +36,7 @@
 
 # Part A: SFTP 期间 idle timer 误杀修复
 
-### Task A1: 扩展 fakeConn 支持 sftp 操作
+### Task 1: 扩展 fakeConn 支持 sftp 操作
 
 **Files:**
 - Modify: `internal/ssh/session/session_test.go`（`fakeConn` 定义在 L14 附近）
@@ -169,7 +169,7 @@ git commit -m "test(session): extend fakeConn with controllable sftp Upload/Down
 
 ---
 
-### Task A2: Session.Upload 套状态机 + 测试 idle timer 不误杀
+### Task 2: Session.Upload 套状态机 + 测试 idle timer 不误杀
 
 **Files:**
 - Modify: `internal/ssh/session/session.go:293-295`（`Session.Upload`）
@@ -334,19 +334,19 @@ git commit -m "fix(session): stop idle timer during sftp Upload to prevent sessi
 
 ---
 
-### Task A3: Session.Download 套状态机 + 测试
+### Task 3: Session.Download 套状态机 + 测试
 
 **Files:**
 - Modify: `internal/ssh/session/session.go:298-300`（`Session.Download`）
 - Test: `internal/ssh/session/session_test.go`
 
 **Interfaces:**
-- Consumes: 同 A2
+- Consumes: 同 Task 2
 - Produces: `Session.Download` 与 `Session.Upload` / `RunInSession` 状态语义对称
 
 - [ ] **Step 1: 写失败的测试——Download 期间 idle timer 不误杀**
 
-在 `internal/ssh/session/session_test.go` 追加（与 A2 对称，用 `downloadBlock` 字段；如 fakeConn 没有该字段，复用 `uploadBlock` 或加一个）：
+在 `internal/ssh/session/session_test.go` 追加（与 Task 2 对称，用 `downloadBlock` 字段；如 fakeConn 没有该字段，复用 `uploadBlock` 或加一个）：
 
 ```go
 // TestDownloadDoesNotFireIdleTimeout: 与 TestUploadDoesNotFireIdleTimeout 对称。
@@ -381,7 +381,7 @@ func TestDownloadDoesNotFireIdleTimeout(t *testing.T) {
 }
 ```
 
-A1 的 fakeConn 已加 `downloadBlock chan struct{}` 字段并在 `Download` 方法中阻塞于它——本测试直接用即可。
+Task 1 的 fakeConn 已加 `downloadBlock chan struct{}` 字段并在 `Download` 方法中阻塞于它——本测试直接用即可。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -443,7 +443,7 @@ git commit -m "fix(session): stop idle timer during sftp Download to prevent ses
 
 # Part B: SFTP 传输速度修复
 
-### Task B1: 给 sftp.NewClient 加 MaxPacket 选项
+### Task 4: 给 sftp.NewClient 加 MaxPacket 选项
 
 **Files:**
 - Modify: `internal/ssh/conn/sftp.go:27-43`（`NewSftpClient`）
@@ -484,7 +484,7 @@ func TestNewSftpClientMaxPacket(t *testing.T) {
 }
 ```
 
-> 注：真实 sftp client 需要 ssh.Client 才能工作，单元测试层难以直接验证 maxPacket 值。此 smoke test 仅防回归——保证改 option 后不 panic、不破坏签名。速度提升由 B4 的 benchmark 端到端验证。
+> 注：真实 sftp client 需要 ssh.Client 才能工作，单元测试层难以直接验证 maxPacket 值。此 smoke test 仅防回归——保证改 option 后不 panic、不破坏签名。速度提升由 Task 7 的 benchmark 端到端验证。
 
 - [ ] **Step 2: 跑测试确认当前实现的行为基线**
 
@@ -539,11 +539,11 @@ git commit -m "perf(conn): set sftp MaxPacket to 64KB to halve ack count"
 
 ---
 
-### Task B2: Upload 用 io.Copy 替换 copyCtx
+### Task 5: Upload 用 io.Copy 替换 copyCtx
 
 **Files:**
-- Modify: `internal/ssh/pty/sftp.go:28-55`（`PtyConn.Upload`）+ 删 `copyCtx`（L95-120，仅当 B3 完成后）
-- Test: `internal/ssh/pty/sftp_test.go`（现有测试 + 新增 benchmark 在 B4）
+- Modify: `internal/ssh/pty/sftp.go:28-55`（`PtyConn.Upload`）+ 删 `copyCtx`（L95-120，仅当 Task 6 完成后）
+- Test: `internal/ssh/pty/sftp_test.go`（现有测试 + 新增 benchmark 在 Task 7）
 
 **Interfaces:**
 - Consumes: `io.Copy`、`context.AfterFunc`（Go 1.21+，项目 Go 1.25 OK）、`*sftp.File`（实现 `io.ReaderFrom`）
@@ -637,7 +637,7 @@ git commit -m "perf(pty): use io.Copy in sftp Upload to enable pipelined writes"
 
 ---
 
-### Task B3: Download 用 io.Copy 替换 copyCtx
+### Task 6: Download 用 io.Copy 替换 copyCtx
 
 **Files:**
 - Modify: `internal/ssh/pty/sftp.go:62-89`（`PtyConn.Download`）+ 删 `copyCtx`（L95-120）
@@ -725,7 +725,7 @@ git commit -m "perf(pty): use io.Copy in sftp Download to enable pipelined reads
 
 ---
 
-### Task B4: 加 sftp 传输 benchmark 验证提速
+### Task 7: 加 sftp 传输 benchmark 验证提速
 
 **Files:**
 - Create: `internal/ssh/pty/sftp_bench_test.go`
