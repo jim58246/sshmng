@@ -38,7 +38,7 @@ func BenchmarkSftpUpload(b *testing.B) {
 	data := bytes.Repeat([]byte("x"), 4<<20) // 4MB
 	b.ResetTimer()
 	b.SetBytes(int64(len(data)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		n, _, err := p.Upload(bytes.NewReader(data), "/bench.txt", 60000)
 		if err != nil {
 			b.Fatalf("Upload: %v (bytes=%d)", err, n)
@@ -74,7 +74,7 @@ func BenchmarkSftpDownload(b *testing.B) {
 
 	b.ResetTimer()
 	b.SetBytes(int64(len(data)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		n, _, err := p.Download("/bench_dl.txt", io.Discard, 60000)
 		if err != nil {
 			b.Fatalf("Download: %v (bytes=%d)", err, n)
