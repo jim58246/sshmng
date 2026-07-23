@@ -27,6 +27,11 @@ var ErrSftpUnavailable = fmt.Errorf("sftp not available for this session")
 // "sizes larger than 32KB might not work with all servers"，导致 NewSftpClient
 // 失败、sftp 通道恒不可用。sshmng 只连自己控制的 server（OpenSSH 默认支持 256KB
 // 包），用 Unchecked 变体绕过库的保守校验。
+//
+// UseConcurrentWrites(true) 启用 *sftp.File.ReadFrom 的并发 pipelining——
+// 多个 SSH_FXP_WRITE 包同时在飞。否则 ReadFrom 退化为串行 writeChunkAt 循环，
+// 每包阻塞等 ack，与 copyCtx 等价。对 Create-then-write 场景安全（不同 offset
+// 的乱序写不影响最终文件）。
 const SftpMaxPacket = 64 * 1024
 
 // NewSftpClient 在已有 SSH 连接上建立 sftp 通道，5s 超时。
@@ -49,7 +54,11 @@ func NewSftpClient(client *ssh.Client) (*sftp.Client, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		c, err := sftp.NewClient(client, sftp.MaxPacketUnchecked(SftpMaxPacket))
+		c, err := sftp.NewClient(
+			client,
+			sftp.MaxPacketUnchecked(SftpMaxPacket),
+			sftp.UseConcurrentWrites(true),
+		)
 		ch <- result{c, err}
 	}()
 	select {

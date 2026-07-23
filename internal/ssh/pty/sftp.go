@@ -50,8 +50,8 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 	defer dst.Close()
 
 	// ctx 到期时关闭 dst，解除 io.Copy 在 dst.Write（内部 ReadFrom）上的阻塞。
-	// sftp.File.Close 是幂等的——defer 的 Close 在 stop 后不会重复发 SSH_FXP_CLOSE
-	// （已 closed 时直接返回 nil）。
+	// sftp.File.Close 不会重复发 SSH_FXP_CLOSE 网络包，但第二次调用返回 os.ErrClosed
+	// （defer 丢弃该错误，无功能影响）。
 	stop := context.AfterFunc(ctx, func() {
 		dst.Close()
 	})
