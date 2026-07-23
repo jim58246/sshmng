@@ -319,8 +319,31 @@ func (s *Session) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 }
 
 // Download 把远端 remotePath 下载到 dst。
+// 状态机与 Upload 对称。
 func (s *Session) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
-	return s.conn.Download(remotePath, dst, timeoutMs)
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return 0, false, errors.New("session closed")
+	}
+	if s.state == StateRunning {
+		s.mu.Unlock()
+		return 0, false, errors.New("session busy")
+	}
+	s.state = StateRunning
+	s.stopIdleTimer()
+	s.mu.Unlock()
+
+	n, timedOut, err := s.conn.Download(remotePath, dst, timeoutMs)
+
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	if s.state != StateClosed {
+		s.state = StateIdle
+		s.resetIdleTimer()
+	}
+	s.mu.Unlock()
+	return n, timedOut, err
 }
 
 // Close 强制关闭 session，无论状态。停止 idle timer、关闭 conn、从 Manager 移除。

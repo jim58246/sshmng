@@ -567,3 +567,36 @@ func TestUploadOnClosedSession(t *testing.T) {
 		t.Errorf("Upload on closed session: err=%v, want 'session closed'", err)
 	}
 }
+
+// --- Task 3: Session.Download 状态机 ---
+
+// TestDownloadDoesNotFireIdleTimeout: 与 TestUploadDoesNotFireIdleTimeout 对称。
+func TestDownloadDoesNotFireIdleTimeout(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.downloadData = []byte("data")
+	conn.downloadBlock = make(chan struct{}) // 若 fakeConn 字段名不同，调整此处
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, 100*time.Millisecond, nil)
+	defer s.Close()
+
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		close(conn.downloadBlock)
+	}()
+
+	var dst bytes.Buffer
+	start := time.Now()
+	_, _, err := s.Download("/r.txt", &dst, 5000)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("Download returned too fast: %v, want >= 400ms", elapsed)
+	}
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after Download = %s, want idle", st)
+	}
+}
