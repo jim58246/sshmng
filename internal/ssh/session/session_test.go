@@ -600,3 +600,47 @@ func TestDownloadDoesNotFireIdleTimeout(t *testing.T) {
 		t.Errorf("state after Download = %s, want idle", st)
 	}
 }
+
+// TestDownloadBlocksRunInSession: Download 进行中 state=Running，并发 RunInSession 应立即报 "session busy"。
+func TestDownloadBlocksRunInSession(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.downloadBlock = make(chan struct{})
+	conn.downloadData = []byte("data")
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, time.Minute, nil)
+	defer s.Close()
+
+	go func() {
+		var dst bytes.Buffer
+		s.Download("/r.txt", &dst, 5000)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	_, _, _, _, _, err := s.RunInSession("ls", 1000, 0)
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("RunInSession during Download: err=%v, want 'session busy'", err)
+	}
+
+	close(conn.downloadBlock)
+	time.Sleep(50 * time.Millisecond)
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after Download done = %s, want idle", st)
+	}
+}
+
+// TestDownloadOnClosedSession: session 关闭后 Download 返回 "session closed"。
+func TestDownloadOnClosedSession(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, time.Minute, nil)
+	s.Close()
+
+	var dst bytes.Buffer
+	_, _, err := s.Download("/r.txt", &dst, 1000)
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Errorf("Download on closed session: err=%v, want 'session closed'", err)
+	}
+}

@@ -55,7 +55,7 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 		dst.Close()
 	})
 
-	n, err := io.Copy(dst, src)
+	n, err := io.Copy(dst, &ctxReader{r: src, ctx: ctx})
 	stop()
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload done",
@@ -97,10 +97,39 @@ func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 		src.Close()
 	})
 
-	n, err := io.Copy(dst, src)
+	n, err := io.Copy(&ctxWriter{w: dst, ctx: ctx}, src)
 	stop()
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp download done",
 		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
+}
+
+// ctxReader 在每次 Read 前检查 ctx.Err()。用于 Upload 路径，让 *sftp.File.ReadFrom
+// 在 ctx 取消时能及时退出——否则 ReadFrom 持有 f.mu，AfterFunc 的 dst.Close() 会
+// 阻塞直到 ReadFrom 返回（而 ReadFrom 等 src.Read 返回才返回）。
+type ctxReader struct {
+	r   io.Reader
+	ctx context.Context
+}
+
+func (cr *ctxReader) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
+}
+
+// ctxWriter 在每次 Write 前检查 ctx.Err()。用于 Download 路径，让 *sftp.File.WriteTo
+// 在 ctx 取消时能及时退出——否则 WriteTo 持有 f.mu，AfterFunc 的 src.Close() 会阻塞。
+type ctxWriter struct {
+	w   io.Writer
+	ctx context.Context
+}
+
+func (cw *ctxWriter) Write(p []byte) (int, error) {
+	if err := cw.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cw.w.Write(p)
 }

@@ -169,6 +169,9 @@ func TestUploadTimeout(t *testing.T) {
 	if n <= 0 {
 		t.Errorf("bytes = %d, want > 0 (should have partial upload)", n)
 	}
+	if n >= len(data) {
+		t.Errorf("bytes = %d, want < %d (timeout should interrupt before full upload)", n, len(data))
+	}
 }
 
 // --- Download ---
@@ -278,6 +281,9 @@ func TestDownloadTimeout(t *testing.T) {
 	}
 	if n <= 0 {
 		t.Errorf("bytes = %d, want > 0 (should have partial download)", n)
+	}
+	if n >= len(content) {
+		t.Errorf("bytes = %d, want < %d (timeout should interrupt before full download)", n, len(content))
 	}
 }
 
