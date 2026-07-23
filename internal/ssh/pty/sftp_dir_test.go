@@ -278,7 +278,7 @@ func TestUploadDirConcurrency(t *testing.T) {
 	// 本地树：10 文件，每个 1KB
 	localRoot := t.TempDir()
 	wantFiles := map[string]string{}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		name := "file_" + string(rune('0'+i)) + ".txt"
 		content := string(bytes.Repeat([]byte{byte('a' + i)}, 1024))
 		if err := os.WriteFile(filepath.Join(localRoot, name), []byte(content), 0644); err != nil {

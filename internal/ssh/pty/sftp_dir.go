@@ -122,10 +122,11 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 				n, timedOut, err := p.Upload(f, finalPath, opts.TimeoutMs)
 				f.Close()
 				mu.Lock()
-				result.Bytes += int64(n)
-				result.Files++
 				if err != nil {
 					errs = append(errs, err)
+				} else {
+					result.Bytes += int64(n)
+					result.Files++
 				}
 				if timedOut {
 					result.TimedOut++
