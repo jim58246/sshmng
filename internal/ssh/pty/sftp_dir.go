@@ -2,7 +2,6 @@ package pty
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,7 +11,7 @@ import (
 
 // UploadDir 把本地 localDir 整树上传到远端 remoteDir。
 //   - opts.Concurrency=0 默认 4；本 Task 1 先实现顺序版本（Concurrency 强制 1）
-//   - opts.Conflict=0 默认 ConflictOverwrite；本 Task 1 只实现 overwrite
+//   - opts.Conflict=0 默认 ConflictOverwrite；Task 2 加 skip/rename
 //   - per-file 错误不中断整树传输，用 errors.Join 聚合返回
 //   - symlink 跳过（不计入 Skipped，因为 Skipped 是 ConflictSkip 计数；symlink 不计入任何计数）
 //
@@ -65,23 +64,39 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 			return nil
 		}
 
-		// 文件：本 Task 1 只实现 overwrite
+		// 文件：按 conflict policy 分派
 		f, err := os.Open(localPath)
 		if err != nil {
 			errs = append(errs, err)
 			return nil
 		}
-		n, timedOut, err := p.uploadOne(f, remotePath, opts.TimeoutMs)
-		f.Close()
-		result.Bytes += int64(n)
+		defer f.Close()
+
+		finalPath, action, err := p.resolveConflict(remotePath, opts.Conflict)
 		if err != nil {
 			errs = append(errs, err)
+			return nil
+		}
+		switch action {
+		case conflictSkip:
+			result.Skipped++
+			return nil
+		case conflictRename:
+			result.Renamed++
+		}
+
+		n, timedOut, err := p.Upload(f, finalPath, opts.TimeoutMs)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			// 仅成功才计入 Files/Bytes（修复 Task 1 deferred issue：
+			// 原来 Bytes/Files 无条件累加，错误也累加）
+			result.Bytes += int64(n)
+			result.Files++
 		}
 		if timedOut {
 			result.TimedOut++
 		}
-		// 注：uploadOne 内部用 p.Upload（已实现），ConflictOverwrite 直接覆盖
-		result.Files++
 		return nil
 	})
 	if walkErr != nil {
@@ -97,8 +112,97 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 	return result, nil
 }
 
-// uploadOne 是单文件上传的 helper，复用 p.Upload 的逻辑但用独立 timeout。
-// 本 Task 1 直接调 p.Upload。Task 2 加 skip/rename 时会扩展。
-func (p *PtyConn) uploadOne(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
-	return p.Upload(src, remotePath, timeoutMs)
+// conflictAction 是 resolveConflict 的内部结果。
+type conflictAction int
+
+const (
+	conflictOverwrite conflictAction = iota
+	conflictSkip
+	conflictRename
+)
+
+// resolveConflict 根据 policy 决定最终远端路径。
+//   - ConflictOverwrite: 直接返回 remotePath，action=overwrite
+//   - ConflictSkip: Stat 检查存在；存在返回 skip，不存在返回 overwrite
+//   - ConflictRename: 找无冲突路径 name_1.ext、name_2.ext...
+//
+// 调用前 sftpClient 必须非 nil。
+func (p *PtyConn) resolveConflict(remotePath string, policy conn.ConflictPolicy) (finalPath string, action conflictAction, err error) {
+	if policy == conn.ConflictOverwrite {
+		return remotePath, conflictOverwrite, nil
+	}
+
+	// Stat 检查存在性
+	_, statErr := p.sftpClient.Stat(remotePath)
+	notExist := isNotExist(statErr)
+
+	if policy == conn.ConflictSkip {
+		if notExist {
+			return remotePath, conflictOverwrite, nil
+		}
+		if statErr != nil {
+			return "", 0, statErr // 其他 Stat 错误
+		}
+		return remotePath, conflictSkip, nil
+	}
+
+	// ConflictRename
+	if notExist {
+		return remotePath, conflictOverwrite, nil // 无冲突直接用原名
+	}
+	if statErr != nil {
+		return "", 0, statErr
+	}
+	// 找 name_1、name_2...
+	dir := path.Dir(remotePath)
+	base := path.Base(remotePath)
+	ext := ""
+	if dot := indexOfDot(base); dot >= 0 {
+		ext = base[dot:]
+		base = base[:dot]
+	}
+	for i := 1; ; i++ {
+		candidate := path.Join(dir, base+"_"+itoa(i)+ext)
+		if _, e := p.sftpClient.Stat(candidate); e != nil {
+			if isNotExist(e) {
+				return candidate, conflictRename, nil
+			}
+			return "", 0, e
+		}
+	}
+}
+
+// isNotExist 判断 sftp.Stat 错误是否表示"文件不存在"。
+func isNotExist(err error) bool {
+	if err == nil {
+		return false
+	}
+	// os.ErrNotExist 包装 sftp 的 SSH_FX_NO_SUCH_FILE
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// indexOfDot 返回 base 中最后一个 '.' 的索引（用于切分扩展名）。
+// 无点返回 -1。
+func indexOfDot(base string) int {
+	for i := len(base) - 1; i >= 0; i-- {
+		if base[i] == '.' {
+			return i
+		}
+	}
+	return -1
+}
+
+// itoa 是 strconv.Itoa 的简版（避免新 import）。
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
