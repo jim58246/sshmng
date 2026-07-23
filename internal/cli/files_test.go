@@ -136,3 +136,11 @@ func TestScaffoldHomeOverwritesConfigExampleJSON(t *testing.T) {
 		t.Errorf("config.example.json missing expected content:\n%s", string(data))
 	}
 }
+
+// TestConfigJSONSkeletonHasAutoUpdateEnabled 验证安装骨架配置显式带 auto_update_enabled: true，
+// 让用户开箱即用看到自动更新是开启的。
+func TestConfigJSONSkeletonHasAutoUpdateEnabled(t *testing.T) {
+	if !strings.Contains(configJSONSkeleton, `"auto_update_enabled": true`) {
+		t.Errorf("configJSONSkeleton missing auto_update_enabled: true\n%s", configJSONSkeleton)
+	}
+}

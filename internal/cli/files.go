@@ -64,6 +64,7 @@ func writeSecureFile(path string, data []byte) error {
 const configJSONSkeleton = `{
   "version": "1",
   "idle_timeout_s": 300,
+  "auto_update_enabled": true,
   "jumphosts": [],
   "proxies": [],
   "servers": []

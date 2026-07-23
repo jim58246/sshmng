@@ -204,3 +204,38 @@ func TestLoadAcceptsEmptyLogLevel(t *testing.T) {
 		t.Errorf("LogLevel = %q, want \"\" (empty, will default to info)", cfg.LogLevel)
 	}
 }
+
+// TestDefaultConfigAutoUpdateEnabled 验证默认配置开启自动更新，且 UpdateURL 空（表示走 GitHub 源）。
+func TestDefaultConfigAutoUpdateEnabled(t *testing.T) {
+	cfg := defaultConfig()
+	if !cfg.AutoUpdateEnabled {
+		t.Errorf("defaultConfig().AutoUpdateEnabled = false, want true")
+	}
+	if cfg.UpdateURL != "" {
+		t.Errorf("defaultConfig().UpdateURL = %q, want empty", cfg.UpdateURL)
+	}
+}
+
+// TestConfigJSONRoundTripPreservesAutoUpdate 验证 marshal/unmarshal 往返保留 AutoUpdateEnabled 和 UpdateURL。
+func TestConfigJSONRoundTripPreservesAutoUpdate(t *testing.T) {
+	cfg := &Config{
+		Version:           "1",
+		IdleTimeoutS:      300,
+		AutoUpdateEnabled: false,
+		UpdateURL:         "https://updates.example.com/sshmng",
+	}
+	data, err := marshalConfig(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := unmarshalConfig(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.AutoUpdateEnabled != false {
+		t.Errorf("AutoUpdateEnabled = %v, want false", parsed.AutoUpdateEnabled)
+	}
+	if parsed.UpdateURL != "https://updates.example.com/sshmng" {
+		t.Errorf("UpdateURL = %q, want the configured URL", parsed.UpdateURL)
+	}
+}
