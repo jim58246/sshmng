@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"sshmng/internal/ssh/conn"
@@ -55,7 +56,7 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 		dst.Close()
 	})
 
-	n, err := io.Copy(dst, &ctxReader{r: src, ctx: ctx})
+	n, err := io.Copy(dst, newCtxReader(src, ctx))
 	stop()
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload done",
@@ -118,6 +119,38 @@ func (cr *ctxReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return cr.r.Read(p)
+}
+
+// ctxReaderWithStat 在 ctxReader 基础上保留底层 reader 的 Stat() 方法。
+//
+// 必要性：*sftp.File.ReadFrom 在 useConcurrentWrites=true 时通过 type switch 检查
+// reader 是否实现 Len/Size/Stat/*io.LimitedReader，匹配才走 readFromWithConcurrency
+// 并发 pipelining 路径；否则退化为串行 writeChunkAt 循环（每包阻塞等 ack）。
+// ctxReader 只实现 Read 会隐藏 *os.File 的 Stat()，导致上传慢一个数量级。
+type ctxReaderWithStat struct {
+	r   io.Reader
+	ctx context.Context
+}
+
+func (cr *ctxReaderWithStat) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
+}
+
+func (cr *ctxReaderWithStat) Stat() (os.FileInfo, error) {
+	return cr.r.(interface{ Stat() (os.FileInfo, error) }).Stat()
+}
+
+// newCtxReader 用 ctx.Err() 检查包装 r。若 r 暴露 Stat()（如 *os.File），返回
+// *ctxReaderWithStat 以保留 Stat——让 *sftp.File.ReadFrom 走并发 pipelining 路径。
+// 否则返回 *ctxReader（无 Stat），ReadFrom 退化为串行（与无包装时的行为一致）。
+func newCtxReader(r io.Reader, ctx context.Context) io.Reader {
+	if _, ok := r.(interface{ Stat() (os.FileInfo, error) }); ok {
+		return &ctxReaderWithStat{r: r, ctx: ctx}
+	}
+	return &ctxReader{r: r, ctx: ctx}
 }
 
 // ctxWriter 在每次 Write 前检查 ctx.Err()。用于 Download 路径，让 *sftp.File.WriteTo

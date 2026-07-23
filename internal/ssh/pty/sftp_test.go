@@ -2,7 +2,9 @@ package pty
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -325,4 +327,63 @@ func (s *slowWriter) Write(p []byte) (int, error) {
 	}
 	time.Sleep(s.delay)
 	return s.w.Write(p)
+}
+
+// --- ctxReader 接口保留 ---
+
+// TestCtxReaderPreservesStat 验证 newCtxReader 对 *os.File 的包装保留 Stat() 方法。
+//
+// 背景：*sftp.File.ReadFrom 在 useConcurrentWrites=true 时通过 type switch 检查
+// reader 是否实现 Len/Size/Stat/*io.LimitedReader 之一，匹配才走并发 pipelining
+// 路径。若 ctxReader 只实现 Read，会隐藏 *os.File 的 Stat()，导致 ReadFrom 退化为
+// 串行 writeChunkAt 循环——上传速度慢一个数量级。
+func TestCtxReaderPreservesStat(t *testing.T) {
+	f, err := os.CreateTemp("", "ctxreader")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := f.WriteString("hello"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	r := newCtxReader(f, context.Background())
+
+	stater, ok := r.(interface{ Stat() (os.FileInfo, error) })
+	if !ok {
+		t.Fatal("newCtxReader(*os.File) must expose Stat() so *sftp.File.ReadFrom takes the concurrent pipelining path")
+	}
+	info, err := stater.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Size() != 5 {
+		t.Errorf("Stat().Size() = %d, want 5", info.Size())
+	}
+}
+
+// TestCtxReaderNoStatForBytesReader 验证 newCtxReader 对没有 Stat() 的 reader
+// 不假装有 Stat()——否则会误导 sftp.ReadFrom 走错误路径。
+func TestCtxReaderNoStatForBytesReader(t *testing.T) {
+	r := newCtxReader(bytes.NewReader([]byte("data")), context.Background())
+	if _, ok := r.(interface{ Stat() (os.FileInfo, error) }); ok {
+		t.Error("newCtxReader(bytes.Reader) should not expose Stat (underlying doesn't have it)")
+	}
+}
+
+// TestCtxReaderStillChecksCtx 验证 newCtxReader 仍然在 Read 前 check ctx.Err()，
+// 不因加了 Stat 暴露就丢失 ctx 检查能力。
+func TestCtxReaderStillChecksCtx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 提前 cancel
+
+	r := newCtxReader(bytes.NewReader([]byte("data")), ctx)
+	n, err := r.Read(make([]byte, 4))
+	if err != context.Canceled {
+		t.Errorf("Read err = %v, want context.Canceled", err)
+	}
+	if n != 0 {
+		t.Errorf("Read n = %d, want 0", n)
+	}
 }
