@@ -457,7 +457,6 @@ Summary: 9 passed, 0 failed, 1 warning
       "user": "deploy",
       "auth": {"password": "<replace-me>"},
       "via": "example-jumphost-a-via-proxy",
-      "proxy": "example-socks5-auth",
       "tags": ["example", "pattern-a", "via-proxy"]
     },
     {

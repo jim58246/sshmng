@@ -85,6 +85,12 @@ func TestScaffoldHomeConfigExampleJSONLoadsViaStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("example config invalid: %v", err)
 	}
+	// Example must also pass full Validate() — users copy entries from it,
+	// and any update_* op revalidates the whole config. A invalid example
+	// would poison every update_* call until the user manually fixes it.
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("example config fails Validate(): %v", err)
+	}
 	if len(cfg.Servers) < 4 {
 		t.Errorf("expected >=4 example servers, got %d", len(cfg.Servers))
 	}

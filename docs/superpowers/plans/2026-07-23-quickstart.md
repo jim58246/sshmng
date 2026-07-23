@@ -1804,7 +1804,6 @@ const configExampleJSON = `{
       "user": "deploy",
       "auth": {"password": "<replace-me>"},
       "via": "example-jumphost-a-via-proxy",
-      "proxy": "example-socks5-auth",
       "tags": ["example", "pattern-a", "via-proxy"]
     },
     {
