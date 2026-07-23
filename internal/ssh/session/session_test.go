@@ -492,3 +492,78 @@ func TestFakeConnSftpRoundtrip(t *testing.T) {
 		t.Errorf("downloaded = %q, want %q", buf.String(), "downloaded")
 	}
 }
+
+// --- Task 2: Session.Upload 状态机 ---
+
+// TestUploadDoesNotFireIdleTimeout: idleTimeout=100ms，sftp Upload 阻塞 400ms。
+// 修复前：timer 在 100ms 触发 Close，Upload 返回后 state=Closed。
+// 修复后：Upload 期间 timer 被 stop，Upload 返回后 state=Idle。
+func TestUploadDoesNotFireIdleTimeout(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.uploadBlock = make(chan struct{}) // Upload 阻塞直到 close
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, 100*time.Millisecond, nil)
+	defer s.Close()
+
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		close(conn.uploadBlock)
+	}()
+
+	start := time.Now()
+	_, _, err := s.Upload(strings.NewReader("data"), "/r.txt", 5000)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("Upload returned too fast: %v, want >= 400ms", elapsed)
+	}
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after Upload = %s, want idle (timer should not have fired)", st)
+	}
+}
+
+// TestUploadBlocksRunInSession: Upload 进行中 state=Running，并发 RunInSession 应立即报 "session busy"。
+func TestUploadBlocksRunInSession(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.uploadBlock = make(chan struct{})
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, time.Minute, nil)
+	defer s.Close()
+
+	go func() {
+		s.Upload(strings.NewReader("data"), "/r.txt", 5000)
+	}()
+	// 等 Upload 进入阻塞（fakeConn.Upload 会读 src 后阻塞在 uploadBlock）
+	time.Sleep(50 * time.Millisecond)
+
+	_, _, _, _, _, err := s.RunInSession("ls", 1000, 0)
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("RunInSession during Upload: err=%v, want 'session busy'", err)
+	}
+
+	close(conn.uploadBlock)
+	time.Sleep(50 * time.Millisecond)
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after Upload done = %s, want idle", st)
+	}
+}
+
+// TestUploadOnClosedSession: session 关闭后 Upload 返回 "session closed"。
+func TestUploadOnClosedSession(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", conn, time.Minute, nil)
+	s.Close()
+
+	_, _, err := s.Upload(strings.NewReader("data"), "/r.txt", 1000)
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Errorf("Upload on closed session: err=%v, want 'session closed'", err)
+	}
+}

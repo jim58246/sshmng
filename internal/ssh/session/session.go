@@ -288,10 +288,34 @@ func (s *Session) LoginFlowTrace() []loginflow.TraceEntry {
 	return out
 }
 
-// Upload 把 src 上传到远端 remotePath。透传到底层 Conn；session 不存在或已关闭时
-// manager.Get 已返回 error。
+// Upload 把 src 上传到远端 remotePath。
+// 与 RunInSession 对称：进锁检查 state、切 Running + stopIdleTimer、传输、
+// 切回 Idle + resetIdleTimer + 更新 lastActivity。
+// 非 idle 态返回 "session busy"；Closed 态返回 "session closed"。
 func (s *Session) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
-	return s.conn.Upload(src, remotePath, timeoutMs)
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return 0, false, errors.New("session closed")
+	}
+	if s.state == StateRunning {
+		s.mu.Unlock()
+		return 0, false, errors.New("session busy")
+	}
+	s.state = StateRunning
+	s.stopIdleTimer()
+	s.mu.Unlock()
+
+	n, timedOut, err := s.conn.Upload(src, remotePath, timeoutMs)
+
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	if s.state != StateClosed {
+		s.state = StateIdle
+		s.resetIdleTimer()
+	}
+	s.mu.Unlock()
+	return n, timedOut, err
 }
 
 // Download 把远端 remotePath 下载到 dst。
