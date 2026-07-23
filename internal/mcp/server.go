@@ -125,7 +125,7 @@ type UpdateArgs struct {
 	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges (or creates if name not found). Structure mirrors get_* output; via/proxy fields are name strings"`
 }
 
-// NewServer 创建 MCP server 并注册 16 个工具（9 CRUD + 5 session/file + 2 dir transfer）。
+// NewServer 创建 MCP server 并注册 18 个工具（9 CRUD + 7 session/file + 2 dir transfer）。
 func NewServer(svc *Service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: "v1"}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
