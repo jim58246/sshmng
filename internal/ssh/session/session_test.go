@@ -29,6 +29,14 @@ type fakeConn struct {
 	uploadedBytes  []byte        // Upload 读到的字节
 	downloadData   []byte        // Download 写到 dst 的字节
 	uploadDelay    time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+
+	// dir 传输支持（Task 5 测试用）
+	uploadDirBlock    chan struct{}        // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
+	downloadDirBlock  chan struct{}        // 同上
+	uploadDirResult   conn.DirTransferResult
+	downloadDirResult conn.DirTransferResult
+	uploadDirErr      error
+	downloadDirErr    error
 }
 
 type fakeRunResult struct {
@@ -113,6 +121,28 @@ func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (in
 	}
 	n, err := dst.Write(f.downloadData)
 	return n, false, err
+}
+
+// UploadDir 模拟文件夹上传：检查 sftpEnabled，阻塞于 uploadDirBlock（若非 nil），返回配置的 result/err。
+func (f *fakeConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
+	if !f.sftpEnabled {
+		return conn.DirTransferResult{}, conn.ErrSftpUnavailable
+	}
+	if f.uploadDirBlock != nil {
+		<-f.uploadDirBlock
+	}
+	return f.uploadDirResult, f.uploadDirErr
+}
+
+// DownloadDir 模拟文件夹下载：检查 sftpEnabled，阻塞于 downloadDirBlock（若非 nil），返回配置的 result/err。
+func (f *fakeConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
+	if !f.sftpEnabled {
+		return conn.DirTransferResult{}, conn.ErrSftpUnavailable
+	}
+	if f.downloadDirBlock != nil {
+		<-f.downloadDirBlock
+	}
+	return f.downloadDirResult, f.downloadDirErr
 }
 
 // --- 状态机基本转换 ---
@@ -642,5 +672,114 @@ func TestDownloadOnClosedSession(t *testing.T) {
 	_, _, err := s.Download("/r.txt", &dst, 1000)
 	if err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Errorf("Download on closed session: err=%v, want 'session closed'", err)
+	}
+}
+
+// --- Task 5: Session.UploadDir / DownloadDir 状态机 ---
+//
+// 注意：本组测试用 `fc` 作为 fakeConn 变量名（不用 `conn`），因为测试体需要引用
+// `conn` package（conn.DirTransferOptions / conn.DirTransferResult），变量名 `conn`
+// 会 shadow package import。
+
+// TestUploadDirDoesNotFireIdleTimeout: idleTimeout=100ms，UploadDir 阻塞 400ms。
+// 修复前：timer 在 100ms 触发 Close。
+// 修复后：UploadDir 期间 timer 被 stop，返回后 state=Idle。
+func TestUploadDirDoesNotFireIdleTimeout(t *testing.T) {
+	fc := newFakeConn()
+	fc.sftpEnabled = true
+	fc.uploadDirBlock = make(chan struct{}) // 阻塞直到 close
+	fc.uploadDirResult = conn.DirTransferResult{Files: 1}
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", fc, 100*time.Millisecond, nil)
+	defer s.Close()
+
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		close(fc.uploadDirBlock)
+	}()
+
+	start := time.Now()
+	_, err := s.UploadDir("/local", "/remote", conn.DirTransferOptions{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("UploadDir: %v", err)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("UploadDir returned too fast: %v, want >= 400ms", elapsed)
+	}
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after UploadDir = %s, want idle", st)
+	}
+}
+
+// TestDownloadDirDoesNotFireIdleTimeout: 对称测试 DownloadDir。
+func TestDownloadDirDoesNotFireIdleTimeout(t *testing.T) {
+	fc := newFakeConn()
+	fc.sftpEnabled = true
+	fc.downloadDirBlock = make(chan struct{})
+	fc.downloadDirResult = conn.DirTransferResult{Files: 1}
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", fc, 100*time.Millisecond, nil)
+	defer s.Close()
+
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		close(fc.downloadDirBlock)
+	}()
+
+	start := time.Now()
+	_, err := s.DownloadDir("/remote", "/local", conn.DirTransferOptions{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("DownloadDir: %v", err)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("DownloadDir returned too fast: %v, want >= 400ms", elapsed)
+	}
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after DownloadDir = %s, want idle", st)
+	}
+}
+
+// TestUploadDirOnClosedSession: session 关闭后 UploadDir 返回 "session closed"。
+func TestUploadDirOnClosedSession(t *testing.T) {
+	fc := newFakeConn()
+	fc.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", fc, time.Minute, nil)
+	s.Close()
+
+	_, err := s.UploadDir("/local", "/remote", conn.DirTransferOptions{})
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Errorf("UploadDir on closed session: err=%v, want 'session closed'", err)
+	}
+}
+
+// TestUploadDirBlocksRunInSession: UploadDir 进行中 state=Running，并发 RunInSession 应立即报 "session busy"。
+func TestUploadDirBlocksRunInSession(t *testing.T) {
+	fc := newFakeConn()
+	fc.sftpEnabled = true
+	fc.uploadDirBlock = make(chan struct{})
+
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid", "srv", fc, time.Minute, nil)
+	defer s.Close()
+
+	go func() {
+		s.UploadDir("/local", "/remote", conn.DirTransferOptions{})
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	_, _, _, _, _, err := s.RunInSession("ls", 1000, 0)
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("RunInSession during UploadDir: err=%v, want 'session busy'", err)
+	}
+
+	close(fc.uploadDirBlock)
+	time.Sleep(50 * time.Millisecond)
+	if st := s.State(); st != StateIdle {
+		t.Errorf("state after UploadDir done = %s, want idle", st)
 	}
 }

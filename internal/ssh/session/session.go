@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sshmng/internal/loginflow"
+	"sshmng/internal/ssh/conn"
 )
 
 // SessionState 表示 session 的当前状态。
@@ -43,6 +44,8 @@ type Conn interface {
 	SftpAvailable() bool
 	Upload(src io.Reader, remotePath string, timeoutMs int) (bytes int, timedOut bool, err error)
 	Download(remotePath string, dst io.Writer, timeoutMs int) (bytes int, timedOut bool, err error)
+	UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error)
+	DownloadDir(remoteDir, localDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error)
 }
 
 // SessionStat 是 stat() 工具返回的单条 session 摘要。
@@ -344,6 +347,64 @@ func (s *Session) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 	}
 	s.mu.Unlock()
 	return n, timedOut, err
+}
+
+// UploadDir 把本地 localDir 整树上传到远端 remoteDir。
+// 状态机与 Upload 对称：进锁检查 state、切 Running + stopIdleTimer、传输、
+// 切回 Idle + resetIdleTimer + 更新 lastActivity。
+// sftp 错误（ErrSftpUnavailable 等）回到 Idle 而非 Closed——sftp 通道独立于 PTY 通道。
+func (s *Session) UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return conn.DirTransferResult{}, errors.New("session closed")
+	}
+	if s.state == StateRunning {
+		s.mu.Unlock()
+		return conn.DirTransferResult{}, errors.New("session busy")
+	}
+	s.state = StateRunning
+	s.stopIdleTimer()
+	s.mu.Unlock()
+
+	res, err := s.conn.UploadDir(localDir, remoteDir, opts)
+
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	if s.state != StateClosed {
+		s.state = StateIdle
+		s.resetIdleTimer()
+	}
+	s.mu.Unlock()
+	return res, err
+}
+
+// DownloadDir 把远端 remoteDir 整树下载到本地 localDir。
+// 状态机与 Download 对称。
+func (s *Session) DownloadDir(remoteDir, localDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return conn.DirTransferResult{}, errors.New("session closed")
+	}
+	if s.state == StateRunning {
+		s.mu.Unlock()
+		return conn.DirTransferResult{}, errors.New("session busy")
+	}
+	s.state = StateRunning
+	s.stopIdleTimer()
+	s.mu.Unlock()
+
+	res, err := s.conn.DownloadDir(remoteDir, localDir, opts)
+
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	if s.state != StateClosed {
+		s.state = StateIdle
+		s.resetIdleTimer()
+	}
+	s.mu.Unlock()
+	return res, err
 }
 
 // Close 强制关闭 session，无论状态。停止 idle timer、关闭 conn、从 Manager 移除。
