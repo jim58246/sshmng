@@ -178,17 +178,17 @@ sshmng/
 `internal/mcp/tools_session_jumphost_test.go`
 - Pattern B 端到端：login → run_in_session → close_session。fake jumphost server 模拟菜单 → target 选择 → target 凭据 → target shell 全流程，全程同一 SSH session
 - Jumphost.LoginFlow 失败（pattern 不匹配）→ login 报错，error 含 "loginflow" / "no expect matched"
-- Pattern A (`Via.SSHJ=true`) → login 拒绝（"pattern A via ssh-j jumphost not yet supported"，留 v1.x 实现）
+- Pattern A (`Via.SSHJ=true`) → login 拒绝（"pattern A via ssh-j jumphost not yet supported"，留 v1.x 实现）**（后续在阶段 7 实现，login 不再拒绝）**
 
 **实现要点**：
 - **PTY 接口重设计**（关键）：`loginflow.PTY.Read` 从 `(deadline, mustContain string)` 改为 `(deadline, matchers []*regexp.Regexp) (output, matchedIdx, timedOut, err)`。matcher 命中即停，trailing data 留 pushback。这是 Pattern B 的关键——第一段流的最后一次 Read 不能吞掉第二段流要等的 prompt
 - **NewPtyConn 拆分**：`OpenPtyConn`（detect only）+ `RunLoginFlow`（可链式调用）+ `InjectRC`。原有 `NewPtyConn` 保留为直连场景的便捷构造器
 - **stripANSIWithPos**：剥离 ANSI 同时返回位置映射，用于把 stripped 中的 match 末尾映射回 raw 字节位置切分 pushback
-- **Login handler 分支**：`srv.Via == nil` → 直连；`srv.Via.SSHJ=true` → 拒绝（v1.x）；`srv.Via.SSHJ=false` → setupPatternB（拨号 jumphost → OpenPtyConn → RunLoginFlow(jump) → RunLoginFlow(server) → InjectRC）
+- **Login handler 分支**：`srv.Via == nil` → 直连；`srv.Via.SSHJ=true` → 拒绝（v1.x）**（阶段 7 改为 setupPatternA）**；`srv.Via.SSHJ=false` → setupPatternB（拨号 jumphost → OpenPtyConn → RunLoginFlow(jump) → RunLoginFlow(server) → InjectRC）
 - 两段 LoginFlow 共用同一 PTY，trailing data 通过 pushback 在调用间保留
 
 **验证**：
-- `go test -race ./...` 全绿（含 Pattern B 端到端 + jumphost flow 失败 + Pattern A 拒绝）
+- `go test -race ./...` 全绿（含 Pattern B 端到端 + jumphost flow 失败 + Pattern A 拒绝**，阶段 7 后改为路由测试**）
 - MCP Inspector 待真实环境验收（mock 已覆盖核心路径）
 
 **关键文件**：`internal/loginflow/executor.go`（PTY 接口）、`internal/ssh/pty/pty.go`（OpenPtyConn/RunLoginFlow/InjectRC + pushback 切分）、`internal/mcp/tools_session.go`（setupDirect/setupPatternB 分支）

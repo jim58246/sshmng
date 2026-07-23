@@ -28,10 +28,10 @@ import (
 // initialize 响应的一部分。Agent 据此理解工作流、session 语义、生命周期、失败诊断路径、
 // 实体模型——这些信息单靠 tool description 无法充分传达。
 //
-// 注意：Claude Code 对 server instructions 有 2KB 截断。当前文本约 1.9KB，所有
-// 关键约束（session 复用、loginflow error→login_trace、Pattern B 不支持 sftp、
-// idle timeout、NOPASSWD）都塞在前面。压缩后 Instructions 不保证重新注入，
-// 关键信息也散落在各 tool description 里兜底。
+// 注意：Claude Code 对 server instructions 有 2KB 截断。当前文本约 2.3KB，末尾
+// "Failure recovery" 节可能被截断。关键约束（session 复用、loginflow error→login_trace、
+// Pattern A 支持 sftp / Pattern B 不支持、idle timeout、NOPASSWD）都塞在前面。
+// 压缩后 Instructions 不保证重新注入，关键信息也散落在各 tool description 里兜底。
 const serverInstructions = `SSH session manager: servers, jumphosts, proxies, sessions.
 
 == Entity model ==
@@ -44,7 +44,7 @@ const serverInstructions = `SSH session manager: servers, jumphosts, proxies, se
 
 == Workflow ==
 1. list_ssh_servers / list_jumphosts / list_proxies (query: keywords AND on name/addr/tags) → resolve name.
-2. login(name) → {sid, server_name, sftp_available}. Pattern B (ssh_j=false): jumphost then target LoginFlow, same PTY.
+2. login(name) → {sid, server_name, sftp_available}. ssh_j=true: transparent ssh -J to target (sftp available). ssh_j=false: jumphost then target LoginFlow, same PTY (no sftp).
 3. run_in_session(sid, cmd) → {output, exit_code, timed_out, truncated, total_bytes}.
 4. close_session(sid), or rely on idle timeout (default 5min via idle_timeout_s).
 
@@ -170,7 +170,7 @@ func NewServer(svc *Service) *mcp.Server {
 	// Session tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "login",
-		Description: "Establish an interactive SSH session to a server. Use list_ssh_servers first to resolve the name (query: space-separated keywords, AND, substring on name/addr/tags). Returns {sid, server_name, sftp_available}. Pattern B (via jumphost with ssh_j=false) runs jumphost LoginFlow then target LoginFlow on the same PTY. On LoginFlow failure, error contains 'loginflow' and response carries login_trace for diagnosis.",
+		Description: "Establish an interactive SSH session to a server. Use list_ssh_servers first to resolve the name (query: space-separated keywords, AND, substring on name/addr/tags). Returns {sid, server_name, sftp_available}. Direct (no via) or Pattern A (via jumphost with ssh_j=true): SSH dials target directly or through jumphost's direct-tcpip channel; sftp available. Pattern B (via jumphost with ssh_j=false): runs jumphost LoginFlow then target LoginFlow on the same PTY; sftp unavailable. On LoginFlow failure, error contains 'loginflow' and response carries login_trace for diagnosis.",
 	}, svc.Login)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_in_session",

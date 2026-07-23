@@ -40,12 +40,11 @@ func TestLoginUnknownServer(t *testing.T) {
 	}
 }
 
-// TestLoginRejectsPatternA 校验 v1 phase 4 拒绝 Pattern A（SSHJ=true 的 jumphost），
-// 该形态留 v1.x 实现。Pattern B（SSHJ=false）由 TestIntegrationPatternBEndToEnd 覆盖。
+// TestLoginPatternARoutesToSetupPatternA 校验 Pattern A（SSHJ=true 的 jumphost）
+// 路由到 setupPatternA 而非被早期拒绝或走 setupDirect/setupPatternB。
+// jumphost addr 不可达 → 拨号失败 → IsError=true，error 提到 jumphost。
+// Pattern B（SSHJ=false）由 TestIntegrationPatternBEndToEnd 覆盖。
 func TestLoginPatternARoutesToSetupPatternA(t *testing.T) {
-	// Pattern A (SSHJ=true) 不再被早期拒绝，而是路由到 setupPatternA 尝试拨号。
-	// jumphost addr 不可达 → 拨号失败 → IsError=true，error 提到 jumphost。
-	// 这验证了三路路由：Via.SSHJ=true 走 setupPatternA（而非 setupDirect / setupPatternB）。
 	jumphost := &config.Jumphost{Name: "j1", Addr: "127.0.0.1:1", User: "u", SSHJ: true}
 	svc := newTestService(t, &config.Config{
 		Version:   "1",
