@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"io"
 	"strings"
 	"sync"
@@ -20,6 +21,14 @@ type fakeConn struct {
 	runBlocking  bool          // Run 是否阻塞直到 Close 中断
 	runCh        chan struct{} // 用于 blocking 模式下通知 Run 返回
 	runUnusable  bool          // Run 返回 connUnusable=true（模拟 drain 超时，但不自己 Close）
+
+	// sftp 支持（Part A 测试用）
+	sftpEnabled    bool
+	uploadBlock    chan struct{} // nil = 不阻塞；非 nil = Upload 阻塞直到该 chan 关闭
+	downloadBlock  chan struct{} // nil = 不阻塞；非 nil = Download 阻塞直到该 chan 关闭
+	uploadedBytes  []byte        // Upload 读到的字节
+	downloadData   []byte        // Download 写到 dst 的字节
+	uploadDelay    time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
 }
 
 type fakeRunResult struct {
@@ -72,16 +81,38 @@ func (f *fakeConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, s
 	return f.runResult.output, f.runResult.rawOutput, f.runResult.exitCode, f.runResult.timedOut, f.runResult.ctrlCSent, f.runResult.truncated, f.runResult.totalBytes, f.runUnusable, f.runResult.err
 }
 
-// SftpAvailable 默认返回 false（fakeConn 不模拟 sftp）。
-func (f *fakeConn) SftpAvailable() bool { return false }
+// SftpAvailable 返回 sftpEnabled（默认 false，保持向后兼容）。
+func (f *fakeConn) SftpAvailable() bool { return f.sftpEnabled }
 
-// Upload / Download 在 fakeConn 中不支持 sftp，返回 conn.ErrSftpUnavailable。
-func (f *fakeConn) Upload(io.Reader, string, int) (int, bool, error) {
-	return 0, false, conn.ErrSftpUnavailable
+// Upload 把 src 读到的字节存入 uploadedBytes，支持 uploadBlock 阻塞与 uploadDelay 慢传输模拟。
+func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
+	if !f.sftpEnabled {
+		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.uploadBlock != nil {
+		<-f.uploadBlock
+	}
+	if f.uploadDelay > 0 {
+		time.Sleep(f.uploadDelay)
+	}
+	n, err := io.ReadAll(src)
+	f.uploadedBytes = append(f.uploadedBytes, n...)
+	return len(n), false, err
 }
 
-func (f *fakeConn) Download(string, io.Writer, int) (int, bool, error) {
-	return 0, false, conn.ErrSftpUnavailable
+// Download 把 downloadData 写入 dst，支持 downloadBlock 阻塞与 uploadDelay 慢传输模拟。
+func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
+	if !f.sftpEnabled {
+		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.downloadBlock != nil {
+		<-f.downloadBlock
+	}
+	if f.uploadDelay > 0 {
+		time.Sleep(f.uploadDelay)
+	}
+	n, err := dst.Write(f.downloadData)
+	return n, false, err
 }
 
 // --- 状态机基本转换 ---
@@ -427,4 +458,37 @@ func TestManagerConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestFakeConnSftpRoundtrip 验证 fakeConn 扩展后能跑通 Upload/Download 闭环，
+// 为后续 session 层状态机测试铺路。
+func TestFakeConnSftpRoundtrip(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+
+	// Upload：src 是任意 Reader，fakeConn 把读到的字节存到 uploadedBytes
+	n, timedOut, err := conn.Upload(strings.NewReader("uploaded"), "/r.txt", 1000)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if timedOut || n != 8 {
+		t.Errorf("Upload returned n=%d timedOut=%v, want 8/false", n, timedOut)
+	}
+	if string(conn.uploadedBytes) != "uploaded" {
+		t.Errorf("uploaded bytes = %q, want %q", conn.uploadedBytes, "uploaded")
+	}
+
+	// Download：dst 是任意 Writer，fakeConn 把 downloadData 写进去
+	conn.downloadData = []byte("downloaded")
+	var buf bytes.Buffer
+	n, timedOut, err = conn.Download("/r.txt", &buf, 1000)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if timedOut || n != 10 {
+		t.Errorf("Download returned n=%d timedOut=%v, want 10/false", n, timedOut)
+	}
+	if buf.String() != "downloaded" {
+		t.Errorf("downloaded = %q, want %q", buf.String(), "downloaded")
+	}
 }
