@@ -59,19 +59,19 @@ type SessionStat struct {
 
 // Session 是单个 SSH 连接的状态机。
 type Session struct {
-	sid          string
-	serverName   string
-	state        SessionState
-	conn         Conn
-	sftpAvail    bool
-	createdAt    time.Time
-	lastActivity time.Time
-	commandsRun  int
-	idleTimeout  time.Duration
-	idleTimer    *time.Timer
-	logger       *slog.Logger // 操作日志（idle timeout、异步事件）；nil 时退化为 discard
-	manager      *Manager     // 反向引用，用于 Close 时从 Manager 移除
-	traces       []CommandTrace
+	sid            string
+	serverName     string
+	state          SessionState
+	conn           Conn
+	sftpAvail      bool
+	createdAt      time.Time
+	lastActivity   time.Time
+	commandsRun    int
+	idleTimeout    time.Duration
+	idleTimer      *time.Timer
+	logger         *slog.Logger // 操作日志（idle timeout、异步事件）；nil 时退化为 discard
+	manager        *Manager     // 反向引用，用于 Close 时从 Manager 移除
+	traces         []CommandTrace
 	loginFlowTrace []loginflow.TraceEntry // login 阶段 LoginFlow 每步 trace；成功时由 Login handler 注入
 	currentTrace   *CommandTrace          // Running 期间非 nil，记录当前命令 trace
 	mu             sync.Mutex
@@ -129,7 +129,7 @@ func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTime
 		// 看到的是已赋值状态（回调也可能在 AfterFunc 返回前就触发）。
 		s.mu.Lock()
 		s.idleTimer = time.AfterFunc(idleTimeout, func() {
-			s.logger.Info("idle timeout fired, closing session", "sid", s.sid, "server", s.serverName, "idle_timeout", s.idleTimeout.String())
+			s.logger.Info("idle timeout fired, closing session", "server", s.serverName, "idle_timeout", s.idleTimeout.String())
 			s.Close()
 		})
 		s.mu.Unlock()
@@ -214,7 +214,7 @@ func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (s
 	s.mu.Unlock()
 
 	s.logger.Debug("run_in_session start",
-		"sid", s.sid, "server", s.serverName,
+		"server", s.serverName,
 		"cmd", cmd, "timeout_ms", timeoutMs, "max_output_bytes", maxOutputBytes)
 	output, rawOutput, exitCode, timedOut, ctrlCSent, truncated, totalBytes, connUnusable, err := s.conn.Run(cmd, timeoutMs, maxOutputBytes)
 
@@ -244,12 +244,12 @@ func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (s
 
 	if needClose {
 		s.logger.Warn("conn unusable after Run, closing session",
-			"sid", s.sid, "server", s.serverName, "cmd", cmd,
+			"server", s.serverName, "cmd", cmd,
 			"timed_out", timedOut, "ctrl_c_sent", ctrlCSent)
 		s.Close()
 	}
 	s.logger.Debug("run_in_session done",
-		"sid", s.sid, "server", s.serverName,
+		"server", s.serverName,
 		"exit_code", exitCode, "timed_out", timedOut, "ctrl_c_sent", ctrlCSent,
 		"truncated", truncated, "total_bytes", totalBytes,
 		"output_len", len(output), "raw_output_len", len(rawOutput))

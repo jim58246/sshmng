@@ -159,7 +159,7 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 	// 直连：SFTP 通道是到 target 的，探测启用。
 	ptyConn.TryEnableSftp()
 	logger.Debug("setup done",
-		"sid", sid, "server", srv.Name,
+		"server", srv.Name,
 		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
 	return ptyConn, trace, nil
 }
@@ -226,7 +226,7 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid 
 	// 探测成功反而误导（用户以为能 upload 到 target，实际落到 jumphost）。
 	// 故不调用 TryEnableSftp，sftp_available 恒为 false。
 	logger.Debug("setup done",
-		"sid", sid, "server", srv.Name,
+		"server", srv.Name,
 		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
 	return ptyConn, trace, nil
 }
@@ -314,7 +314,7 @@ func (s *Service) setupPatternA(srv *config.SSHServer, dialer *conn.Dialer, sid 
 	// Pattern A：SFTP 通道是到 target 的（与 setupDirect 一致），探测启用
 	ptyConn.TryEnableSftp()
 	logger.Debug("setup done",
-		"sid", sid, "server", srv.Name, "via", jump.Name,
+		"server", srv.Name, "via", jump.Name,
 		"sftp_available", ptyConn.SftpAvailable(), "shell", ptyConn.Shell())
 	return ptyConn, trace, nil
 }
@@ -352,7 +352,7 @@ func (s *Service) RunInSession(ctx context.Context, req *mcp.CallToolRequest, ar
 		return errorResult("%v", err)
 	}
 	s.sessionLogger(req, args.SID).Debug("run_in_session",
-		"sid", args.SID, "server", sess.ServerName(),
+		"server", sess.ServerName(),
 		"cmd", args.Cmd, "timeout_ms", args.TimeoutMs, "max_output_bytes", args.MaxOutputBytes)
 	output, exitCode, timedOut, truncated, totalBytes, err := sess.RunInSession(args.Cmd, args.TimeoutMs, args.MaxOutputBytes)
 	if err != nil {

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +217,91 @@ func TestDownloadRemoteFileMissing(t *testing.T) {
 	})
 	if !res.IsError {
 		t.Errorf("expected IsError=true for missing remote file")
+	}
+}
+
+// TestDownloadFailureLogsError 验证 sftp download 失败时记录 Warn 日志（含错误信息），
+// 便于日后定位问题。修复前：错误只进响应，不进日志——响应里有 "open remote ...: no such file"，
+// 但日志里只有 Debug 级 "sftp download start/done"，错误级别日志缺失。
+func TestDownloadFailureLogsError(t *testing.T) {
+	srv := newFakeShellServerWithSftpForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+	store.Save(&config.Config{
+		Version: "1",
+		Servers: []*config.SSHServer{
+			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
+		},
+	})
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), baseLogger)
+
+	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
+	if loginRes.IsError {
+		t.Fatalf("login failed: %s", resultText(t, loginRes))
+	}
+	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
+	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
+
+	res, _, _ := svc.Download(context.Background(), &mcp.CallToolRequest{}, DownloadArgs{
+		SID: sid, Src: "/nonexistent/remote.txt", Dst: filepath.Join(dir, "out.txt"),
+	})
+	if !res.IsError {
+		t.Errorf("expected IsError=true for missing remote file")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected WARN log entry for download failure, got: %s", out)
+	}
+	if !strings.Contains(out, "download failed") {
+		t.Errorf("expected 'download failed' message in log, got: %s", out)
+	}
+}
+
+// TestUploadFailureLogsError 验证 sftp upload 失败时记录 Warn 日志。
+// 触发方式：Dst 指向不存在的远端目录，sftpClient.Create 失败。
+func TestUploadFailureLogsError(t *testing.T) {
+	srv := newFakeShellServerWithSftpForMCP(t)
+	dir := t.TempDir()
+	store := config.NewStore(filepath.Join(dir, "config.json"))
+	store.Save(&config.Config{
+		Version: "1",
+		Servers: []*config.SSHServer{
+			{Name: "s", Addr: srv.Addr(), User: "alice", Auth: config.SSHAuth{Password: "wonderland"}},
+		},
+	})
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	svc := NewService(store, conn.NewKnownHostsStore(filepath.Join(dir, "known_hosts")), baseLogger)
+
+	loginRes, _, _ := svc.Login(context.Background(), &mcp.CallToolRequest{}, LoginArgs{Name: "s"})
+	if loginRes.IsError {
+		t.Fatalf("login failed: %s", resultText(t, loginRes))
+	}
+	sid := parseJSON(t, resultText(t, loginRes)).(map[string]any)["sid"].(string)
+	defer svc.CloseSession(context.Background(), &mcp.CallToolRequest{}, CloseSessionArgs{SID: sid})
+
+	localPath := filepath.Join(dir, "local.txt")
+	if err := os.WriteFile(localPath, []byte("data"), 0600); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+	res, _, _ := svc.Upload(context.Background(), &mcp.CallToolRequest{}, UploadArgs{
+		SID: sid, Src: localPath, Dst: "/nonexistent/dir/file.txt",
+	})
+	if !res.IsError {
+		t.Errorf("expected IsError=true for upload to nonexistent dir")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected WARN log entry for upload failure, got: %s", out)
+	}
+	if !strings.Contains(out, "upload failed") {
+		t.Errorf("expected 'upload failed' message in log, got: %s", out)
 	}
 }
 

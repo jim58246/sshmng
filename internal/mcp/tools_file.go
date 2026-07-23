@@ -32,7 +32,7 @@ func (s *Service) Upload(ctx context.Context, req *mcp.CallToolRequest, args Upl
 		return errorResult("%v", err)
 	}
 	s.sessionLogger(req, args.SID).Debug("upload",
-		"sid", args.SID, "server", sess.ServerName(),
+		"server", sess.ServerName(),
 		"src", args.Src, "dst", args.Dst, "timeout_ms", args.TimeoutMs)
 	f, err := os.Open(args.Src)
 	if err != nil {
@@ -41,6 +41,9 @@ func (s *Service) Upload(ctx context.Context, req *mcp.CallToolRequest, args Upl
 	defer f.Close()
 	bytes, timedOut, err := sess.Upload(f, args.Dst, args.TimeoutMs)
 	if err != nil && !timedOut {
+		s.sessionLogger(req, args.SID).Warn("upload failed",
+			"server", sess.ServerName(),
+			"src", args.Src, "dst", args.Dst, "err", err.Error())
 		return errorResult("%v", err)
 	}
 	return textResult(map[string]any{
@@ -60,7 +63,7 @@ func (s *Service) Download(ctx context.Context, req *mcp.CallToolRequest, args D
 		return errorResult("%v", err)
 	}
 	s.sessionLogger(req, args.SID).Debug("download",
-		"sid", args.SID, "server", sess.ServerName(),
+		"server", sess.ServerName(),
 		"src", args.Src, "dst", args.Dst, "timeout_ms", args.TimeoutMs)
 	f, err := os.Create(args.Dst)
 	if err != nil {
@@ -69,6 +72,9 @@ func (s *Service) Download(ctx context.Context, req *mcp.CallToolRequest, args D
 	defer f.Close()
 	bytes, timedOut, err := sess.Download(args.Src, f, args.TimeoutMs)
 	if err != nil && !timedOut {
+		s.sessionLogger(req, args.SID).Warn("download failed",
+			"server", sess.ServerName(),
+			"src", args.Src, "dst", args.Dst, "err", err.Error())
 		return errorResult("%v", err)
 	}
 	return textResult(map[string]any{

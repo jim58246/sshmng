@@ -26,7 +26,7 @@ func (p *PtyConn) SftpAvailable() bool {
 //
 // 用 context-aware io.Copy 在 Read/Write 迭代间检查 deadline。
 func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
-	p.logger.Debug("sftp upload start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
+	p.logger.Debug("sftp upload start", "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
@@ -43,14 +43,20 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 
 	dst, err := sftpClient.Create(remotePath)
 	if err != nil {
+		p.logger.Warn("sftp upload create failed",
+			"remote", remotePath, "err", err.Error())
 		return 0, false, fmt.Errorf("create remote %s: %w", remotePath, err)
 	}
 	defer dst.Close()
 
 	n, err := copyCtx(ctx, dst, src)
 	timedOut := errors.Is(err, context.DeadlineExceeded)
+	if err != nil && !timedOut {
+		p.logger.Warn("sftp upload copy failed",
+			"remote", remotePath, "bytes", n, "err", err.Error())
+	}
 	p.logger.Debug("sftp upload done",
-		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
+		"remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
 
@@ -60,7 +66,7 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 //   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
 //   - 超时返回已传输字节 + timed_out=true
 func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
-	p.logger.Debug("sftp download start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
+	p.logger.Debug("sftp download start", "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
 	sftpClient := p.sftpClient
 	p.mu.Unlock()
@@ -77,14 +83,20 @@ func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 
 	src, err := sftpClient.Open(remotePath)
 	if err != nil {
+		p.logger.Warn("sftp download open failed",
+			"remote", remotePath, "err", err.Error())
 		return 0, false, fmt.Errorf("open remote %s: %w", remotePath, err)
 	}
 	defer src.Close()
 
 	n, err := copyCtx(ctx, dst, src)
 	timedOut := errors.Is(err, context.DeadlineExceeded)
+	if err != nil && !timedOut {
+		p.logger.Warn("sftp download copy failed",
+			"remote", remotePath, "bytes", n, "err", err.Error())
+	}
 	p.logger.Debug("sftp download done",
-		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
+		"remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
 

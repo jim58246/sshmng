@@ -295,9 +295,9 @@ type LoginFlowOptions struct {
 func (p *PtyConn) TryEnableSftp() {
 	if sc, err := conn.NewSftpClient(p.client); err == nil {
 		p.sftpClient = sc
-		p.logger.Debug("sftp channel", "sid", p.sid, "available", true)
+		p.logger.Debug("sftp channel", "available", true)
 	} else {
-		p.logger.Debug("sftp channel", "sid", p.sid, "available", false, "err", err.Error())
+		p.logger.Debug("sftp channel", "available", false, "err", err.Error())
 	}
 }
 
@@ -336,7 +336,7 @@ func (p *PtyConn) DetectShell() error {
 		return fmt.Errorf("detect shell: %w", err)
 	}
 	p.shell = shell
-	p.logger.Debug("shell detected", "sid", p.sid, "shell", shell)
+	p.logger.Debug("shell detected", "shell", shell)
 	return nil
 }
 
@@ -384,7 +384,7 @@ func (p *PtyConn) detectShell() (string, error) {
 		return "", err
 	}
 	cmd := fmt.Sprintf("__sshmng_dr=%s; echo __SHELL_DETECT__:$0:${BASH_VERSION:-}:${ZSH_VERSION:-}; echo __DETECT_END_${__sshmng_dr}__\n", rand)
-	p.logger.Debug("detect shell send", "sid", p.sid, "rand", rand, "cmd", cmd)
+	p.logger.Debug("detect shell send", "rand", rand, "cmd", cmd)
 	if _, err := p.stdin.Write([]byte(cmd)); err != nil {
 		return "", fmt.Errorf("write detect cmd: %w", err)
 	}
@@ -393,7 +393,7 @@ func (p *PtyConn) detectShell() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p.logger.Debug("detect shell read", "sid", p.sid, "output", output)
+	p.logger.Debug("detect shell read", "output", output)
 	shell, ok := ParseShellDetect(output, rand)
 	if !ok {
 		return "", fmt.Errorf("could not parse shell from: %q", output)
@@ -409,7 +409,7 @@ func (p *PtyConn) detectShell() (string, error) {
 // dash/ash：等字面量 `__P_<sid>__> `（无 $(echo _$?) 扩展，无 exit code）。
 func (p *PtyConn) injectRC() error {
 	rc := BuildRC(p.shell, p.sid)
-	p.logger.Debug("inject rc send", "sid", p.sid, "shell", p.shell, "rc", rc)
+	p.logger.Debug("inject rc send", "shell", p.shell, "rc", rc)
 	if _, err := p.stdin.Write([]byte(rc)); err != nil {
 		return fmt.Errorf("write rc: %w", err)
 	}
@@ -425,7 +425,7 @@ func (p *PtyConn) injectRC() error {
 			return err
 		}
 	}
-	p.logger.Debug("inject rc done", "sid", p.sid, "shell", p.shell)
+	p.logger.Debug("inject rc done", "shell", p.shell)
 	return nil
 }
 
@@ -493,7 +493,7 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	// 的初始 PS1；这里动态升级为 `$(echo _$?)__<sid>_<token>__]# `（带 token）。
 	// PS1 中 `$(echo _$?)` 在 prompt 展开时输出 exit code，token 直接编码进 PS1 字符串。
 	setupCmd := buildSetupTokenCmd(p.sid, token)
-	p.logger.Debug("run setup token", "sid", p.sid, "token", token)
+	p.logger.Debug("run setup token", "token", token)
 	if _, err := p.stdin.Write([]byte(setupCmd)); err != nil {
 		return "", "", 0, false, false, false, 0, false, fmt.Errorf("write setup: %w", err)
 	}
@@ -509,7 +509,7 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	setupRaw, setupTimedOut := p.readUntilCommandDoneToken(token, setTimeout)
 	if setupTimedOut {
 		p.logger.Warn("setup token timed out, conn unusable",
-			"sid", p.sid, "token", token, "setup_raw", setupRaw)
+			"token", token, "setup_raw", setupRaw)
 		return "", "", 0, false, false, false, 0, true, errors.New("setup token timeout")
 	}
 
@@ -523,7 +523,7 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	p.mu.Unlock()
 
 	// 步骤 5：写命令
-	p.logger.Debug("run cmd", "sid", p.sid, "cmd", cmd, "token", token,
+	p.logger.Debug("run cmd", "cmd", cmd, "token", token,
 		"timeout_ms", timeout.Milliseconds(), "max_output_bytes", maxOutputBytes)
 	if _, err := p.stdin.Write([]byte(cmd + "\n")); err != nil {
 		return "", "", 0, false, false, false, 0, false, fmt.Errorf("write cmd: %w", err)
@@ -535,9 +535,9 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	connUnusable := false
 	if timedOut {
 		p.logger.Warn("run timed out, sending Ctrl-C",
-			"sid", p.sid, "cmd", cmd, "token", token, "timeout", timeout.String())
+			"cmd", cmd, "token", token, "timeout", timeout.String())
 		if _, err := p.stdin.Write([]byte{0x03}); err != nil {
-			p.logger.Error("failed to send Ctrl-C after timeout", "sid", p.sid, "err", err)
+			p.logger.Error("failed to send Ctrl-C after timeout", "err", err)
 		} else {
 			ctrlCSent = true
 		}
@@ -552,7 +552,7 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 			// connUnusable=true 让 Session 调 s.Close()（close 决策在状态机层），
 			// s.Close() 会调 conn.Close() 终止 SSH channel 杀远端进程。
 			p.logger.Warn("Ctrl-C drain timed out, conn unusable",
-				"sid", p.sid, "token", token, "drain_timeout", drainTimeout.String())
+				"token", token, "drain_timeout", drainTimeout.String())
 			connUnusable = true
 		}
 	}
@@ -565,7 +565,6 @@ func (p *PtyConn) runWithToken(cmd string, timeout time.Duration, maxOutputBytes
 	out, wasTruncated, totalBytes := TruncateOutput(cleaned, maxOutputBytes)
 	rawOut, _, _ := TruncateOutput(raw, maxOutputBytes)
 	p.logger.Debug("run done",
-		"sid", p.sid,
 		"token", token,
 		"exit_code", code,
 		"timed_out", timedOut,
@@ -592,7 +591,7 @@ func buildSetupTokenCmd(sid string, token string) string {
 // 字面量，但 dash/ash 少见且不展开 PS1 中的 `$(...)`（无法用 `$(echo _$?)` 捕获
 // exit code、无法在 prompt 时动态注入 token），接受此限制。
 func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes int) (string, string, int, bool, bool, bool, int, bool, error) {
-	p.logger.Debug("run cmd (ps1-only)", "sid", p.sid, "shell", p.shell,
+	p.logger.Debug("run cmd (ps1-only)", "shell", p.shell,
 		"cmd", cmd, "timeout_ms", timeout.Milliseconds())
 	if _, err := p.stdin.Write([]byte(cmd + "\n")); err != nil {
 		return "", "", 0, false, false, false, 0, false, fmt.Errorf("write cmd: %w", err)
@@ -603,9 +602,9 @@ func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes i
 	connUnusable := false
 	if timedOut {
 		p.logger.Warn("run timed out, sending Ctrl-C",
-			"sid", p.sid, "cmd", cmd, "timeout", timeout.String())
+			"cmd", cmd, "timeout", timeout.String())
 		if _, err := p.stdin.Write([]byte{0x03}); err != nil {
-			p.logger.Error("failed to send Ctrl-C after timeout", "sid", p.sid, "err", err)
+			p.logger.Error("failed to send Ctrl-C after timeout", "err", err)
 		} else {
 			ctrlCSent = true
 		}
@@ -618,7 +617,7 @@ func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes i
 		if drainTimedOut {
 			// 不自己 Close——返回 connUnusable=true 让 Session 决策（close 在状态机层）。
 			p.logger.Warn("Ctrl-C drain timed out, conn unusable",
-				"sid", p.sid, "drain_timeout", drainTimeout.String())
+				"drain_timeout", drainTimeout.String())
 			connUnusable = true
 		}
 	}
@@ -628,7 +627,6 @@ func (p *PtyConn) runPS1Only(cmd string, timeout time.Duration, maxOutputBytes i
 	out, wasTruncated, totalBytes := TruncateOutput(cleaned, maxOutputBytes)
 	rawOut, _, _ := TruncateOutput(raw, maxOutputBytes)
 	p.logger.Debug("run done (ps1-only)",
-		"sid", p.sid,
 		"exit_code", code,
 		"timed_out", timedOut,
 		"ctrl_c_sent", ctrlCSent,
@@ -830,7 +828,7 @@ func (p *PtyConn) Send(s string) error {
 		return errors.New("connection closed")
 	}
 	p.mu.Unlock()
-	p.logger.Debug("loginflow send", "sid", p.sid, "bytes", len(s), "text", s)
+	p.logger.Debug("loginflow send", "bytes", len(s), "text", s)
 	_, err := p.stdin.Write([]byte(s))
 	return err
 }
