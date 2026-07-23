@@ -138,3 +138,34 @@ func TestRunInstallCreatesBackupBeforeInject(t *testing.T) {
 		t.Errorf("expected 1 backup, got %d", backupCount)
 	}
 }
+
+// TestRunInstallYesAutoDetectsAgents verifies that --yes mode with no explicit
+// --agents flag and no --skip-agents auto-injects into all detected (installed)
+// Agents. This matches the spec default "auto-detect" for the --agents flag.
+func TestRunInstallYesAutoDetectsAgents(t *testing.T) {
+	home, claudePath := setupInstallTest(t)
+	// Pre-create claude.json so Detect finds it
+	if err := os.WriteFile(claudePath, []byte(`{"mcpServers":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin, _ := os.Executable()
+	var out bytes.Buffer
+	code := RunInstall(InstallOpts{
+		Home:       home,
+		Binary:     bin,
+		Agents:     nil, // no explicit list
+		Yes:        true,
+		SkipAgents: false,
+	}, &out)
+	if code != 0 {
+		t.Errorf("code = %d, want 0. Output:\n%s", code, out.String())
+	}
+	// Claude Code was detected (claude.json exists), so it should be injected
+	data, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"sshmng"`) {
+		t.Errorf("--yes auto-detect did not inject into detected Claude Code:\n%s\nOutput:\n%s", string(data), out.String())
+	}
+}

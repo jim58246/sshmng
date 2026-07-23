@@ -46,10 +46,11 @@ func RunInstall(opts InstallOpts, out io.Writer) int {
 		&OpenCodeInjector{},
 	}
 	var injectors []AgentInjector
-	if opts.SkipAgents {
+	switch {
+	case opts.SkipAgents:
 		// skip Agent injection entirely
-	} else if len(opts.Agents) > 0 {
-		// Explicit list
+	case len(opts.Agents) > 0:
+		// Explicit list from --agents flag
 		for _, name := range opts.Agents {
 			for _, inj := range allInjectors {
 				if inj.Name() == name {
@@ -58,29 +59,19 @@ func RunInstall(opts InstallOpts, out io.Writer) int {
 				}
 			}
 		}
+	case opts.Yes:
+		// Non-interactive with no explicit list: auto-inject into all
+		// detected (installed) Agents. Matches spec default "auto-detect".
+		for _, inj := range allInjectors {
+			if _, installed := inj.Detect(); installed {
+				injectors = append(injectors, inj)
+			}
+		}
 	}
-	// else: nil Agents and !SkipAgents -> auto-detect (interactive prompts;
-	// --yes mode would use all detected, handled below)
+	// else: interactive mode, nil Agents, !SkipAgents -> prompt below
 
 	// Interactive: prompt for missing values
 	if !opts.Yes {
-		if opts.Home == "" {
-			var err error
-			opts.Home, err = promptStringReader(out, r, "sshmng home directory", defaultHome())
-			if err != nil {
-				fmt.Fprintf(out, "Error reading home: %v\n", err)
-				return 1
-			}
-		}
-		if opts.Binary == "" {
-			bin, _ := os.Executable()
-			var err error
-			opts.Binary, err = promptStringReader(out, r, "sshmng binary path", bin)
-			if err != nil {
-				fmt.Fprintf(out, "Error reading binary: %v\n", err)
-				return 1
-			}
-		}
 		if !opts.SkipAgents && injectors == nil {
 			injectors = promptAgentSelection(out, r, allInjectors)
 		}
