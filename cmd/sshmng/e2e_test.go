@@ -30,7 +30,7 @@ func startBinary(t *testing.T, configPath string) (*exec.Cmd, io.WriteCloser, *b
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("binary not found at %s: %v (build with `go build -o /tmp/sshmng ./cmd/sshmng`)", bin, err)
 	}
-	cmd := exec.Command(bin, "--config", configPath)
+	cmd := exec.Command(bin, "mcp", "--config", configPath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)
