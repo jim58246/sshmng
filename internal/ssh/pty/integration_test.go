@@ -24,9 +24,11 @@ import (
 // newDialerWithTempKnownHosts 创建一个用临时 known_hosts 文件的 Dialer。
 // pty 包测试需要 dialer 但不能直接复用 conn 包的 test helper（跨包不可见），
 // 这里重新定义一份，封装 conn.NewDialer + conn.NewKnownHostsStore。
-func newDialerWithTempKnownHosts(t *testing.T) *conn.Dialer {
-	t.Helper()
-	return conn.NewDialer(conn.NewKnownHostsStore(filepath.Join(t.TempDir(), "known_hosts")), nil)
+//
+// 接 testing.TB 而非 *testing.T，使 benchmark（*testing.B）也能复用。
+func newDialerWithTempKnownHosts(tb testing.TB) *conn.Dialer {
+	tb.Helper()
+	return conn.NewDialer(conn.NewKnownHostsStore(filepath.Join(tb.TempDir(), "known_hosts")), nil)
 }
 
 // fakeShellServer 是一个用于集成测试的 SSH server。
@@ -39,7 +41,6 @@ func newDialerWithTempKnownHosts(t *testing.T) *conn.Dialer {
 // realisticPrompt=true 时模拟真实 bash 在 RC 期间每行执行后都显示 PS1 的行为
 // （默认 false：sentinel 只在 stty -echo 后才打印，掩盖 BuildRC 多行 RC 的 bug）。
 type fakeShellServer struct {
-	t               *testing.T
 	listener        net.Listener
 	hostKey         ssh.Signer
 	enableSftp      bool
@@ -49,21 +50,21 @@ type fakeShellServer struct {
 	wg              sync.WaitGroup
 }
 
-func newFakeShellServer(t *testing.T) *fakeShellServer {
-	return newFakeShellServerOpt(t, false)
+func newFakeShellServer(tb testing.TB) *fakeShellServer {
+	return newFakeShellServerOpt(tb, false)
 }
 
 // newFakeShellServerWithSftp 创建支持 sftp subsystem 的 fake server。
-func newFakeShellServerWithSftp(t *testing.T) *fakeShellServer {
-	return newFakeShellServerOpt(t, true)
+func newFakeShellServerWithSftp(tb testing.TB) *fakeShellServer {
+	return newFakeShellServerOpt(tb, true)
 }
 
 // newFakeShellServerWithEcho 创建模拟真实 PTY ECHO 行为的 fake server。
 // 当 sshmng 在 pty-req 中请求 ECHO=1 时，fake server 会把 stdin 回显到 stdout，
 // 与真实 SSH server 的 tty driver 行为一致。用于复现 detectShell 在 ECHO=1 时
 // 误匹配 sentinel 的 bug。
-func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
-	s := newFakeShellServerOpt(t, false)
+func newFakeShellServerWithEcho(tb testing.TB) *fakeShellServer {
+	s := newFakeShellServerOpt(tb, false)
 	s.echoPty = true
 	return s
 }
@@ -73,8 +74,8 @@ func newFakeShellServerWithEcho(t *testing.T) *fakeShellServer {
 // ECHO=0）、shell RC 执行 stty echo 覆盖、非标 server 忽略 terminal modes。
 // 用于验证 detectShell 的变量化 end marker 防御：即使回显存在，readUntilPattern 也不
 // 会在回显行命中 end marker（回显里是 __DETECT_END_${__sshmng_dr}__，未展开）。
-func newFakeShellServerWithAlwaysEcho(t *testing.T) *fakeShellServer {
-	s := newFakeShellServerOpt(t, false)
+func newFakeShellServerWithAlwaysEcho(tb testing.TB) *fakeShellServer {
+	s := newFakeShellServerOpt(tb, false)
 	s.alwaysEcho = true
 	return s
 }
@@ -84,30 +85,32 @@ func newFakeShellServerWithAlwaysEcho(t *testing.T) *fakeShellServer {
 // 这复现 BuildRC 多行 RC 导致 injectRC 提前匹配 sentinel 的 bug：`export PS1=` 在
 // RC 中间，injectRC 等到该行后的 sentinel 就以为 RC 完成，但后续行的 prompt 残留
 // 在 stdoutCh 里被下次 Run 误消费。
-func newFakeShellServerWithRealisticPrompt(t *testing.T) *fakeShellServer {
-	s := newFakeShellServerOpt(t, false)
+func newFakeShellServerWithRealisticPrompt(tb testing.TB) *fakeShellServer {
+	s := newFakeShellServerOpt(tb, false)
 	s.realisticPrompt = true
 	return s
 }
 
-func newFakeShellServerOpt(t *testing.T, enableSftp bool) *fakeShellServer {
-	t.Helper()
+// newFakeShellServerOpt 接 testing.TB 而非 *testing.T，使 benchmark（*testing.B）
+// 也能复用。fakeShellServer 不再存 *testing.T 引用（旧字段未使用，已删）。
+func newFakeShellServerOpt(tb testing.TB, enableSftp bool) *fakeShellServer {
+	tb.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("generate host key: %v", err)
+		tb.Fatalf("generate host key: %v", err)
 	}
 	signer, err := ssh.NewSignerFromKey(rsaKey)
 	if err != nil {
-		t.Fatalf("new signer: %v", err)
+		tb.Fatalf("new signer: %v", err)
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		tb.Fatalf("listen: %v", err)
 	}
-	s := &fakeShellServer{t: t, listener: l, hostKey: signer, enableSftp: enableSftp}
+	s := &fakeShellServer{listener: l, hostKey: signer, enableSftp: enableSftp}
 	s.wg.Add(1)
 	go s.serve()
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		l.Close()
 		s.wg.Wait()
 	})
