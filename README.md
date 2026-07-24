@@ -11,7 +11,7 @@ SSH 会话管理工具，以 MCP (Model Context Protocol) server 形式对外提
 - **交互式堡垒机（Pattern B）**：`Jumphost.SSHJ=false` + `LoginFlow` 决策树，自动导航菜单登录 target
 - **LoginFlow 决策树**：send + expect 树状结构，glob / `re:` 正则双模；失败返回 trace 供 Agent 诊断 + 修复配置 + 重试
 - **TOFU host key**：首次连接记录公钥到 `known_hosts`，变更拒绝（"host key changed, possible MITM"）
-- **sftp 文件传输**：`upload` / `download` 走独立 sftp 通道，与 PTY 命令通道分离；不可用时优雅降级
+- **sftp 文件传输**：`upload` / `download` 单文件走独立 sftp 通道，与 PTY 命令通道分离，不可用时优雅降级；`upload_dir` / `download_dir` 递归传输目录树，并发（默认 4），冲突策略 overwrite / skip / rename
 - **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 timed_out/ctrl_c_sent；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）
 - **配置自愈**：Agent 据 `error` / `login_trace` 诊断失败后可调 `update_*` 修配置再重试 `login`
 - **首次上手辅助**：`sshmng install` 一键创建配置目录 + 模板 + 注入到 AI Agent；`sshmng doctor` 验证配置正确性
@@ -74,7 +74,7 @@ go build -o sshmng ./cmd/sshmng
 
 ## MCP 工具一览
 
-共 14 个工具：
+共 18 个工具：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -88,6 +88,8 @@ go build -o sshmng ./cmd/sshmng
 | 诊断 | `get_trace(sid, last_n?, trunc_output?)` | 取命令历史（含 ctrl_c_sent、原始输出） |
 | 文件传输 | `upload(sid, src, dst, timeout_ms?)` | 本地 → 远端，走 sftp |
 | 文件传输 | `download(sid, src, dst, timeout_ms?)` | 远端 → 本地，走 sftp |
+| 文件传输 | `upload_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | 本地目录树 → 远端，递归 sftp，并发默认 4，冲突策略 overwrite/skip/rename |
+| 文件传输 | `download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | 远端目录树 → 本地，递归 sftp，并发默认 4，冲突策略 overwrite/skip/rename |
 
 > 不提供 `send_input` / `send_special`：MCP 客户端串行化工具调用，`run_in_session` 执行中调不到这两个工具；命令结束（正常退出或超时 Ctrl-C 后）session 已回 idle 或 closed，再调也报错。交互式命令（sudo/read/cat>file）靠 `run_in_session` 自身超时 + `get_trace` 看 raw_output 诊断，不靠 send_input 喂入。
 
@@ -118,7 +120,7 @@ go test -race ./...
 
 ## 贡献
 
-欢迎开 [issue](https://github.com/jim58246/sshmng/issues) 反馈 bug 和 feature request。暂不接受 PR。
+欢迎开 [issue](https://github.com/jim58246/sshmng/issues) 反馈 bug 和 feature request。S
 
 ## License
 
