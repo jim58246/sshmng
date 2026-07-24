@@ -186,3 +186,39 @@ func TestRunInstallYesAutoDetectsAgents(t *testing.T) {
 		t.Errorf("--yes auto-detect did not inject into detected Claude Code:\n%s\nOutput:\n%s", string(data), out.String())
 	}
 }
+
+// TestRunInstallDevBuildSucceedsWithWarn verifies that a dev build
+// (version.Version == "dev") still completes installation successfully
+// despite doctor emitting a WARN for the dev-build version check. Prior to
+// the fix, install treated exit-2 (warn-only) as failure and returned 1,
+// causing `go run ./cmd/sshmng install` to "fail" with a misleading message.
+func TestRunInstallDevBuildSucceedsWithWarn(t *testing.T) {
+	home, _ := setupInstallTest(t)
+	orig := version.Version
+	version.Version = "dev" // dev build triggers doctor's WARN (self-update disabled)
+	defer func() { version.Version = orig }()
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code := RunInstall(InstallOpts{
+		Home:       home,
+		Binary:     bin,
+		Agents:     nil,
+		Yes:        true,
+		SkipAgents: true,
+	}, &out)
+	if code != 0 {
+		t.Errorf("dev build install: code = %d, want 0. Output:\n%s", code, out.String())
+	}
+	// doctor's dev-build WARN should appear in output, but installation
+	// still succeeded.
+	if !strings.Contains(out.String(), "Setup completed with warnings") {
+		t.Errorf("expected warning summary in output. Output:\n%s", out.String())
+	}
+	// config.json should still be created despite the warn.
+	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
+		t.Errorf("config.json missing despite success: %v", err)
+	}
+}

@@ -70,6 +70,11 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 	// server invariant). Skipped when auto_update_enabled=false or dev build.
 	if cfg.AutoUpdateEnabled && version.Version != "dev" {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Warn("auto-update panic", "err", r)
+				}
+			}()
 			u, err := update.New(update.Config{
 				RepoOwner: version.RepoOwner,
 				RepoName:  version.RepoName,
