@@ -1,0 +1,50 @@
+version: 2
+
+project_name: sshmng
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/sshmng
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/jim58246/sshmng/internal/version.Version={{.Tag}}
+      - -X github.com/jim58246/sshmng/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/jim58246/sshmng/internal/version.Date={{.CommitDate}}
+      - -X github.com/jim58246/sshmng/internal/version.RepoOwner={{.Env.GITHUB_REPOSITORY_OWNER}}
+      - -X github.com/jim58246/sshmng/internal/version.RepoName={{.Env.GITHUB_REPOSITORY_NAME}}
+
+archives:
+  - id: default
+    name_template: >-
+      sshmng-{{ .Tag }}-{{ .Os }}-{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .Tag }}"
+
+changelog:
+  use: gitlab
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
