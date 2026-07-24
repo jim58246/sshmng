@@ -1,0 +1,60 @@
+version: 2
+
+project_name: sshmng
+
+# Global env vars: derive REPO_OWNER / REPO_NAME with hardcoded fallbacks
+# for local snapshot builds. GITHUB_REPOSITORY_OWNER is a default GitHub
+# Actions env var, but GITHUB_REPOSITORY_NAME is NOT (only GITHUB_REPOSITORY
+# = "owner/repo" exists). Forks get their owner automatically via
+# GITHUB_REPOSITORY_OWNER; the repo name is split from GITHUB_REPOSITORY.
+# Local builds fall back to the upstream defaults baked into internal/version.
+env:
+  - REPO_OWNER={{ if isEnvSet "GITHUB_REPOSITORY_OWNER" }}{{ .Env.GITHUB_REPOSITORY_OWNER }}{{ else }}jim58246{{ end }}
+  - REPO_NAME={{ if isEnvSet "GITHUB_REPOSITORY" }}{{ index (split .Env.GITHUB_REPOSITORY "/") 1 }}{{ else }}sshmng{{ end }}
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/sshmng
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/jim58246/sshmng/internal/version.Version={{.Tag}}
+      - -X github.com/jim58246/sshmng/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/jim58246/sshmng/internal/version.Date={{.CommitDate}}
+      - -X github.com/jim58246/sshmng/internal/version.RepoOwner={{ .Env.REPO_OWNER }}
+      - -X github.com/jim58246/sshmng/internal/version.RepoName={{ .Env.REPO_NAME }}
+
+archives:
+  - id: default
+    name_template: >-
+      sshmng-{{ .Tag }}-{{ .Os }}-{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .Tag }}"
+
+changelog:
+  use: gitlab
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'

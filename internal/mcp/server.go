@@ -22,6 +22,7 @@ import (
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
 	"github.com/jim58246/sshmng/internal/ssh/session"
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 // serverInstructions 是 MCP server 的整体说明，发送给 client（Agent）作为
@@ -127,7 +128,7 @@ type UpdateArgs struct {
 
 // NewServer 创建 MCP server 并注册 18 个工具（9 CRUD + 7 session/file + 2 dir transfer）。
 func NewServer(svc *Service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: "v1"}, &mcp.ServerOptions{
+	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: version.Version}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
 	})
 	mcp.AddTool(server, &mcp.Tool{

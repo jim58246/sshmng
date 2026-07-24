@@ -5,12 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 // DoctorOpts configures RunDoctor.
@@ -77,12 +79,15 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 
 	// config.json
 	cfgPath := filepath.Join(opts.Home, "config.json")
+	var cfg *config.Config
+	var cfgLoadErr error
 	if _, err := os.Stat(cfgPath); err != nil {
 		print("FAIL", fmt.Sprintf("%s missing - run 'sshmng install'", cfgPath))
 	} else {
 		store := config.NewStore(cfgPath)
-		if _, err := store.Load(); err != nil {
-			print("FAIL", fmt.Sprintf("config.json invalid: %v", err))
+		cfg, cfgLoadErr = store.Load()
+		if cfgLoadErr != nil {
+			print("FAIL", fmt.Sprintf("config.json invalid: %v", cfgLoadErr))
 		} else {
 			if runtime.GOOS != "windows" {
 				if info, err := os.Stat(cfgPath); err == nil {
@@ -104,6 +109,29 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 		print("WARN", fmt.Sprintf("%s missing (optional, run 'sshmng install' to regenerate)", exPath))
 	} else {
 		print("OK", fmt.Sprintf("%s exists", exPath))
+	}
+
+	// update_url (if set)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Update source:")
+	if cfgLoadErr == nil && cfg != nil {
+		if cfg.UpdateURL == "" {
+			print("OK", "update_url: not configured (using GitHub Releases)")
+		} else {
+			u, parseErr := url.Parse(cfg.UpdateURL)
+			if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				print("FAIL", fmt.Sprintf("invalid update_url %q: must be http:// or https:// URL with host", cfg.UpdateURL))
+			} else {
+				print("OK", fmt.Sprintf("update_url: %s", cfg.UpdateURL))
+			}
+		}
+	}
+
+	// version (dev build check)
+	if version.Version == "dev" {
+		print("WARN", "version not set at build time; this is a dev build. Self-update disabled.")
+	} else {
+		print("OK", fmt.Sprintf("version: %s", version.Version))
 	}
 
 	// binary

@@ -105,11 +105,12 @@ func (s *Store) Save(c *Config) error {
 // defaultConfig 返回文件不存在时的默认配置。
 func defaultConfig() *Config {
 	return &Config{
-		Version:      "1",
-		IdleTimeoutS: 300,
-		Jumphosts:    []*Jumphost{},
-		Proxies:      []*Proxy{},
-		Servers:      []*SSHServer{},
+		Version:           "1",
+		IdleTimeoutS:      300,
+		AutoUpdateEnabled: true,
+		Jumphosts:         []*Jumphost{},
+		Proxies:           []*Proxy{},
+		Servers:           []*SSHServer{},
 	}
 }
 

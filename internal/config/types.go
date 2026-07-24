@@ -73,10 +73,10 @@ type Jumphost struct {
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"` // 0 = 默认 60000
 	// HostKeyVerify 控制到 jumphost 自身的 SSH dial 是否做 host key 校验。
 	// nil（未配置）→ true（默认 TOFU）；显式 false → 跳过校验。
-	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
-	Via             *Jumphost              `json:"-"`                           // 多跳递归口子（v1 不实现）
-	Proxy           *Proxy                 `json:"-"`
-	Tags            []string               `json:"tags,omitempty"`
+	HostKeyVerify *bool     `json:"host_key_verify,omitempty"`
+	Via           *Jumphost `json:"-"` // 多跳递归口子（v1 不实现）
+	Proxy         *Proxy    `json:"-"`
+	Tags          []string  `json:"tags,omitempty"`
 
 	// 内部字段：UnmarshalJSON 时存原始 name 字符串，resolveReferences 时解析成 Via/Proxy 指针。
 	viaName   string
@@ -97,10 +97,10 @@ type SSHServer struct {
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
 	// HostKeyVerify 仅直连和 Pattern A（via.ssh_j=true）生效；Pattern B（via.ssh_j=false）
 	// 下 target 登录走 PTY 非 SSH dial，此字段不参与。nil → true（默认 TOFU）；显式 false → 跳过。
-	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
-	Via             *Jumphost              `json:"-"` // 可空，空表示直连
-	Proxy           *Proxy                 `json:"-"` // 可空，空表示不走传输代理
-	Tags            []string               `json:"tags,omitempty"`
+	HostKeyVerify *bool     `json:"host_key_verify,omitempty"`
+	Via           *Jumphost `json:"-"` // 可空，空表示直连
+	Proxy         *Proxy    `json:"-"` // 可空，空表示不走传输代理
+	Tags          []string  `json:"tags,omitempty"`
 
 	viaName   string
 	proxyName string
@@ -108,13 +108,15 @@ type SSHServer struct {
 
 // Config 是 config.json 的顶层结构。
 type Config struct {
-	Version      string       `json:"version"`
-	IdleTimeoutS int          `json:"idle_timeout_s"` // 0 = 默认 300
-	LogLevel     string       `json:"log_level,omitempty"` // debug/info/warn/error + 缩写；空 = 默认 info；配错 Load 报错
-	LogPath      string       `json:"log_path,omitempty"`  // 日志目录；空 = 不打日志；非空 = <LogPath>/sshmng.log（10MB 轮转，5 文件）
-	Jumphosts    []*Jumphost  `json:"jumphosts"`
-	Proxies      []*Proxy     `json:"proxies"`
-	Servers      []*SSHServer `json:"servers"`
+	Version           string       `json:"version"`
+	IdleTimeoutS      int          `json:"idle_timeout_s"`                // 0 = 默认 300
+	LogLevel          string       `json:"log_level,omitempty"`           // debug/info/warn/error + 缩写；空 = 默认 info；配错 Load 报错
+	LogPath           string       `json:"log_path,omitempty"`            // 日志目录；空 = 不打日志；非空 = <LogPath>/sshmng.log（10MB 轮转，5 文件）
+	AutoUpdateEnabled bool         `json:"auto_update_enabled,omitempty"` // 是否启用自动更新；defaultConfig 设 true；空文件 Load 时不强制
+	UpdateURL         string       `json:"update_url,omitempty"`          // 自定义更新源；空 = 走 GitHub release 源
+	Jumphosts         []*Jumphost  `json:"jumphosts"`
+	Proxies           []*Proxy     `json:"proxies"`
+	Servers           []*SSHServer `json:"servers"`
 }
 
 // jumphostJSON 是 Jumphost 的 JSON 中间表示，把 Via/Proxy 指针序列化为 name 字符串。

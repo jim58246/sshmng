@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jim58246/sshmng/internal/version"
 )
 
 func TestDoctorEmptyHomeFails(t *testing.T) {
@@ -38,6 +40,11 @@ func TestDoctorPassesAfterInstall(t *testing.T) {
 	}
 	home := filepath.Join(tmp, ".sshmng")
 	bin, _ := os.Executable()
+	// Pin to a release version so the dev-build check reports OK (otherwise
+	// the default "dev" would produce a WARN and code 2).
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	// Run install first
 	var installOut bytes.Buffer
 	code := RunInstall(InstallOpts{
@@ -121,6 +128,61 @@ func TestDoctorDetectsStaleAgentEntry(t *testing.T) {
 	}
 }
 
+func TestRunDoctor_UpdateURL_Valid(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(home, 0700)
+	// Write config with valid update_url
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{
+		"version": "1",
+		"update_url": "https://updates.example.com/sshmng"
+	}`), 0600)
+
+	var out bytes.Buffer
+	code := RunDoctor(DoctorOpts{Home: home}, &out)
+	// update_url valid → no FAIL for that check. Other checks may fail (no
+	// known_hosts etc.) but we only care that update_url line shows OK.
+	output := out.String()
+	if !strings.Contains(output, "update_url") {
+		t.Errorf("output missing update_url check line:\n%s", output)
+	}
+	_ = code
+}
+
+func TestRunDoctor_UpdateURL_Invalid_Fails(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(home, 0700)
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{
+		"version": "1",
+		"update_url": "ftp://bad-scheme"
+	}`), 0600)
+
+	var out bytes.Buffer
+	RunDoctor(DoctorOpts{Home: home}, &out)
+	output := out.String()
+	if !strings.Contains(output, "[FAIL]") {
+		t.Errorf("expected [FAIL] for invalid update_url:\n%s", output)
+	}
+	if !strings.Contains(output, "update_url") {
+		t.Errorf("output missing update_url mention:\n%s", output)
+	}
+}
+
+func TestRunDoctor_DevBuild_Warns(t *testing.T) {
+	orig := version.Version
+	version.Version = "dev"
+	defer func() { version.Version = orig }()
+
+	home := t.TempDir()
+	os.MkdirAll(home, 0700)
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"version":"1"}`), 0600)
+
+	var out bytes.Buffer
+	RunDoctor(DoctorOpts{Home: home}, &out)
+	if !strings.Contains(out.String(), "dev build") {
+		t.Errorf("output missing dev build warning:\n%s", out.String())
+	}
+}
+
 func TestDoctorSkipsUninstalledAgents(t *testing.T) {
 	tmp := t.TempDir()
 	if runtime.GOOS == "windows" {
@@ -130,6 +192,11 @@ func TestDoctorSkipsUninstalledAgents(t *testing.T) {
 	}
 	home := filepath.Join(tmp, ".sshmng")
 	bin, _ := os.Executable()
+	// Pin to a release version so the dev-build check reports OK (otherwise
+	// the default "dev" would produce a WARN and code 2).
+	orig := version.Version
+	version.Version = "v1.2.3"
+	defer func() { version.Version = orig }()
 	var installOut bytes.Buffer
 	RunInstall(InstallOpts{Home: home, Binary: bin, Yes: true, SkipAgents: true}, &installOut)
 	var out bytes.Buffer

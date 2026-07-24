@@ -49,3 +49,37 @@ func TestDispatchUnknownCommandErrors(t *testing.T) {
 		t.Errorf("expected hint to run 'sshmng help', got: %s", out.String())
 	}
 }
+
+func TestDispatch_Update(t *testing.T) {
+	var out bytes.Buffer
+	code := Dispatch(context.Background(), []string{"update", "-h"}, &out)
+	// -h → flag.ErrHelp → exit 0 or 2 depending on flag pkg behavior.
+	// Just verify "update" is recognized (not "Unknown command").
+	if strings.Contains(out.String(), "Unknown command") {
+		t.Errorf("update not routed: %s", out.String())
+	}
+	_ = code
+}
+
+func TestDispatch_Version(t *testing.T) {
+	var out bytes.Buffer
+	code := Dispatch(context.Background(), []string{"version"}, &out)
+	if code != 0 {
+		t.Errorf("version exit code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "sshmng") {
+		t.Errorf("version output missing sshmng: %s", out.String())
+	}
+}
+
+func TestDispatch_HelpTextMentionsUpdateVersion(t *testing.T) {
+	var out bytes.Buffer
+	Dispatch(context.Background(), []string{}, &out)
+	output := out.String()
+	if !strings.Contains(output, "update") {
+		t.Errorf("helpText missing 'update':\n%s", output)
+	}
+	if !strings.Contains(output, "version") {
+		t.Errorf("helpText missing 'version':\n%s", output)
+	}
+}

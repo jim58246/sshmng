@@ -130,9 +130,13 @@ func RunInstall(opts InstallOpts, out io.Writer) int {
 		ExpectedEntry: entry,
 		AgentFilter:   nil,
 	}, out)
-	if docCode != 0 {
-		fmt.Fprintf(out, "\nSetup completed with warnings/errors. Run 'sshmng doctor' for details.\n")
+	if docCode == 1 {
+		fmt.Fprintf(out, "\nSetup completed with errors. Run 'sshmng doctor' for details.\n")
 		return 1
+	}
+	// docCode == 2 (warn-only) or 0 → success
+	if docCode == 2 {
+		fmt.Fprintf(out, "\nSetup completed with warnings. Run 'sshmng doctor' for details.\n")
 	}
 
 	fmt.Fprintln(out)
