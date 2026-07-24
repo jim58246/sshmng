@@ -75,6 +75,7 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 				RepoName:  version.RepoName,
 				UpdateURL: cfg.UpdateURL,
 				CachePath: filepath.Join(filepath.Dir(path), "update_cache.json"),
+				Log:       logger,
 			})
 			if err != nil {
 				logger.Warn("auto-update init failed", "err", err)
