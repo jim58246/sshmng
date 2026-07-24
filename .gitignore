@@ -1,18 +1,36 @@
 # Binaries
 /bin/
 /sshmng
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
 
 # Test artifacts
 *.out
 coverage.txt
+coverage.out
+*.prof
 
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+desktop.ini
 
-# Codegraph index (tool-generated)
+# Local environment / secrets
+.env
+.env.local
+*.local
+
+# Tool-generated indexes
 .codegraph/
+.superpowers/
 
 # Goreleaser build output
 /dist/
