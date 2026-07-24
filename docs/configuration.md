@@ -122,7 +122,7 @@ Differences from Pattern B:
 | `log_level` | string | no | `"info"` | Log level: `debug` / `info` / `warn` / `error` (abbreviations `dbg`/`d`/`inf`/`i`/`w`/`err`/`e` supported, case-insensitive); invalid value fails Load |
 | `log_path` | string | no | — | Log directory: empty = no logging; non-empty = `<log_path>/sshmng.log`, 10MB rotation, max 5 files (`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`) |
 | `auto_update_enabled` | bool | no | `true` (skeleton created by `sshmng install`) | Whether auto-update is enabled; background goroutine silently checks on `mcp` startup (writes `log_path` log only, never stdout); set `false` to disable. Note: when config.json exists but this field is omitted, the value is `false` (Go zero value) — recommend setting explicitly |
-| `update_url` | string | no | — | Custom update source base URL; empty = use GitHub Releases; non-empty = pull `latest.txt` + archives from this URL (see README 'Auto-update' section for layout) |
+| `update_url` | string | no | — | Custom update source base URL; empty = use GitHub Releases; non-empty = pull `latest.txt` + archives from this URL (see [Auto-update](auto-update.md) for layout) |
 | `jumphosts` | []Jumphost | no | `[]` | SSH jump host list |
 | `proxies` | []Proxy | no | `[]` | Transport-layer proxy list |
 | `servers` | []SSHServer | no | `[]` | Target host list |

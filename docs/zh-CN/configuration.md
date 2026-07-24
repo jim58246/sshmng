@@ -122,7 +122,7 @@ Windows 跳过权限检查（NTFS 用 ACL 而非 Unix rwx，`os.FileMode.Perm()`
 | `log_level` | string | 否 | `"info"` | 日志级别：`debug` / `info` / `warn` / `error`（支持缩写 `dbg`/`d`/`inf`/`i`/`w`/`err`/`e`，大小写不敏感）；配错 Load 报错 |
 | `log_path` | string | 否 | — | 日志目录：空 = 不打日志；非空 = `<log_path>/sshmng.log`，10MB 轮转、最多 5 份（`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`） |
 | `auto_update_enabled` | bool | 否 | `true`（`sshmng install` 创建的骨架） | 是否启用自动更新；`mcp` 启动时后台 goroutine 静默检查（仅写 `log_path` 日志，不输出 stdout）；设 `false` 关闭。注意：手动创建 config.json 且缺省此字段时为 `false`（Go 零值），建议显式设置 |
-| `update_url` | string | 否 | — | 自定义更新源 base URL；空 = 走 GitHub Releases；非空 = 从该 URL 拉 `latest.txt` + 归档（布局详见 README "自动更新" 章节） |
+| `update_url` | string | 否 | — | 自定义更新源 base URL；空 = 走 GitHub Releases；非空 = 从该 URL 拉 `latest.txt` + 归档（布局详见 [自动更新](auto-update.md)） |
 | `jumphosts` | []Jumphost | 否 | `[]` | SSH 跳板列表 |
 | `proxies` | []Proxy | 否 | `[]` | 传输层代理列表 |
 | `servers` | []SSHServer | 否 | `[]` | 目标机列表 |
