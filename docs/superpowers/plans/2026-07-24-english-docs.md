@@ -77,6 +77,21 @@ Blank line after the switcher, then the `#` heading.
 | 轮转 | rotation | log rotation |
 | 权限 | permissions | file perms |
 | 凭据 | credentials | |
+| 自动更新 | auto-update | section heading "Auto-update" |
+| 自建 HTTP 源 | self-hosted HTTP source | |
+| 自建 HTTP 源布局 | Self-hosted HTTP source layout | subsection heading |
+| 发布流程 | release flow | "Release flow (maintainers)" |
+| 归档 | archive(s) | release archives |
+| 内部镜像 | internal mirror | |
+| 离线环境 | offline environment | |
+| 符号链接 | symlink | |
+| 目标二进制 | target binary | |
+| 缓存 TTL | cache TTL | preserve as-is |
+| 触发 | trigger(s) | CI triggers goreleaser |
+| 静默检查 | silently checks | background goroutine |
+| 后台 goroutine | background goroutine | preserve "goroutine" |
+| 缺省 | omitted | (when field is missing) |
+| 零值 | zero value | Go zero value |
 
 ### Preserved Verbatim (do NOT translate)
 
@@ -184,14 +199,33 @@ Create `README.md` with English content. Translate the Chinese `README.zh-CN.md`
 3. Blockquote callout: v1 stage note, link to design doc with annotation "(Chinese only — translations welcome)"
 4. `## Features` — 9 bullets, one per feature. Translate each bullet's prose; preserve all `code` spans and technical terms per terminology guide. The sftp bullet must mention both single-file (`upload`/`download`) and directory (`upload_dir`/`download_dir`) tools.
 5. `## Install & Build` — 3 install options (release binary / go install / clone+build), same code blocks. Note that `sshmng install` creates `~/.sshmng/` and injects into Agents; link to `#quick-start`.
-6. Run commands block (same as Chinese).
-7. `## Quick Start` — 4-step bash block + non-interactive variant + link to `docs/agents.md`.
-8. `## MCP Tools Overview` — "18 tools total:" + the tools table. Translate the "Description" column; preserve tool names and signatures. Add the blockquote about no `send_input`/`send_special`.
-9. `## Security Notes` — 5 bullets (plaintext storage, TOFU host key, trace sensitivity, stdout logging, auth scope).
-10. `## Testing & Development` — `go test -race ./...` block + link to `docs/development.md` with "(Chinese only — translations welcome)" annotation.
-11. `## Documentation` — 5 bullets linking to: `docs/configuration.md`, `docs/agents.md`, `docs/development.md` (annotated Chinese-only), `docs/ssh-session-manager-design.md` (annotated), `docs/implementation-plan.md` (annotated).
-12. `## Contributing` — link to GitHub issues, "PRs not accepted at this time."
-13. `## License` — MIT, Copyright (c) 2026 jim58246.
+6. `### Build from source` — subsection of Install & Build. Two `go build` commands (plain + ldflags-injected). Paragraph explaining: without ldflags, `version.Version` defaults to `"dev"`, which disables `sshmng update` and the `mcp` auto-update goroutine.
+7. Run commands block — now includes `./sshmng version`, `./sshmng version --check`, `./sshmng update` alongside the existing `mcp`/`install`/`doctor` commands. Translate comments (e.g. `# Print version / commit / date`, `# Check latest version against source`, `# Self-update to latest release`).
+8. `## Quick Start` — 4-step bash block + non-interactive variant + link to `docs/agents.md`.
+9. `## MCP Tools Overview` — "18 tools total:" + the tools table. Translate the "Description" column; preserve tool names and signatures. Add the blockquote about no `send_input`/`send_special`.
+10. `## Security Notes` — 5 bullets (plaintext storage, TOFU host key, trace sensitivity, stdout logging, auth scope).
+11. `## Auto-update` — NEW section. Cover: background goroutine on `mcp` startup (silent, writes `log_path` only, never stdout); JSON snippet to disable (`{"auto_update_enabled": false}`); manual `sshmng update`; `sshmng version --check`; default GitHub Releases source; custom `update_url` JSON snippet.
+12. `### Self-hosted HTTP source layout` — NEW subsection. Directory tree block showing `{base_url}/latest.txt`, `checksums.txt`, and 6 platform archives. Paragraph: any static file server works (nginx/Caddy/S3/`python http.server`). Release process: `goreleaser release --clean`, copy `dist/sshmng-*` + `dist/checksums.txt`, update `latest.txt`.
+13. `### macOS note` — NEW subsection. If invoked via symlink, self-update replaces the symlink not the target binary. Install as a regular file (`go install` / `sshmng install` default) to avoid.
+14. `## Testing & Development` — `go test -race ./...` block + link to `docs/development.md` with "(Chinese only — translations welcome)" annotation.
+15. `## Documentation` — 5 bullets linking to: `docs/configuration.md`, `docs/agents.md`, `docs/development.md` (annotated Chinese-only), `docs/ssh-session-manager-design.md` (annotated), `docs/implementation-plan.md` (annotated).
+16. `## Release flow (maintainers)` — NEW section. `git tag v1.2.3` + `git push origin v1.2.3` block. Paragraph: `release` GitHub Actions workflow triggers goreleaser, which: (1) builds 6 platform archives (darwin/linux/windows × amd64/arm64), (2) generates `checksums.txt`, (3) creates GitHub Release from the tag, (4) uploads archives + checksums as release assets. Note: users running `sshmng update` or `sshmng mcp` (auto-update) will see the new version within 1 hour (cache TTL).
+17. `## Contributing` — link to GitHub issues.
+18. `## License` — MIT, Copyright (c) 2026 jim58246.
+
+Translation notes for the new sections:
+- "自动更新" → "Auto-update" (section heading)
+- "自建 HTTP 源" → "self-hosted HTTP source"
+- "自建 HTTP 源布局" → "Self-hosted HTTP source layout"
+- "发布流程（maintainers）" → "Release flow (maintainers)" — keep "(maintainers)" parenthetical
+- "归档" → "archives" (release archives)
+- "内部镜像" → "internal mirror"
+- "离线环境" → "offline environment"
+- "符号链接" → "symlink"
+- "目标二进制" → "target binary"
+- "缓存 TTL" → "cache TTL" (preserve as-is)
+- "触发" → "triggers"
+- Preserve `goreleaser`, `latest.txt`, `checksums.txt` verbatim.
 
 - [ ] **Step 5: Verify links in both README files**
 
@@ -285,7 +319,9 @@ Create `docs/configuration.md` with English content. Translate `docs/zh-CN/confi
 3. `## Path Resolution Order` — 3-item numbered list (CLI arg / `$SSHMNG_HOME` / `$HOME`).
 4. `## File Permissions` — Unix 0600 requirement, Windows NTFS ACL note, install/doctor WARN behavior on Windows.
 5. `## Examples` — two JSON examples (Pattern B and Pattern A). **Preserve JSON verbatim** — only translate the surrounding prose and the "Differences from Pattern B" bullet list.
-6. `## Field Reference` — 7 subsections, each with a table: Top-level Config, Proxy, Jumphost, SSHServer, SSHAuth, LoginAction, Expect. Preserve all field names, types, and defaults verbatim. Translate only the "Description" column. Keep the inline `ProxyAuth structure` note and the Pattern B `SSHServer.auth` note.
+6. `## Field Reference` — 7 subsections, each with a table: Top-level Config, Proxy, Jumphost, SSHServer, SSHAuth, LoginAction, Expect. Preserve all field names, types, and defaults verbatim. Translate only the "Description" column. Keep the inline `ProxyAuth structure` note and the Pattern B `SSHServer.auth` note. **Top-level Config table now has 9 rows** (was 7): the existing 7 plus `auto_update_enabled` and `update_url` (added in commit `352bcb8`). Translate those two rows' descriptions:
+   - `auto_update_enabled`: "Whether auto-update is enabled; background goroutine silently checks on `mcp` startup (writes `log_path` log only, never stdout); set `false` to disable. Note: when config.json exists but this field is omitted, the value is `false` (Go zero value) — recommend setting explicitly."
+   - `update_url`: "Custom update source base URL; empty = use GitHub Releases; non-empty = pull `latest.txt` + archives from this URL (see README 'Auto-update' section for layout)."
 7. `## Shape and Usage Constraints` — 3 subsections: "Two jumphost shapes" (ssh_j=true/false), "Direct-connect server", "Behavioral conventions" (4 bullets).
 
 Special translation notes for configuration.md:
@@ -294,6 +330,7 @@ Special translation notes for configuration.md:
 - "凭据" → "credentials"
 - "脱敏" → "redacted" (when referring to list_* output) or "sanitize" (when referring to logs before sharing)
 - "降级为 WARN" → "downgrade to WARN"
+- "自动更新" → "auto-update"; "骨架" → "skeleton"; "缺省" → "omitted"; "零值" → "zero value"
 - The design doc link in the LoginAction `send` field description: link to `ssh-session-manager-design.md` (same directory, since English configuration.md is at `docs/configuration.md`), annotate "(Chinese only — translations welcome)".
 
 - [ ] **Step 5: Verify links in both configuration.md files**
@@ -528,9 +565,11 @@ Otherwise, skip — Tasks 1–3 already committed.
 - agents.md pair ✓ (Task 3)
 - Language switcher on every bilingual file ✓ (Tasks 1–3, Step 2 of each)
 - Cross-link discipline (English→English, Chinese→Chinese) ✓ (Tasks 1–3, Step 3 of each + Verification Step 2)
-- Exception: English README → Chinese-only design doc annotated ✓ (Task 1, Step 4, section 10–11 instructions)
-- Translation philosophy (terminology guide, preserve technical terms) ✓ (Global Constraints)
-- Chinese version preservation (verbatim + switcher + link fixes only) ✓ (Tasks 1–3, Step 6 of Task 4 verifies parity)
+- Exception: English README → Chinese-only design doc annotated ✓ (Task 1, Step 4, items 14–15 instructions)
+- Translation philosophy (terminology guide, preserve technical terms) ✓ (Global Constraints, updated with auto-update/release-flow terms)
+- Chinese version preservation (verbatim + switcher + link fixes only) ✓ (Tasks 1–3, Step 3 of Task 4 verifies parity). Note: Chinese README and configuration.md were updated with new content (upload_dir/download_dir, auto_update_enabled/update_url) in commits `93e46ef` and `352bcb8` before this plan executes — so the moves are truly verbatim from the now-updated Chinese sources.
+- New README sections covered: Build from source, Auto-update, Self-hosted HTTP source layout, macOS note, Release flow ✓ (Task 1, Step 4, items 6–7, 11–13, 16)
+- New configuration.md rows covered: auto_update_enabled, update_url ✓ (Task 2, Step 4, item 6)
 - Out of scope: development.md / design doc / implementation-plan.md unchanged ✓ (no task touches them)
 - Verification ✓ (Task 4)
 
