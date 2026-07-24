@@ -1,24 +1,26 @@
-# 配置参考
+[English](./configuration.md) | [简体中文](./zh-CN/configuration.md)
 
-sshmng 的配置文件是 `~/.sshmng/config.json`（路径可由 `--config` 或 `$SSHMNG_HOME` 覆盖）。本文档涵盖路径解析、权限要求、完整字段参考、Pattern A/B 形态约束与示例。
+# Configuration Reference
 
-首次使用建议跑 `sshmng install`，会自动创建 `~/.sshmng/config.json`（空骨架）和 `~/.sshmng/config.example.json`（含 Pattern A/B 示例）。本文档供手动配置或想了解字段细节时参考。
+sshmng's config file is `~/.sshmng/config.json` (path can be overridden via `--config` or `$SSHMNG_HOME`). This doc covers path resolution, permission requirements, the full field reference, Pattern A/B shape constraints, and examples.
 
-## 路径解析顺序
+For first-time use, run `sshmng install` — it creates `~/.sshmng/config.json` (empty skeleton) and `~/.sshmng/config.example.json` (with Pattern A/B examples). This doc is for manual config or when you want to understand field details.
 
-1. `--config <path>` 命令行参数（仅 `sshmng mcp` 子命令支持）
+## Path Resolution Order
+
+1. `--config <path>` CLI arg (only the `sshmng mcp` subcommand supports this)
 2. `$SSHMNG_HOME/config.json`
 3. `$HOME/.sshmng/config.json`
 
-## 文件权限
+## File Permissions
 
-Unix（macOS/Linux）下 `config.json` / 私钥文件 / `known_hosts` 必须 `0600`，过宽会被拒绝加载；首次创建时立即 chmod 0600。
+On Unix (macOS/Linux), `config.json` / private key files / `known_hosts` must be `0600`; looser permissions are rejected at load. First-time creation immediately chmods to 0600.
 
-Windows 跳过权限检查（NTFS 用 ACL 而非 Unix rwx，`os.FileMode.Perm()` 的 group/other 位恒为 0，检查形同虚设）——需手动用 NTFS ACL 限制这些文件访问（右键→属性→安全，移除除当前用户外的所有条目）。`sshmng install` 和 `sshmng doctor` 在 Windows 上会 WARN 提醒。
+Windows skips permission checks (NTFS uses ACLs, not Unix rwx; `os.FileMode.Perm()`'s group/other bits are always 0, making the check vacuous) — you must manually restrict these files via NTFS ACL (right-click → Properties → Security, remove all entries except the current user). `sshmng install` and `sshmng doctor` emit a WARN on Windows.
 
-## 示例
+## Examples
 
-### Pattern B 交互式堡垒机
+### Pattern B Interactive Bastion
 
 ```json
 {
@@ -73,7 +75,7 @@ Windows 跳过权限检查（NTFS 用 ACL 而非 Unix rwx，`os.FileMode.Perm()`
 }
 ```
 
-### Pattern A 透明转发（ssh -J 语义）
+### Pattern A Transparent Forwarding (ssh -J semantics)
 
 ```json
 {
@@ -102,122 +104,124 @@ Windows 跳过权限检查（NTFS 用 ACL 而非 Unix rwx，`os.FileMode.Perm()`
 }
 ```
 
-与 Pattern B 的差异：
-- `jumphost.ssh_j=true`，`jumphost.login_flow` 必须为空
-- `server.auth` 必填（用于 SSH auth 到 target，跟 Pattern B 相反）
-- `server.proxy` 不支持（direct-tcpip 走 jumphost 的 SSH 通道，独立传输代理无意义）
-- `server.login_flow` 可选（target 认证后交互，如 `su -` / 角色切换 / PAM）
-- SFTP 可用（client 是到 target 的）
+Differences from Pattern B:
+- `jumphost.ssh_j=true`, `jumphost.login_flow` must be empty
+- `server.auth` is required (used for SSH auth to target, opposite of Pattern B)
+- `server.proxy` not supported (direct-tcpip goes through jumphost's SSH channel; a separate transport proxy is meaningless)
+- `server.login_flow` optional (post-target-auth interaction, e.g. `su -` / role switch / PAM)
+- SFTP available (the client is to the target)
 
-## 字段参考
+## Field Reference
 
-### 顶层 Config
+### Top-level Config
 
-| 字段 | 类型 | 必填 | 默认 | 说明 |
+| Field | Type | Required | Default | Description |
 |------|------|------|------|------|
-| `version` | string | 是 | — | 配置版本，当前固定为 `"1"` |
-| `idle_timeout_s` | int | 否 | `300` | session 空闲超时（秒），超时自动 close；`0` 取默认 |
-| `log_level` | string | 否 | `"info"` | 日志级别：`debug` / `info` / `warn` / `error`（支持缩写 `dbg`/`d`/`inf`/`i`/`w`/`err`/`e`，大小写不敏感）；配错 Load 报错 |
-| `log_path` | string | 否 | — | 日志目录：空 = 不打日志；非空 = `<log_path>/sshmng.log`，10MB 轮转、最多 5 份（`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`） |
-| `jumphosts` | []Jumphost | 否 | `[]` | SSH 跳板列表 |
-| `proxies` | []Proxy | 否 | `[]` | 传输层代理列表 |
-| `servers` | []SSHServer | 否 | `[]` | 目标机列表 |
+| `version` | string | yes | — | Config version, currently fixed at `"1"` |
+| `idle_timeout_s` | int | no | `300` | Session idle timeout (seconds); auto-close on expiry; `0` takes default |
+| `log_level` | string | no | `"info"` | Log level: `debug` / `info` / `warn` / `error` (abbreviations `dbg`/`d`/`inf`/`i`/`w`/`err`/`e` supported, case-insensitive); invalid value fails Load |
+| `log_path` | string | no | — | Log directory: empty = no logging; non-empty = `<log_path>/sshmng.log`, 10MB rotation, max 5 files (`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`) |
+| `auto_update_enabled` | bool | no | `true` (skeleton created by `sshmng install`) | Whether auto-update is enabled; background goroutine silently checks on `mcp` startup (writes `log_path` log only, never stdout); set `false` to disable. Note: when config.json exists but this field is omitted, the value is `false` (Go zero value) — recommend setting explicitly |
+| `update_url` | string | no | — | Custom update source base URL; empty = use GitHub Releases; non-empty = pull `latest.txt` + archives from this URL (see README 'Auto-update' section for layout) |
+| `jumphosts` | []Jumphost | no | `[]` | SSH jump host list |
+| `proxies` | []Proxy | no | `[]` | Transport-layer proxy list |
+| `servers` | []SSHServer | no | `[]` | Target host list |
 
 ### Proxy
 
-传输层代理（不参与 SSH 协议，只代理 TCP 连接）。
+Transport-layer proxy (doesn't participate in SSH protocol, just proxies the TCP connection).
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Description |
 |------|------|------|------|
-| `name` | string | 是 | 唯一标识，被 jumphost/server 的 `proxy` 字段引用 |
-| `type` | string | 是 | `"HTTP"`（HTTP CONNECT）或 `"SOCKS5"` |
-| `addr` | string | 是 | `host:port` |
-| `auth` | ProxyAuth | 否 | 代理自身认证；省略 = 无认证 |
-| `tags` | []string | 否 | 任意标签，`list_proxies` 的 query 子串会匹配 |
+| `name` | string | yes | Unique identifier; referenced by jumphost/server `proxy` field |
+| `type` | string | yes | `"HTTP"` (HTTP CONNECT) or `"SOCKS5"` |
+| `addr` | string | yes | `host:port` |
+| `auth` | ProxyAuth | no | Proxy's own auth; omitted = no auth |
+| `tags` | []string | no | Arbitrary tags; `list_proxies` query substring-matches |
 
-ProxyAuth 结构：`{"user": "...", "password": "..."}`，两字段均可空。
+ProxyAuth structure: `{"user": "...", "password": "..."}`, both fields can be empty.
 
 ### Jumphost
 
-SSH 跳板。`ssh_j` 字段区分两种形态，决定 LoginFlow / Auth 的必填规则。
+SSH jump host. The `ssh_j` field distinguishes two shapes, determining LoginFlow / Auth required-field rules.
 
-| 字段 | 类型 | 必填 | 默认 | 说明 |
+| Field | Type | Required | Default | Description |
 |------|------|------|------|------|
-| `name` | string | 是 | — | 唯一标识，被 server.`via` 或 jumphost.`via` 引用 |
-| `addr` | string | 是 | — | `host:port` |
-| `user` | string | 是 | — | SSH 用户名 |
-| `auth` | SSHAuth | 是 | — | SSH 认证信息（Password 或 PrivateKey） |
-| `ssh_j` | bool | 是 | — | `true` = 透明转发（`ssh -J` 语义）；`false` = 交互式堡垒机 |
-| `login_flow` | map[string]LoginAction | `ssh_j=false` 必填，`ssh_j=true` 必空 | — | 决策树 |
-| `login_entry` | string | `login_flow` 非空时必填 | — | entry action 的 name |
-| `max_steps` | int | 否 | `50` | LoginFlow 最大步数，防止死循环 |
-| `global_timeout_ms` | int | 否 | `60000` | LoginFlow 整体超时 |
-| `host_key_verify` | *bool | 否 | `true`（nil） | 是否启用 TOFU host key 校验；设 `false` 完全跳过（不读不写 known_hosts）。控制到本 jumphost 的 SSH dial |
-| `via` | string | 否 | — | 多跳跳板的 jumphost name（v1 不实现多跳） |
-| `proxy` | string | 否 | — | 传输代理的 name |
-| `tags` | []string | 否 | — | 任意标签 |
+| `name` | string | yes | — | Unique identifier; referenced by server.`via` or jumphost.`via` |
+| `addr` | string | yes | — | `host:port` |
+| `user` | string | yes | — | SSH username |
+| `auth` | SSHAuth | yes | — | SSH auth info (Password or PrivateKey) |
+| `ssh_j` | bool | yes | — | `true` = transparent forwarding (`ssh -J` semantics); `false` = interactive bastion |
+| `login_flow` | map[string]LoginAction | required when `ssh_j=false`, must be empty when `ssh_j=true` | — | Decision tree |
+| `login_entry` | string | required when `login_flow` non-empty | — | Name of the entry action |
+| `max_steps` | int | no | `50` | LoginFlow max steps, prevents infinite loops |
+| `global_timeout_ms` | int | no | `60000` | LoginFlow overall timeout |
+| `host_key_verify` | *bool | no | `true` (nil) | Whether to enable TOFU host key verification; set `false` to skip entirely (no known_hosts read/write). Controls SSH dial to this jumphost |
+| `via` | string | no | — | Jumphost name for multi-hop (v1 doesn't implement multi-hop) |
+| `proxy` | string | no | — | Transport proxy name |
+| `tags` | []string | no | — | Arbitrary tags |
 
 ### SSHServer
 
-目标机。`via` 是否指向 `ssh_j=false` 的 jumphost 决定走 Pattern A 还是 B，进而决定 `auth` / `login_flow` 必填规则。
+Target host. Whether `via` points to a `ssh_j=false` jumphost determines Pattern A vs B, which in turn determines `auth` / `login_flow` required-field rules.
 
-| 字段 | 类型 | 必填 | 默认 | 说明 |
+| Field | Type | Required | Default | Description |
 |------|------|------|------|------|
-| `name` | string | 是 | — | 唯一标识，`login` 工具用此 name 连接 |
-| `addr` | string | 是 | — | `host:port` |
-| `user` | string | 是 | — | SSH 用户名 |
-| `auth` | SSHAuth | Pattern A 必填，Pattern B 必空 | — | SSH 认证信息 |
-| `login_flow` | map[string]LoginAction | Pattern B 必填，Pattern A 可选 | — | 决策树 |
-| `login_entry` | string | `login_flow` 非空时必填 | — | entry action 的 name |
-| `max_steps` | int | 否 | `50` | LoginFlow 最大步数 |
-| `global_timeout_ms` | int | 否 | `60000` | LoginFlow 整体超时 |
-| `host_key_verify` | *bool | 否 | `true`（nil） | 是否启用 TOFU host key 校验；设 `false` 完全跳过（不读不写 known_hosts）。仅直连和 Pattern A 生效；Pattern B（`via.ssh_j=false`）下 target 登录走 PTY 非 SSH dial，此字段不参与，只看 jumphost 的开关 |
-| `via` | string | 否 | — | 经由的 jumphost name；空 = 直连 |
-| `proxy` | string | 否 | — | 传输代理的 name |
-| `tags` | []string | 否 | — | 任意标签，`list_ssh_servers` 的 query 子串会匹配 |
+| `name` | string | yes | — | Unique identifier; `login` tool uses this name to connect |
+| `addr` | string | yes | — | `host:port` |
+| `user` | string | yes | — | SSH username |
+| `auth` | SSHAuth | required for Pattern A, must be empty for Pattern B | — | SSH auth info |
+| `login_flow` | map[string]LoginAction | required for Pattern B, optional for Pattern A | — | Decision tree |
+| `login_entry` | string | required when `login_flow` non-empty | — | Name of the entry action |
+| `max_steps` | int | no | `50` | LoginFlow max steps |
+| `global_timeout_ms` | int | no | `60000` | LoginFlow overall timeout |
+| `host_key_verify` | *bool | no | `true` (nil) | Whether to enable TOFU host key verification; set `false` to skip entirely (no known_hosts read/write). Only effective for direct connection and Pattern A; under Pattern B (`via.ssh_j=false`), target login goes through PTY not SSH dial, so this field is inert — only the jumphost's flag matters |
+| `via` | string | no | — | Jumphost name to go through; empty = direct connection |
+| `proxy` | string | no | — | Transport proxy name |
+| `tags` | []string | no | — | Arbitrary tags; `list_ssh_servers` query substring-matches |
 
 ### SSHAuth
 
-SSH 认证信息，复用于 Jumphost 和 SSHServer。`password` 和 `private_key` 二选一；同时配置时仅尝试 `private_key`，失败不回退。
+SSH auth info, reused by Jumphost and SSHServer. Choose one of `password` or `private_key`; if both configured, only `private_key` is attempted, no fallback on failure.
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Description |
 |------|------|------|
-| `password` | string | 密码认证；空 = 不使用 |
-| `private_key` | string | 私钥文件完整路径（PEM 格式），启动时校验权限必须 0600 或更严 |
-| `passphrase` | string | 私钥口令；空 = 私钥未加密。仅在 `private_key` 非空时有效 |
+| `password` | string | Password auth; empty = not used |
+| `private_key` | string | Full path to private key file (PEM format); permissions must be 0600 or stricter, validated at startup |
+| `passphrase` | string | Private key passphrase; empty = key is unencrypted. Only effective when `private_key` is non-empty |
 
-Pattern B 下 SSHServer.`auth` 必须为 `null` 或全空对象——凭据写在 `login_flow[action].send` 里。
+Under Pattern B, SSHServer.`auth` must be `null` or an all-empty object — credentials go in `login_flow[action].send`.
 
 ### LoginAction
 
-决策树节点。一条 `send` + 多个 `expects`（按顺序尝试匹配，首个命中者生效）。
+Decision tree node. One `send` + multiple `expects` (tried in order, first match wins).
 
-| 字段 | 类型 | 必填 | 默认 | 说明 |
+| Field | Type | Required | Default | Description |
 |------|------|------|------|------|
-| `send` | string | 否 | `""` | 发送字符串，支持 `\n` `\r` `\t` 转义；空 = 仅等待输出。**回车用 `\r`**（TUI 菜单 / sudo 提示等 raw mode 程序只认 `\r`），详见 [设计文档 3.7](ssh-session-manager-design.md) 的"Send 字节约定" |
-| `expects` | []Expect | 是（≥1） | — | 期望的输出模式列表 |
-| `timeout_ms` | int | 否 | `10000` | 当前 action 的 read 超时 |
+| `send` | string | no | `""` | String to send; supports `\n` `\r` `\t` escapes; empty = just wait for output. **Use `\r` for Enter** (TUI menus / sudo prompts and other raw-mode programs only recognize `\r`); see [design doc 3.7](ssh-session-manager-design.md) "Send byte conventions" (Chinese only — translations welcome) |
+| `expects` | []Expect | yes (≥1) | — | List of expected output patterns |
+| `timeout_ms` | int | no | `10000` | Read timeout for this action |
 
 ### Expect
 
-LoginAction 的一个分支。`pattern` 命中后跳转到 `next` 指向的 action。
+A branch of LoginAction. When `pattern` matches, jump to the action pointed to by `next`.
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Description |
 |------|------|------|------|
-| `pattern` | string | 是 | 匹配模式；无前缀 = glob（shell 风格通配），`re:` 前缀 = Go 正则 |
-| `next` | string | 是 | 命中后跳转的 action name；`"success"` = 登录成功（保留字符串，不能作为 login_flow 的 key） |
+| `pattern` | string | yes | Match pattern; no prefix = glob (shell-style wildcard), `re:` prefix = Go regex |
+| `next` | string | yes | Action name to jump to on match; `"success"` = login successful (reserved string, can't be used as a login_flow key) |
 
-## 形态与使用约束
+## Shape and Usage Constraints
 
-**两种 jumphost 形态**：
-- `ssh_j=true`：透明转发（`ssh -J` 语义）。客户端经 jumphost 的 direct-tcpip 通道 SSH 到 target，`SSHServer.Auth` 必填，SFTP 可用。LoginFlow 必须为空
-- `ssh_j=false`：交互式堡垒机。Jumphost.LoginFlow 把 jumphost 自身驱动到主菜单就绪，SSHServer.LoginFlow 接管选 target + 输入凭据，最终落在 target shell
+**Two jumphost shapes**:
+- `ssh_j=true`: transparent forwarding (`ssh -J` semantics). Client SSH-es to target through jumphost's direct-tcpip channel; `SSHServer.Auth` required; SFTP available. LoginFlow must be empty
+- `ssh_j=false`: interactive bastion. Jumphost.LoginFlow drives the jumphost itself to main-menu ready, then SSHServer.LoginFlow takes over to select target + enter credentials, finally landing in the target shell
 
-**直连 server**：`via` 留空，`auth` 必填（Password 或 PrivateKey + 可选 Passphrase）。可选配置 `SSHServer.LoginFlow` 承担 target 认证后交互（如 `su -`、角色切换、PAM session）。
+**Direct-connect server**: `via` empty, `auth` required (Password or PrivateKey + optional Passphrase). Optionally configure `SSHServer.LoginFlow` for post-target-auth interaction (e.g. `su -`, role switch, PAM session).
 
-**行为约定**：
-- `LoginAction.Send` 是直接字符串，**不支持变量引用**——凭据直接写在 Send 中
-- `"success"` 是保留字符串，不能作为 LoginFlow 的 key；每个 LoginFlow 必须至少有一个 Expect 的 `next` 指向 `"success"`，否则永远登录不成功
-- `LoginAction.Expects` 至少一条 pattern；每条 pattern 必须非空，`next` 必须非空且指向已存在的 action 或 `"success"`
-- `via` / `proxy` 是 name 字符串引用，不是嵌套对象；加载时解析为指针，引用不存在会拒绝加载
-- name 在各自集合（jumphosts / proxies / servers）内必须唯一，跨集合可重名
+**Behavioral conventions**:
+- `LoginAction.Send` is a literal string, **no variable references** — credentials are written directly in Send
+- `"success"` is a reserved string, can't be used as a LoginFlow key; every LoginFlow must have at least one Expect with `next` pointing to `"success"`, otherwise login can never succeed
+- `LoginAction.Expects` must have at least one pattern; each pattern must be non-empty, `next` must be non-empty and point to an existing action or `"success"`
+- `via` / `proxy` are name string references, not nested objects; resolved to pointers at load, unresolvable references are rejected
+- Names must be unique within each collection (jumphosts / proxies / servers); cross-collection name reuse is allowed
