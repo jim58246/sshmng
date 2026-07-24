@@ -58,6 +58,8 @@ To release a new version: run `goreleaser release --clean`, copy `dist/sshmng-*`
 
 If you invoke sshmng via a symlink (e.g. `~/.local/bin/sshmng -> ~/go/bin/sshmng`), self-update will replace the symlink, not the target binary. Install as a regular file (`go install` / `sshmng install` default behavior) to avoid this.
 
+Auto-updated binaries do **not** carry the Gatekeeper quarantine attribute (`com.apple.quarantine`) — no `xattr -d` needed after `sshmng update`. The quarantine attribute is only set by macOS LaunchServices (invoked by browser/Mail downloads); `sshmng update` downloads via Go's `net/http` and extracts via Go's `archive/tar` / `archive/zip`, neither of which touches LaunchServices. Browser-downloaded release binaries do need `xattr -d com.apple.quarantine sshmng` before first run (see README install section).
+
 ## Release flow (maintainers)
 
 ```bash

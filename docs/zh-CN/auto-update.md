@@ -58,6 +58,8 @@ sshmng version --check
 
 若通过符号链接调用 sshmng（如 `~/.local/bin/sshmng -> ~/go/bin/sshmng`），自更新会替换符号链接而非目标二进制。请以普通文件方式安装（`go install` / `sshmng install` 的默认行为）以避免此问题。
 
+自动更新的二进制**不**带 Gatekeeper 隔离属性（`com.apple.quarantine`）——`sshmng update` 后无需 `xattr -d`。隔离属性仅由 macOS LaunchServices 设置（浏览器 / Mail 下载触发）；`sshmng update` 走 Go 的 `net/http` 下载、`archive/tar` / `archive/zip` 解压，均不经过 LaunchServices。浏览器下载的 release 二进制首次运行前需要 `xattr -d com.apple.quarantine sshmng`（见 README 安装章节）。
+
 ## 发布流程（maintainers）
 
 ```bash

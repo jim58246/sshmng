@@ -35,6 +35,8 @@ git clone https://github.com/jim58246/sshmng.git
 cd sshmng && go build -o sshmng ./cmd/sshmng
 ```
 
+**macOS**: browser-downloaded binaries carry a Gatekeeper quarantine attribute — run `xattr -d com.apple.quarantine sshmng` before first use. `go install` / `go build` binaries don't need this (local compilation). Auto-updated binaries also don't need this (see [docs/auto-update.md](docs/auto-update.md)).
+
 After getting the binary, run `sshmng install` to create `~/.sshmng/` and inject into installed AI Agents (Claude Code / Hermes / OpenCode, etc.). See [Quick Start](#quick-start).
 
 ### Build from source

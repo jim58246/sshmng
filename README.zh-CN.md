@@ -35,6 +35,8 @@ git clone https://github.com/jim58246/sshmng.git
 cd sshmng && go build -o sshmng ./cmd/sshmng
 ```
 
+**macOS**：浏览器下载的二进制会带 Gatekeeper 隔离属性——首次运行前执行 `xattr -d com.apple.quarantine sshmng`。`go install` / `go build` 不需要此操作（本地编译）。自动更新的二进制也不需要（详见 [docs/zh-CN/auto-update.md](docs/zh-CN/auto-update.md)）。
+
 拿到二进制后执行 `sshmng install` 即可创建 `~/.sshmng/` 配置目录并注入到已安装的 AI Agent（Claude Code / Hermes / OpenCode 等），详见 [快速上手](#快速上手)。
 
 ### 从源码构建
