@@ -13,3 +13,6 @@ coverage.txt
 
 # Codegraph index (tool-generated)
 .codegraph/
+
+# Goreleaser build output
+/dist/
