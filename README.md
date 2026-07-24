@@ -203,7 +203,7 @@ git push origin v1.2.3
 
 ## 贡献
 
-欢迎开 [issue](https://github.com/jim58246/sshmng/issues) 反馈 bug 和 feature request。S
+欢迎开 [issue](https://github.com/jim58246/sshmng/issues) 反馈 bug 和 feature request。
 
 ## License
 
