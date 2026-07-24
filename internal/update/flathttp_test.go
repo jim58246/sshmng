@@ -18,6 +18,21 @@ func TestFlatHTTPSource_RejectsNonHTTPURL(t *testing.T) {
 	}
 }
 
+func TestFlatHTTPSource_RejectsEmbeddedCredentials(t *testing.T) {
+	_, err := newFlatHTTPSource("https://user:pass@example.com/sshmng")
+	if err == nil {
+		t.Fatal("expected error for URL with embedded credentials, got nil")
+	}
+	if !strings.Contains(err.Error(), "embedded credentials") {
+		t.Errorf("error message = %q, want substring 'embedded credentials'", err.Error())
+	}
+	// Credential leak guard: the raw user:pass pair must NOT appear in the
+	// error message.
+	if strings.Contains(err.Error(), "user:pass") {
+		t.Errorf("credential echo detected in error message: %q", err.Error())
+	}
+}
+
 func TestFlatHTTPSource_AcceptsHTTPS(t *testing.T) {
 	_, err := newFlatHTTPSource("https://updates.example.com/sshmng")
 	if err != nil {

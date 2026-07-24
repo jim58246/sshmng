@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,7 +30,14 @@ type flatHTTPSource struct {
 // ready to fetch latest.txt from baseURL.
 func newFlatHTTPSource(baseURL string) (*flatHTTPSource, error) {
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		return nil, fmt.Errorf("update_url must be http:// or https:// URL, got: %q", baseURL)
+		return nil, fmt.Errorf("update_url must be http:// or https:// URL (value redacted)")
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("update_url parse error (value redacted)")
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("update_url must not contain embedded credentials")
 	}
 	return &flatHTTPSource{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -102,13 +110,24 @@ func (s *flatHTTPSource) DownloadReleaseAsset(ctx context.Context, rel *selfupda
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("flathttp: download %s: %w", downloadURL, err)
+		return nil, fmt.Errorf("flathttp: download %s: %w", redactURL(downloadURL), err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("flathttp: download %s: HTTP %d", downloadURL, resp.StatusCode)
+		return nil, fmt.Errorf("flathttp: download %s: HTTP %d", redactURL(downloadURL), resp.StatusCode)
 	}
 	return resp.Body, nil
+}
+
+// redactURL strips credentials from a URL string for safe logging/error
+// messages. If parsing fails, returns a placeholder.
+func redactURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return "<invalid url>"
+	}
+	u.User = nil
+	return u.String()
 }
 
 // fetchLatest GETs baseURL/latest.txt and returns its trimmed body, capped at

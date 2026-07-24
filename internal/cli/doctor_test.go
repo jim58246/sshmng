@@ -167,6 +167,30 @@ func TestRunDoctor_UpdateURL_Invalid_Fails(t *testing.T) {
 	}
 }
 
+func TestRunDoctor_UpdateURL_EmbeddedCredentials_Fails(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(home, 0700)
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{
+		"version": "1",
+		"update_url": "https://user:pass@updates.example.com/sshmng"
+	}`), 0600)
+
+	var out bytes.Buffer
+	RunDoctor(DoctorOpts{Home: home}, &out)
+	output := out.String()
+	if !strings.Contains(output, "[FAIL]") {
+		t.Errorf("expected [FAIL] for embedded credentials:\n%s", output)
+	}
+	if !strings.Contains(output, "embedded credentials") {
+		t.Errorf("expected 'embedded credentials' in output:\n%s", output)
+	}
+	// Credential leak guard: the raw user:pass pair must NOT appear anywhere
+	// in the doctor output.
+	if strings.Contains(output, "user:pass") {
+		t.Errorf("credential echo detected in output:\n%s", output)
+	}
+}
+
 func TestRunDoctor_DevBuild_Warns(t *testing.T) {
 	orig := version.Version
 	version.Version = "dev"

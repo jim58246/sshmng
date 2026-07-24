@@ -98,8 +98,11 @@ func New(cfg Config) (*Updater, error) {
 func (u *Updater) LatestVersion(ctx context.Context) (string, error) {
 	entry, ok := readCache(u.cachePath)
 	if ok && isCacheFresh(entry, u.cacheTTL) {
+		u.log.Debug("cache fresh, skipping source call", "cached_version", entry.LatestVersion)
 		return entry.LatestVersion, nil
 	}
+
+	u.log.Debug("cache stale, querying source")
 
 	// Optimistic write: stamp "just checked" BEFORE the source call to
 	// narrow the concurrent-update conflict window to milliseconds. If the
@@ -140,6 +143,7 @@ func (u *Updater) UpdateToLatest(ctx context.Context) (latest string, applied bo
 	}
 
 	if !isNewer(latest, version.Version) {
+		u.log.Debug("already at latest", "current", version.Version, "latest", latest)
 		return latest, false, nil
 	}
 

@@ -75,6 +75,7 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 					logger.Warn("auto-update panic", "err", r)
 				}
 			}()
+			logger.Debug("auto-update goroutine started")
 			u, err := update.New(update.Config{
 				RepoOwner: version.RepoOwner,
 				RepoName:  version.RepoName,

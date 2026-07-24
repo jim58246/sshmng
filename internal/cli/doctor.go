@@ -120,7 +120,9 @@ func RunDoctor(opts DoctorOpts, out io.Writer) int {
 		} else {
 			u, parseErr := url.Parse(cfg.UpdateURL)
 			if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				print("FAIL", fmt.Sprintf("invalid update_url %q: must be http:// or https:// URL with host", cfg.UpdateURL))
+				print("FAIL", "invalid update_url: must be http:// or https:// URL with host (value redacted)")
+			} else if u.User != nil {
+				print("FAIL", "invalid update_url: embedded credentials are not allowed")
 			} else {
 				print("OK", fmt.Sprintf("update_url: %s", cfg.UpdateURL))
 			}
