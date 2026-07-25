@@ -21,8 +21,11 @@ sshmng 是一个**统一的 SSH 管理器**，覆盖**所有连接形态**——
 sshmng 是单二进制工具，无运行时依赖。任选一种方式获取：
 
 ```bash
-# 方式 0：一键安装脚本（macOS / Linux）—— 下载 release、放到 PATH
+# 方式 0：一键安装脚本 —— 下载 release、放到 PATH
+#   macOS / Linux：
 curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash
+#   Windows（PowerShell）：
+irm https://raw.githubusercontent.com/jim58246/sshmng/main/install.ps1 | iex
 
 # 方式一：下载 release 二进制（推荐，无需 Go 环境）
 #   从 https://github.com/jim58246/sshmng/releases 下载对应 OS/Arch 的二进制

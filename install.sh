@@ -11,9 +11,9 @@
 #   --install-dir <p>   Override install directory (default: /usr/local/bin if
 #                       writable, else ~/.local/bin)
 #
-# Windows is not supported by this script — download the .zip from
-# https://github.com/jim58246/sshmng/releases and extract manually, or follow
-# docs/agent-install-prompt.md to have your AI Agent do it.
+# Windows users: use install.ps1 instead —
+#   irm https://raw.githubusercontent.com/jim58246/sshmng/main/install.ps1 | iex
+# or follow docs/agent-install-prompt.md to have your AI Agent do it.
 
 set -euo pipefail
 

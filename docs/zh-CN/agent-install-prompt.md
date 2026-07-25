@@ -2,7 +2,11 @@
 
 把下面这块内容整段复制粘贴给你的 AI Agent（Claude Code / Cursor / Hermes Agent / OpenCode）。Agent 会自动装好 sshmng、把自己注入到 Agent 配置里、跑 doctor 验证——全程不用手动开 shell。
 
-> **Unix 快捷方式**：如果你在 macOS / Linux，只想先把二进制放到 `PATH` 上，可以（让 Agent）先跑 `curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash`，然后直接跳到第 5 步。
+> **快捷方式**：如果只想先把二进制放到 `PATH` 上，不想走下面的步骤：
+> - **macOS / Linux**：`curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash`
+> - **Windows（PowerShell）**：`irm https://raw.githubusercontent.com/jim58246/sshmng/main/install.ps1 | iex`
+>
+> 然后直接跳到第 5 步。
 
 ---
 

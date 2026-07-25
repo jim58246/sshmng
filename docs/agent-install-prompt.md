@@ -2,7 +2,11 @@
 
 Copy the block below and paste it into your AI Agent (Claude Code, Cursor, Hermes Agent, OpenCode). The Agent will install sshmng, inject itself into the Agent config, and verify the setup — no manual shell work needed.
 
-> **Unix shortcut**: if you're on macOS or Linux and just want the binary placed on `PATH`, you (or the Agent) can run `curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash` first, then skip to step 5.
+> **Quick shortcut**: if you just want the binary placed on `PATH` without going through the steps below:
+> - **macOS / Linux**: `curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash`
+> - **Windows (PowerShell)**: `irm https://raw.githubusercontent.com/jim58246/sshmng/main/install.ps1 | iex`
+>
+> Then skip to step 5.
 
 ---
 

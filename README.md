@@ -21,8 +21,11 @@ sshmng is a **unified SSH manager** covering **every connection shape** — dire
 sshmng is a single binary with no runtime dependencies. Pick one:
 
 ```bash
-# Option 0: one-click install (macOS / Linux) — downloads release, places on PATH
+# Option 0: one-click install — downloads release, places on PATH
+#   macOS / Linux:
 curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash
+#   Windows (PowerShell):
+irm https://raw.githubusercontent.com/jim58246/sshmng/main/install.ps1 | iex
 
 # Option 1: download release binary (recommended, no Go required)
 #   From https://github.com/jim58246/sshmng/releases, pick the binary for your OS/Arch
