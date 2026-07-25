@@ -2,22 +2,21 @@
 
 # sshmng
 
-SSH session manager exposed as an MCP (Model Context Protocol) server. Lets AI agents (Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor, etc.) manage SSH connections, run commands, and transfer files through a unified tool interface — with support for interactive bastions and LoginFlow decision trees.
+One SSH config, two interfaces: an MCP (Model Context Protocol) server for AI agents (Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor), and a `sshmng ssh` CLI for humans. Both interfaces manage connections, run commands, and transfer files over the same config — and crack the case most SSH tools choke on: **interactive bastions with TUI menus**, navigated by a `LoginFlow` decision tree that auto-recovers when the menu changes.
 
 > v1 stage: client runs standalone, stdio single-process, config stored locally. Design doc: [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md) (Chinese only — translations welcome).
 
 ## Features
 
-- **Config CRUD**: `list_*` / `get_*` / `update_*` tool families manage SSHServer / Jumphost / Proxy, with RFC 7396 JSON Merge Patch semantics
-- **Explicit session management**: `login` → `run_in_session` → `close_session` trio; consecutive commands share cwd/env
-- **Interactive bastion (Pattern B)**: `Jumphost.SSHJ=false` + `LoginFlow` decision tree, auto-navigates menu to log into the target
-- **LoginFlow decision tree**: send + expect tree structure, glob / `re:` regex dual mode; on failure returns trace for the Agent to diagnose → patch config → retry
-- **TOFU host key**: first connection records public key to `known_hosts`; changes are rejected ("host key changed, possible MITM")
+- **Interactive bastions that actually work**: most SSH tools give up on TUI-menu jump hosts. sshmng's `LoginFlow` decision tree (send + expect, glob or `re:` regex) drives the menu to log into the target — and when the menu text changes, the failure trace goes back to the Agent so it can patch the pattern and retry
+- **Self-healing config loop**: the Agent reads `error` / `login_trace`, calls `update_*` to patch the broken LoginFlow pattern, retries `login` — closes the diagnostic loop without human hand-holding
+- **One config, two interfaces**: MCP server for AI agents (Claude Code / Hermes / OpenCode / Claude Desktop / Cursor), `sshmng ssh` CLI for humans. Same `config.json`, same direct / Pattern A (`ssh -J`) / Pattern B (bastion) patterns — set up a server once, use it from either side
+- **Explicit session management**: `login` → `run_in_session` → `close_session` trio; consecutive commands share cwd / env / background jobs, unlike one-shot `ssh host cmd`
 - **sftp file transfer**: `upload` / `download` single files over a dedicated sftp channel, separate from the PTY command channel; graceful degradation when unavailable. `upload_dir` / `download_dir` recursively transfer directory trees, concurrent (default 4), conflict policy overwrite / skip / rename
-- **Command diagnostics**: `run_in_session` timeout auto Ctrl-C + drain, returns timed_out/ctrl_c_sent; `get_trace` retrieves command history (including raw_output, ctrl_c_sent)
-- **Self-healing config**: Agent diagnoses failures via `error` / `login_trace`, calls `update_*` to patch config, retries `login`
+- **Command diagnostics**: `run_in_session` timeout auto Ctrl-C + drain, returns `timed_out` / `ctrl_c_sent`; `get_trace` retrieves command history (including raw_output, ctrl_c_sent)
+- **TOFU host key**: first connection records the public key to `known_hosts`; changes are rejected ("host key changed, possible MITM")
+- **Config CRUD**: `list_*` / `get_*` / `update_*` tool families manage SSHServer / Jumphost / Proxy, with RFC 7396 JSON Merge Patch semantics
 - **First-time setup wizard**: `sshmng install` creates the config directory + template + injects into AI Agents; `sshmng doctor` verifies config correctness
-- **Shell-side CLI**: `sshmng ssh <name> [command]` for direct SSH login (interactive, or one-shot when a command is given); `sshmng server|jumphost|proxy list|get` for querying config from the shell — same direct / Pattern A / Pattern B patterns as the MCP tools, no Agent needed
 
 ## Install & Build
 
@@ -39,6 +38,8 @@ cd sshmng && go build -o sshmng ./cmd/sshmng
 **macOS**: browser-downloaded binaries carry a Gatekeeper quarantine attribute — run `xattr -d com.apple.quarantine sshmng` before first use. `go install` / `go build` binaries don't need this (local compilation). Auto-updated binaries also don't need this (see [docs/auto-update.md](docs/auto-update.md)).
 
 After getting the binary, run `sshmng install` to create `~/.sshmng/` and inject into installed AI Agents (Claude Code / Hermes / OpenCode, etc.). See [Quick Start](#quick-start).
+
+**Recommended**: before running `install`, move the binary to a stable location on your `PATH` (e.g. `mv sshmng /usr/local/bin/`, or rely on `~/go/bin/` if you used `go install`). `sshmng install` records the absolute binary path into Agent configs, and `sshmng doctor` verifies it matches the running executable — picking a stable location up front avoids re-running install after a later move.
 
 ### Build from source
 

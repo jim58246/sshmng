@@ -2,22 +2,21 @@
 
 # sshmng
 
-SSH 会话管理工具，以 MCP (Model Context Protocol) server 形式对外提供服务。让 AI Agent（Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor 等）通过统一的工具接口管理 SSH 连接、跑命令、传文件，并支持交互式堡垒机与 LoginFlow 决策树。
+一份 SSH 配置，两种用法：既能作为 MCP (Model Context Protocol) server 给 AI Agent（Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor）调用，也能用 `sshmng ssh` CLI 让人直接登。两套接口共享同一份配置——管理连接、跑命令、传文件——并搞定大多数 SSH 工具束手无策的场景：**带 TUI 菜单的交互式堡垒机**，由 `LoginFlow` 决策树自动导航，菜单文案变了也能自愈。
 
 > v1 阶段：客户端独立运行，stdio 单进程。配置文件本地存储。设计文档见 [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md)。
 
 ## 特性
 
-- **配置 CRUD**：`list_*` / `get_*` / `update_*` 三类工具管理 SSHServer / Jumphost / Proxy，RFC 7396 JSON Merge Patch 语义
-- **显式会话管理**：`login` → `run_in_session` → `close_session` 三件套，连续多命令共享 cwd/env
-- **交互式堡垒机（Pattern B）**：`Jumphost.SSHJ=false` + `LoginFlow` 决策树，自动导航菜单登录 target
-- **LoginFlow 决策树**：send + expect 树状结构，glob / `re:` 正则双模；失败返回 trace 供 Agent 诊断 + 修复配置 + 重试
-- **TOFU host key**：首次连接记录公钥到 `known_hosts`，变更拒绝（"host key changed, possible MITM"）
+- **真的能搞定交互式堡垒机**：大多数 SSH 工具遇到 TUI 菜单跳板就束手无策。sshmng 的 `LoginFlow` 决策树（send + expect，glob / `re:` 正则双模）自动驱动菜单登录 target——菜单文案变了，失败 trace 回传给 Agent，让它改 pattern 后重试
+- **配置自愈闭环**：Agent 据 `error` / `login_trace` 诊断失败后调 `update_*` 修配置再重试 `login`，无需人工介入即可闭环
+- **一份配置，两种用法**：MCP server 给 AI Agent（Claude Code / Hermes / OpenCode / Claude Desktop / Cursor）调用，`sshmng ssh` CLI 给人直接登。同一份 `config.json`，同样的直连 / Pattern A（`ssh -J`）/ Pattern B（堡垒机）模式——配一次，两边都能用
+- **显式会话管理**：`login` → `run_in_session` → `close_session` 三件套，连续多命令共享 cwd / env / 后台任务，不像一次性 `ssh host cmd` 那样每次都重新来
 - **sftp 文件传输**：`upload` / `download` 单文件走独立 sftp 通道，与 PTY 命令通道分离，不可用时优雅降级；`upload_dir` / `download_dir` 递归传输目录树，并发（默认 4），冲突策略 overwrite / skip / rename
-- **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 timed_out/ctrl_c_sent；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）
-- **配置自愈**：Agent 据 `error` / `login_trace` 诊断失败后可调 `update_*` 修配置再重试 `login`
+- **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 `timed_out` / `ctrl_c_sent`；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）供事后排查
+- **TOFU host key**：首次连接记录公钥到 `known_hosts`，变更拒绝（"host key changed, possible MITM"）
+- **配置 CRUD**：`list_*` / `get_*` / `update_*` 三类工具管理 SSHServer / Jumphost / Proxy，RFC 7396 JSON Merge Patch 语义
 - **首次上手辅助**：`sshmng install` 一键创建配置目录 + 模板 + 注入到 AI Agent；`sshmng doctor` 验证配置正确性
-- **Shell 端 CLI**：`sshmng ssh <name> [command]` 直接 SSH 登录（不带 command 交互式，带 command 非交互执行）；`sshmng server|jumphost|proxy list|get` 在 shell 中查询配置——与 MCP 工具同样的直连 / Pattern A / Pattern B 模式，无需 Agent
 
 ## 安装与构建
 
@@ -39,6 +38,8 @@ cd sshmng && go build -o sshmng ./cmd/sshmng
 **macOS**：浏览器下载的二进制会带 Gatekeeper 隔离属性——首次运行前执行 `xattr -d com.apple.quarantine sshmng`。`go install` / `go build` 不需要此操作（本地编译）。自动更新的二进制也不需要（详见 [docs/zh-CN/auto-update.md](docs/zh-CN/auto-update.md)）。
 
 拿到二进制后执行 `sshmng install` 即可创建 `~/.sshmng/` 配置目录并注入到已安装的 AI Agent（Claude Code / Hermes / OpenCode 等），详见 [快速上手](#快速上手)。
+
+**推荐**：跑 `install` 之前，先把二进制放到 `PATH` 下的稳定位置（例如 `mv sshmng /usr/local/bin/`，或用 `go install` 时直接放在 `~/go/bin/`）。`sshmng install` 会把二进制的绝对路径写进 Agent 配置，`sshmng doctor` 也会校验路径与当前可执行文件一致——一开始就放好，避免之后移动二进制还得重跑 install。
 
 ### 从源码构建
 
