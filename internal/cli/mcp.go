@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+
+	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/mcp"
@@ -20,7 +21,7 @@ import (
 
 // runMCP starts the stdio MCP server. Mirrors the pre-refactor main.go behavior.
 func runMCP(ctx context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("mcp", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	configPath := fs.String("config", "", "path to config.json (default: $SSHMNG_HOME/config.json or $HOME/.sshmng/config.json)")
 	if err := fs.Parse(args); err != nil {

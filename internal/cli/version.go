@@ -2,11 +2,12 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
 	"runtime"
+
+	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/update"
@@ -16,7 +17,7 @@ import (
 // runVersion prints the current sshmng version. With --check, also queries
 // the remote source for the latest version (cache-aware, read-only).
 func runVersion(ctx context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("version", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	check := fs.Bool("check", false, "check remote for latest version")
 	if err := fs.Parse(args); err != nil {

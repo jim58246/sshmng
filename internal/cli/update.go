@@ -2,10 +2,11 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
+
+	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/update"
@@ -16,7 +17,7 @@ import (
 // until done; writes progress to out. Unaffected by auto_update_enabled
 // (the manual command is always allowed, even when auto-update is off).
 func runUpdate(ctx context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("update", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	if err := fs.Parse(args); err != nil {
 		return 2

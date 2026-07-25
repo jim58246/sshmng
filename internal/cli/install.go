@@ -3,11 +3,12 @@ package cli
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/spf13/pflag"
 )
 
 // InstallOpts configures RunInstall.
@@ -219,7 +220,7 @@ func defaultHome() string {
 
 // runInstall is the Dispatch entry point for 'sshmng install'.
 func runInstall(ctx context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("install", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	home := fs.String("home", "", "sshmng config directory (default $SSHMNG_HOME or ~/.sshmng)")
 	binary := fs.String("binary", "", "sshmng binary path (default: auto-detect)")

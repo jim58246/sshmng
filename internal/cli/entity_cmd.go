@@ -1,10 +1,11 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
 )
@@ -51,13 +52,19 @@ func runProxyCmd(_ interface{}, args []string, out io.Writer) int {
 }
 
 func runEntityList(et entityType, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet(string(et)+" list", flag.ContinueOnError)
+	fs := pflag.NewFlagSet(string(et)+" list", pflag.ContinueOnError)
 	fs.SetOutput(out)
+	fs.Usage = func() {
+		fmt.Fprintf(out, "Usage: sshmng %s list [keywords...] [--config <path>]\n", et)
+		fmt.Fprintf(out, "  Multiple positional args are AND-matched against name/addr/tags.\n")
+		fs.PrintDefaults()
+	}
 	configPath := fs.String("config", "", "path to config.json")
-	query := fs.String("query", "", "filter by keywords (AND semantics, substring match on name/addr/tags)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+
+	query := strings.Join(fs.Args(), " ")
 
 	_, cfg, err := BootstrapConfig(*configPath)
 	if err != nil {
@@ -67,25 +74,28 @@ func runEntityList(et entityType, args []string, out io.Writer) int {
 
 	switch et {
 	case entityServer:
-		printServerList(cfg.ListSSHServers(*query), out)
+		printServerList(cfg.ListSSHServers(query), out)
 	case entityJumphost:
-		printJumphostList(cfg.ListJumphosts(*query), out)
+		printJumphostList(cfg.ListJumphosts(query), out)
 	case entityProxy:
-		printProxyList(cfg.ListProxies(*query), out)
+		printProxyList(cfg.ListProxies(query), out)
 	}
 	return 0
 }
 
 func runEntityGet(et entityType, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet(string(et)+" get", flag.ContinueOnError)
+	fs := pflag.NewFlagSet(string(et)+" get", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	configPath := fs.String("config", "", "path to config.json")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	if fs.NArg() == 0 {
+	if fs.NArg() != 1 {
 		fmt.Fprintf(out, "Usage: sshmng %s get <name>\n", et)
+		if fs.NArg() > 1 {
+			fmt.Fprintf(out, "Error: expected exactly one name, got %d (%v)\n", fs.NArg(), fs.Args())
+		}
 		return 2
 	}
 	name := fs.Arg(0)

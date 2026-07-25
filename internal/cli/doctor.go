@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net/url"
@@ -10,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/version"
@@ -211,7 +212,7 @@ func containsString(list []string, s string) bool {
 
 // runDoctor is the Dispatch entry point for 'sshmng doctor'.
 func runDoctor(ctx context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("doctor", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	agent := fs.String("agent", "", "check only specific Agent (claude-code / hermes / opencode)")
 	if err := fs.Parse(args); err != nil {

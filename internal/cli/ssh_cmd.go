@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,25 +9,41 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/spf13/pflag"
+
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
 	"github.com/jim58246/sshmng/internal/ssh/pty"
 )
 
 // runSSHCmd is the Dispatch entry point for 'sshmng ssh'.
+//
+// Positional args: <name> [command].
+//   - 1 arg: interactive login (Relay)
+//   - 2 args: non-interactive — execute command, print output, exit
+//
+// Matches OpenSSH `ssh destination [command]` convention. Commands starting
+// with `-` require `--` terminator (POSIX): `sshmng ssh server -- -l`.
 func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("ssh", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("ssh", pflag.ContinueOnError)
 	fs.SetOutput(out)
 	configPath := fs.String("config", "", "path to config.json")
-	command := fs.String("command", "", "command to execute non-interactively")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() == 0 {
-		fmt.Fprintln(out, "Usage: sshmng ssh <name> [--command CMD]")
+
+	if fs.NArg() == 0 || fs.NArg() > 2 {
+		fmt.Fprintln(out, "Usage: sshmng ssh <name> [command]")
+		if fs.NArg() > 2 {
+			fmt.Fprintf(out, "Error: expected 1 or 2 positional args, got %d (%v)\n", fs.NArg(), fs.Args())
+		}
 		return 2
 	}
 	name := fs.Arg(0)
+	var command string
+	if fs.NArg() == 2 {
+		command = fs.Arg(1)
+	}
 
 	_, cfg, err := BootstrapConfig(*configPath)
 	if err != nil {
@@ -49,14 +64,14 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 
 	sid, _ := conn.RandomSID()
 
-	ptyConn, err := setupSSH(srv, dialer, sid, logger, *command != "")
+	ptyConn, err := setupSSH(srv, dialer, sid, logger, command != "")
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
 	}
 
-	if *command != "" {
-		return runNonInteractive(ptyConn, *command, out)
+	if command != "" {
+		return runNonInteractive(ptyConn, command, out)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

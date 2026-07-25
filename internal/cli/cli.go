@@ -63,7 +63,7 @@ Usage:
   sshmng server <list|get> [...]  List or view SSH servers
   sshmng jumphost <list|get> [...]  List or view jumphosts
   sshmng proxy <list|get> [...]   List or view proxies
-  sshmng ssh <name> [--command CMD]  Interactive SSH login
+  sshmng ssh <name> [command]   Interactive SSH login; with command, non-interactive
   sshmng help | -h | --help       Print this help
 
 Subcommands:
@@ -80,9 +80,9 @@ Subcommands:
   server    List and view SSH server configurations.
   jumphost  List and view jumphost configurations.
   proxy     List and view proxy configurations.
-  ssh       Connect to an SSH server by name. Supports direct, Pattern A
-            (ssh -J), and Pattern B (interactive bastion) connections.
-            With --command, executes a single command non-interactively.
+  ssh       Connect to an SSH server by name. Optional second positional arg
+            is a command to execute non-interactively (OpenSSH convention).
+            Supports direct, Pattern A (ssh -J), and Pattern B (bastion).
 
 Run 'sshmng <subcommand> -h' for subcommand-specific flags.
 `
