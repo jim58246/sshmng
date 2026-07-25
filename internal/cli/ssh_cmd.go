@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/pflag"
@@ -51,7 +54,7 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 		return 1
 	}
 
-	srv, err := cfg.GetSSHServer(name)
+	srv, err := resolveSSHServer(cfg, name, command == "")
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
@@ -238,4 +241,66 @@ func runNonInteractive(ptyConn *pty.PtyConn, cmd string, out io.Writer) int {
 		return exitCode
 	}
 	return 0
+}
+
+// resolveSSHServer finds an SSH server by exact name, falling back to fuzzy
+// substring match on name/addr/tags.
+//   - Exact match: returns immediately (no surprise for existing users).
+//   - 1 fuzzy match: returns it; prints "matched: <name>" to stderr so the
+//     user sees what was resolved (avoid silently landing on the wrong host).
+//   - >1 fuzzy matches: if allowPrompt, prints numbered list to stderr and
+//     reads selection from stdin; otherwise returns error listing candidates.
+//   - 0 matches: returns error.
+//
+// allowPrompt is false in non-interactive mode (command provided) to avoid
+// blocking on stdin in scripts.
+func resolveSSHServer(cfg *config.Config, name string, allowPrompt bool) (*config.SSHServer, error) {
+	if srv, err := cfg.GetSSHServer(name); err == nil {
+		return srv, nil
+	}
+
+	matches := cfg.ListSSHServers(name)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no server matches %q", name)
+	case 1:
+		fmt.Fprintf(os.Stderr, "matched: %s\n", matches[0].Name)
+		return matches[0], nil
+	default:
+		if !allowPrompt {
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.Name
+			}
+			return nil, fmt.Errorf("multiple servers match %q: %s; specify exact name", name, strings.Join(names, ", "))
+		}
+		return promptServerChoice(matches)
+	}
+}
+
+// promptServerChoice prints a numbered list of servers to stderr and reads
+// a 1-based selection from stdin. Returns error on EOF, non-numeric input,
+// or out-of-range selection.
+func promptServerChoice(matches []*config.SSHServer) (*config.SSHServer, error) {
+	fmt.Fprintln(os.Stderr, "Multiple servers match:")
+	for i, m := range matches {
+		tags := strings.Join(m.Tags, ",")
+		fmt.Fprintf(os.Stderr, "  [%d] %-20s %-25s %s\n", i+1, m.Name, m.Addr, tags)
+	}
+	fmt.Fprintf(os.Stderr, "Select [1-%d]: ", len(matches))
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("read selection: %w", err)
+		}
+		return nil, fmt.Errorf("no selection (EOF)")
+	}
+	input := strings.TrimSpace(scanner.Text())
+
+	n, err := strconv.Atoi(input)
+	if err != nil || n < 1 || n > len(matches) {
+		return nil, fmt.Errorf("invalid selection %q (expected 1-%d)", input, len(matches))
+	}
+	return matches[n-1], nil
 }
