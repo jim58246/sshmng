@@ -32,7 +32,7 @@ func runUpdate(ctx context.Context, args []string, out io.Writer) int {
 
 	fmt.Fprintf(out, "Current version: %s\n", version.Version)
 
-	path, err := resolveConfigPath("")
+	path, err := ResolveConfigPath("")
 	if err != nil {
 		fmt.Fprintf(out, "[FAIL] resolve config path: %v\n", err)
 		return 1

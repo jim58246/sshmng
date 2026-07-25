@@ -14,7 +14,7 @@ import (
 )
 
 func TestResolveConfigPathExplicit(t *testing.T) {
-	got, err := resolveConfigPath("/custom/path.json")
+	got, err := ResolveConfigPath("/custom/path.json")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestResolveConfigPathExplicit(t *testing.T) {
 func TestResolveConfigPathSSHMNGHome(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SSHMNG_HOME", dir)
-	got, err := resolveConfigPath("")
+	got, err := ResolveConfigPath("")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestResolveConfigPathDefaultHome(t *testing.T) {
 	t.Setenv("SSHMNG_HOME", "")
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
-	got, err := resolveConfigPath("")
+	got, err := ResolveConfigPath("")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

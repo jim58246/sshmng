@@ -190,7 +190,7 @@ func expectedHome(entry MCPEntry) string {
 func argsEqual(got any, want []string) bool {
 	arr, ok := got.([]any)
 	if !ok {
-		return want == nil || len(want) == 0
+		return len(want) == 0
 	}
 	if len(arr) != len(want) {
 		return false

@@ -162,12 +162,22 @@ func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions, logger *sl
 //
 // 调用者负责在失败时 Close。
 func OpenPtyConn(client *ssh.Client, sid string, logger *slog.Logger) (*PtyConn, error) {
+	return openPtyConnSize(client, sid, logger, 0, 0)
+}
+
+func openPtyConnSize(client *ssh.Client, sid string, logger *slog.Logger, rows, cols int) (*PtyConn, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
+	}
+	if rows <= 0 {
+		rows = 100
+	}
+	if cols <= 0 {
+		cols = 120
 	}
 	// ECHO=0：所有 stdin 写入都是 sshmng 主动发起（LoginFlow Send / run_in_session
 	// cmd / send_input text），不需要 tty driver 回显。若 ECHO=1，detectShell 发送的
@@ -185,7 +195,7 @@ func OpenPtyConn(client *ssh.Client, sid string, logger *slog.Logger) (*PtyConn,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	if err := session.RequestPty("xterm", 100, 120, modes); err != nil {
+	if err := session.RequestPty("xterm", rows, cols, modes); err != nil {
 		session.Close()
 		return nil, fmt.Errorf("request pty: %w", err)
 	}
@@ -237,7 +247,7 @@ const openPtyHardTimeout = 15 * time.Second
 // 超时后 client 被关闭，调用方不能再使用；返回的 *PtyConn 为 nil。
 //
 // timeout=0 时使用 openPtyHardTimeout 默认值。
-func OpenPtyConnWithTimeout(client *ssh.Client, sid string, logger *slog.Logger, timeout time.Duration) (*PtyConn, error) {
+func OpenPtyConnWithTimeout(client *ssh.Client, sid string, logger *slog.Logger, timeout time.Duration, rowsCols ...int) (*PtyConn, error) {
 	if timeout <= 0 {
 		timeout = openPtyHardTimeout
 	}
@@ -246,8 +256,12 @@ func OpenPtyConnWithTimeout(client *ssh.Client, sid string, logger *slog.Logger,
 		err error
 	}
 	ch := make(chan result, 1)
+	var rows, cols int
+	if len(rowsCols) >= 2 {
+		rows, cols = rowsCols[0], rowsCols[1]
+	}
 	go func() {
-		p, err := OpenPtyConn(client, sid, logger)
+		p, err := openPtyConnSize(client, sid, logger, rows, cols)
 		ch <- result{p, err}
 	}()
 	select {

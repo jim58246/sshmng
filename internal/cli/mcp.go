@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -30,7 +29,7 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 
 	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	path, err := resolveConfigPath(*configPath)
+	path, err := ResolveConfigPath(*configPath)
 	if err != nil {
 		bootstrapLogger.Error("resolve config path", "err", err)
 		return 1
@@ -102,21 +101,6 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 		return 1
 	}
 	return 0
-}
-
-// resolveConfigPath resolves --config / $SSHMNG_HOME / $HOME/.sshmng/config.json.
-func resolveConfigPath(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if home := os.Getenv("SSHMNG_HOME"); home != "" {
-		return filepath.Join(home, "config.json"), nil
-	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(userHome, ".sshmng", "config.json"), nil
 }
 
 // openLogWriter opens the log writer based on logPath.

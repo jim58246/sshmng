@@ -32,7 +32,7 @@ func runVersion(ctx context.Context, args []string, out io.Writer) int {
 	}
 
 	// Load config to get UpdateURL + config dir (for cache path)
-	path, err := resolveConfigPath("")
+	path, err := ResolveConfigPath("")
 	if err != nil {
 		fmt.Fprintf(out, "[WARN] cannot resolve config path: %v\n", err)
 		return 0

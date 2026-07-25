@@ -1,6 +1,7 @@
 // Package cli implements sshmng's subcommand dispatch and handlers.
 //
-// Subcommands: mcp (MCP server), install (first-time setup), doctor (verify).
+// Subcommands: mcp (MCP server), install (first-time setup), doctor (verify),
+// server/jumphost/proxy (config CRUD), ssh (interactive login).
 // No-arg prints help and exits 0. Unknown commands exit 2 with a hint.
 package cli
 
@@ -28,6 +29,14 @@ func Dispatch(ctx context.Context, args []string, out io.Writer) int {
 		return runUpdate(ctx, args[1:], out)
 	case "version":
 		return runVersion(ctx, args[1:], out)
+	case "server":
+		return runServerCmd(nil, args[1:], out)
+	case "jumphost":
+		return runJumphostCmd(nil, args[1:], out)
+	case "proxy":
+		return runProxyCmd(nil, args[1:], out)
+	case "ssh":
+		return runSSHCmd(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		printHelp(out)
 		return 0
@@ -51,6 +60,10 @@ Usage:
   sshmng doctor [...]             Verify setup
   sshmng update                   Manually update sshmng to the latest release
   sshmng version [--check]        Print version; --check compares with latest release
+  sshmng server <list|get> [...]  List or view SSH servers
+  sshmng jumphost <list|get> [...]  List or view jumphosts
+  sshmng proxy <list|get> [...]   List or view proxies
+  sshmng ssh <name> [--command CMD]  Interactive SSH login
   sshmng help | -h | --help       Print this help
 
 Subcommands:
@@ -64,6 +77,12 @@ Subcommands:
             self-hosted HTTP server if update_url is configured.
   version   Print the current version, commit, and build date. With --check,
             also query the remote source for the latest version.
+  server    List and view SSH server configurations.
+  jumphost  List and view jumphost configurations.
+  proxy     List and view proxy configurations.
+  ssh       Connect to an SSH server by name. Supports direct, Pattern A
+            (ssh -J), and Pattern B (interactive bastion) connections.
+            With --command, executes a single command non-interactively.
 
 Run 'sshmng <subcommand> -h' for subcommand-specific flags.
 `
