@@ -2,13 +2,11 @@
 
 # sshmng
 
-One SSH config, two interfaces: an MCP (Model Context Protocol) server for AI agents (Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor), and a `sshmng ssh` CLI for humans. Both interfaces manage connections, run commands, and transfer files over the same config — and crack the case most SSH tools choke on: **interactive bastions with TUI menus**, navigated by a `LoginFlow` decision tree that auto-recovers when the menu changes.
-
-> v1 stage: client runs standalone, stdio single-process, config stored locally. Design doc: [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md) (Chinese only — translations welcome).
+sshmng is a **unified SSH manager** covering every connection shape — direct, `ssh -J` transparent jumps, interactive bastions, transport proxies — in one zero-dep binary that auto-updates. It runs as an **MCP server for AI agents** (Claude Code / Hermes / etc.) and a `sshmng ssh` CLI for humans, both backed by the **same config**. When something breaks, the Agent reads the failure trace, patches the config, and retries — **closed-loop self-healing**, no human in the middle.
 
 ## Features
 
-- **Interactive bastions that actually work**: most SSH tools give up on TUI-menu jump hosts. sshmng's `LoginFlow` decision tree (send + expect, glob or `re:` regex) drives the menu to log into the target — and when the menu text changes, the failure trace goes back to the Agent so it can patch the pattern and retry
+- **Interactive bastions that actually work**: most SSH tools give up on menu-driven bastions. sshmng's `LoginFlow` decision tree (send + expect, glob or `re:` regex) drives the menu to log into the target — and when the menu text changes, the failure trace goes back to the Agent so it can patch the pattern and retry
 - **Self-healing config loop**: the Agent reads `error` / `login_trace`, calls `update_*` to patch the broken LoginFlow pattern, retries `login` — closes the diagnostic loop without human hand-holding
 - **One-command setup wizard**: `sshmng install` creates the config directory + template, auto-detects installed AI Agents (Claude Code / Hermes / OpenCode) and injects itself into their configs with timestamped backups; `sshmng doctor` verifies everything is wired up
 - **One config, two interfaces**: MCP server for AI agents (Claude Code / Hermes / OpenCode / Claude Desktop / Cursor), `sshmng ssh` CLI for humans. Same `config.json`, same direct / Pattern A (`ssh -J`) / Pattern B (bastion) patterns — set up a server once, use it from either side
@@ -154,6 +152,10 @@ For test coverage and development details, see [docs/development.md](docs/develo
 - [Architecture & development](docs/development.md) — package structure, key designs, subcommand dispatch, test coverage (Chinese only — translations welcome)
 - [Design doc](docs/ssh-session-manager-design.md) — full design spec (PTY sentinel, LoginFlow, session state machine, etc.) (Chinese only — translations welcome)
 - [Implementation plan](docs/implementation-plan.md) — v1 implementation progress (Chinese only — translations welcome)
+
+## Status
+
+v1 stage: client runs standalone, stdio single-process, config stored locally. Design doc: [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md) (Chinese only — translations welcome).
 
 ## Contributing
 

@@ -2,13 +2,11 @@
 
 # sshmng
 
-一份 SSH 配置，两种用法：既能作为 MCP (Model Context Protocol) server 给 AI Agent（Claude Code / Claude Desktop / Hermes Agent / OpenCode / Cursor）调用，也能用 `sshmng ssh` CLI 让人直接登。两套接口共享同一份配置——管理连接、跑命令、传文件——并搞定大多数 SSH 工具束手无策的场景：**带 TUI 菜单的交互式堡垒机**，由 `LoginFlow` 决策树自动导航，菜单文案变了也能自愈。
-
-> v1 阶段：客户端独立运行，stdio 单进程。配置文件本地存储。设计文档见 [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md)。
+sshmng 是一个**统一的 SSH 管理器**，覆盖所有连接形态——直连、`ssh -J` 透明转发、交互式堡垒机、传输代理——全在一个零依赖二进制里，自动升级。它既能作为 **MCP server 给 AI Agent**（Claude Code / Hermes / 等）调用，也有 `sshmng ssh` CLI 给人直接用，两者**共享同一份配置**。出错时 Agent 读失败 trace、改配置、重试——**闭环自愈**，无需人工介入。
 
 ## 特性
 
-- **真的能搞定交互式堡垒机**：大多数 SSH 工具遇到 TUI 菜单跳板就束手无策。sshmng 的 `LoginFlow` 决策树（send + expect，glob / `re:` 正则双模）自动驱动菜单登录 target——菜单文案变了，失败 trace 回传给 Agent，让它改 pattern 后重试
+- **真的能搞定交互式堡垒机**：大多数 SSH 工具遇到菜单式堡垒机就束手无策。sshmng 的 `LoginFlow` 决策树（send + expect，glob / `re:` 正则双模）自动驱动菜单登录 target——菜单文案变了，失败 trace 回传给 Agent，让它改 pattern 后重试
 - **配置自愈闭环**：Agent 据 `error` / `login_trace` 诊断失败后调 `update_*` 修配置再重试 `login`，无需人工介入即可闭环
 - **一键安装向导**：`sshmng install` 创建配置目录 + 模板，自动检测已装的 AI Agent（Claude Code / Hermes / OpenCode）并把 sshmng 注入到它们的配置里（带时间戳备份）；`sshmng doctor` 验证一切就绪
 - **一份配置，两种用法**：MCP server 给 AI Agent（Claude Code / Hermes / OpenCode / Claude Desktop / Cursor）调用，`sshmng ssh` CLI 给人直接登。同一份 `config.json`，同样的直连 / Pattern A（`ssh -J`）/ Pattern B（堡垒机）模式——配一次，两边都能用
@@ -154,6 +152,10 @@ go test -race ./...
 - [架构与开发](docs/development.md) — 包结构、关键设计、子命令分发、测试覆盖
 - [设计文档](docs/ssh-session-manager-design.md) — 完整设计规范（PTY sentinel、LoginFlow、session 状态机等）
 - [实施计划](docs/implementation-plan.md) — v1 实施进度
+
+## 状态
+
+v1 阶段：客户端独立运行，stdio 单进程，配置本地存储。设计文档见 [`docs/ssh-session-manager-design.md`](docs/ssh-session-manager-design.md)。
 
 ## 贡献
 
