@@ -2,7 +2,7 @@
 
 # sshmng
 
-sshmng 是一个**统一的 SSH 管理器**，覆盖所有连接形态——直连、`ssh -J` 透明转发、交互式堡垒机、传输代理——全在一个零依赖二进制里，自动升级。它既能作为 **MCP server 给 AI Agent**（Claude Code / Hermes / 等）调用，也有 `sshmng ssh` CLI 给人直接用，两者**共享同一份配置**。出错时 Agent 读失败 trace、改配置、重试——**闭环自愈**，无需人工介入。
+sshmng 是一个**统一的 SSH 管理器**，覆盖**所有连接形态**——直连、`ssh -J` 透明转发、交互式堡垒机、传输代理——全在一个**零依赖**二进制里，支持**自动升级**。它既能作为 **MCP server 给 AI Agent**（Claude Code / Hermes / 等）调用，也有 `sshmng ssh` CLI 给人直接用，两者**共享同一份配置**。出错时 Agent 读失败 trace、改配置、重试——**闭环自愈**，**无需人工介入**。
 
 ## 特性
 

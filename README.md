@@ -2,7 +2,7 @@
 
 # sshmng
 
-sshmng is a **unified SSH manager** covering every connection shape — direct, `ssh -J` transparent jumps, interactive bastions, transport proxies — in one zero-dep binary that auto-updates. It runs as an **MCP server for AI agents** (Claude Code / Hermes / etc.) and a `sshmng ssh` CLI for humans, both backed by the **same config**. When something breaks, the Agent reads the failure trace, patches the config, and retries — **closed-loop self-healing**, no human in the middle.
+sshmng is a **unified SSH manager** covering **every connection shape** — direct, `ssh -J` transparent jumps, interactive bastions, transport proxies — in one **zero-dep** binary that supports **auto-update**. It runs as an **MCP server for AI agents** (Claude Code / Hermes / etc.) and a `sshmng ssh` CLI for humans, both backed by the **same config**. When something breaks, the Agent reads the failure trace, patches the config, and retries — **closed-loop self-healing**, **no human in the middle**.
 
 ## Features
 
