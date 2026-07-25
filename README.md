@@ -10,19 +10,22 @@ One SSH config, two interfaces: an MCP (Model Context Protocol) server for AI ag
 
 - **Interactive bastions that actually work**: most SSH tools give up on TUI-menu jump hosts. sshmng's `LoginFlow` decision tree (send + expect, glob or `re:` regex) drives the menu to log into the target — and when the menu text changes, the failure trace goes back to the Agent so it can patch the pattern and retry
 - **Self-healing config loop**: the Agent reads `error` / `login_trace`, calls `update_*` to patch the broken LoginFlow pattern, retries `login` — closes the diagnostic loop without human hand-holding
+- **One-command setup wizard**: `sshmng install` creates the config directory + template, auto-detects installed AI Agents (Claude Code / Hermes / OpenCode) and injects itself into their configs with timestamped backups; `sshmng doctor` verifies everything is wired up
 - **One config, two interfaces**: MCP server for AI agents (Claude Code / Hermes / OpenCode / Claude Desktop / Cursor), `sshmng ssh` CLI for humans. Same `config.json`, same direct / Pattern A (`ssh -J`) / Pattern B (bastion) patterns — set up a server once, use it from either side
 - **Explicit session management**: `login` → `run_in_session` → `close_session` trio; consecutive commands share cwd / env / background jobs, unlike one-shot `ssh host cmd`
 - **sftp file transfer**: `upload` / `download` single files over a dedicated sftp channel, separate from the PTY command channel; graceful degradation when unavailable. `upload_dir` / `download_dir` recursively transfer directory trees, concurrent (default 4), conflict policy overwrite / skip / rename
 - **Command diagnostics**: `run_in_session` timeout auto Ctrl-C + drain, returns `timed_out` / `ctrl_c_sent`; `get_trace` retrieves command history (including raw_output, ctrl_c_sent)
 - **TOFU host key**: first connection records the public key to `known_hosts`; changes are rejected ("host key changed, possible MITM")
 - **Config CRUD**: `list_*` / `get_*` / `update_*` tool families manage SSHServer / Jumphost / Proxy, with RFC 7396 JSON Merge Patch semantics
-- **First-time setup wizard**: `sshmng install` creates the config directory + template + injects into AI Agents; `sshmng doctor` verifies config correctness
 
 ## Install & Build
 
 sshmng is a single binary with no runtime dependencies. Pick one:
 
 ```bash
+# Option 0: one-click install (macOS / Linux) — downloads release, places on PATH
+curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash
+
 # Option 1: download release binary (recommended, no Go required)
 #   From https://github.com/jim58246/sshmng/releases, pick the binary for your OS/Arch
 chmod +x sshmng
@@ -34,6 +37,8 @@ go install github.com/jim58246/sshmng/cmd/sshmng@latest
 git clone https://github.com/jim58246/sshmng.git
 cd sshmng && go build -o sshmng ./cmd/sshmng
 ```
+
+**Or let your AI Agent install it for you**: copy the prompt in [`docs/agent-install-prompt.md`](docs/agent-install-prompt.md) and paste it into Claude Code / Cursor / Hermes / OpenCode — the Agent will download the binary, place it on `PATH`, and run `sshmng install` for you.
 
 **macOS**: browser-downloaded binaries carry a Gatekeeper quarantine attribute — run `xattr -d com.apple.quarantine sshmng` before first use. `go install` / `go build` binaries don't need this (local compilation). Auto-updated binaries also don't need this (see [docs/auto-update.md](docs/auto-update.md)).
 
@@ -144,6 +149,7 @@ For test coverage and development details, see [docs/development.md](docs/develo
 
 - [Configuration reference](docs/configuration.md) — full config.json field reference, Pattern A/B shape constraints, examples
 - [Agent integration guide](docs/agents.md) — Claude Code / Hermes Agent / OpenCode / Claude Desktop detailed config, MCP Inspector debugging, first-time setup flow, typical call flow
+- [Agent install prompt](docs/agent-install-prompt.md) — copy-paste prompt to have your AI Agent install sshmng end-to-end
 - [Auto-update](docs/auto-update.md) — self-hosted HTTP source layout, macOS notes, release flow
 - [Architecture & development](docs/development.md) — package structure, key designs, subcommand dispatch, test coverage (Chinese only — translations welcome)
 - [Design doc](docs/ssh-session-manager-design.md) — full design spec (PTY sentinel, LoginFlow, session state machine, etc.) (Chinese only — translations welcome)

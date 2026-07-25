@@ -10,19 +10,22 @@
 
 - **真的能搞定交互式堡垒机**：大多数 SSH 工具遇到 TUI 菜单跳板就束手无策。sshmng 的 `LoginFlow` 决策树（send + expect，glob / `re:` 正则双模）自动驱动菜单登录 target——菜单文案变了，失败 trace 回传给 Agent，让它改 pattern 后重试
 - **配置自愈闭环**：Agent 据 `error` / `login_trace` 诊断失败后调 `update_*` 修配置再重试 `login`，无需人工介入即可闭环
+- **一键安装向导**：`sshmng install` 创建配置目录 + 模板，自动检测已装的 AI Agent（Claude Code / Hermes / OpenCode）并把 sshmng 注入到它们的配置里（带时间戳备份）；`sshmng doctor` 验证一切就绪
 - **一份配置，两种用法**：MCP server 给 AI Agent（Claude Code / Hermes / OpenCode / Claude Desktop / Cursor）调用，`sshmng ssh` CLI 给人直接登。同一份 `config.json`，同样的直连 / Pattern A（`ssh -J`）/ Pattern B（堡垒机）模式——配一次，两边都能用
 - **显式会话管理**：`login` → `run_in_session` → `close_session` 三件套，连续多命令共享 cwd / env / 后台任务，不像一次性 `ssh host cmd` 那样每次都重新来
 - **sftp 文件传输**：`upload` / `download` 单文件走独立 sftp 通道，与 PTY 命令通道分离，不可用时优雅降级；`upload_dir` / `download_dir` 递归传输目录树，并发（默认 4），冲突策略 overwrite / skip / rename
 - **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 `timed_out` / `ctrl_c_sent`；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）供事后排查
 - **TOFU host key**：首次连接记录公钥到 `known_hosts`，变更拒绝（"host key changed, possible MITM"）
 - **配置 CRUD**：`list_*` / `get_*` / `update_*` 三类工具管理 SSHServer / Jumphost / Proxy，RFC 7396 JSON Merge Patch 语义
-- **首次上手辅助**：`sshmng install` 一键创建配置目录 + 模板 + 注入到 AI Agent；`sshmng doctor` 验证配置正确性
 
 ## 安装与构建
 
 sshmng 是单二进制工具，无运行时依赖。任选一种方式获取：
 
 ```bash
+# 方式 0：一键安装脚本（macOS / Linux）—— 下载 release、放到 PATH
+curl -fsSL https://raw.githubusercontent.com/jim58246/sshmng/main/install.sh | bash
+
 # 方式一：下载 release 二进制（推荐，无需 Go 环境）
 #   从 https://github.com/jim58246/sshmng/releases 下载对应 OS/Arch 的二进制
 chmod +x sshmng
@@ -34,6 +37,8 @@ go install github.com/jim58246/sshmng/cmd/sshmng@latest
 git clone https://github.com/jim58246/sshmng.git
 cd sshmng && go build -o sshmng ./cmd/sshmng
 ```
+
+**或者让 AI Agent 帮你装**：把 [`docs/zh-CN/agent-install-prompt.md`](docs/zh-CN/agent-install-prompt.md) 里的 prompt 复制粘贴给 Claude Code / Cursor / Hermes / OpenCode——Agent 会自动下载二进制、放到 `PATH`、跑 `sshmng install`。
 
 **macOS**：浏览器下载的二进制会带 Gatekeeper 隔离属性——首次运行前执行 `xattr -d com.apple.quarantine sshmng`。`go install` / `go build` 不需要此操作（本地编译）。自动更新的二进制也不需要（详见 [docs/zh-CN/auto-update.md](docs/zh-CN/auto-update.md)）。
 
@@ -144,6 +149,7 @@ go test -race ./...
 
 - [配置参考](docs/zh-CN/configuration.md) — 完整 config.json 字段参考、Pattern A/B 形态约束、示例
 - [Agent 集成指南](docs/zh-CN/agents.md) — Claude Code / Hermes Agent / OpenCode / Claude Desktop 详细配置、MCP Inspector 调试、首次配置流程、典型调用流程
+- [Agent 安装 prompt](docs/zh-CN/agent-install-prompt.md) — 复制粘贴给 AI Agent，让它端到端帮你装 sshmng
 - [自动更新](docs/zh-CN/auto-update.md) — 自建 HTTP 源布局、macOS 注意、发布流程
 - [架构与开发](docs/development.md) — 包结构、关键设计、子命令分发、测试覆盖
 - [设计文档](docs/ssh-session-manager-design.md) — 完整设计规范（PTY sentinel、LoginFlow、session 状态机等）
