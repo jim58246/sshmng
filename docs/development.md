@@ -6,7 +6,7 @@
 
 ```
 sshmng/
-├── cmd/sshmng/         # 入口（子命令分发：mcp/install/doctor/help）
+├── cmd/sshmng/         # 入口（子命令分发：mcp/install/doctor/update/version/server/jumphost/proxy/ssh/help）
 ├── internal/
 │   ├── cli/            # CLI 子命令处理（dispatch + install + doctor + Agent 注入器 + 文件脚手架）
 │   ├── config/         # 数据模型 + 加载/保存/校验/CRUD（Jumphost/Proxy/SSHServer）
@@ -37,6 +37,10 @@ sshmng/
 - `sshmng mcp` — 启动 MCP server（stdio），Agent 配置应使用此子命令
 - `sshmng install` — 首次安装向导（创建 `~/.sshmng/`、注入 Agent 配置、跑 doctor）
 - `sshmng doctor` — 验证配置正确性（三态退出码 0/1/2）
+- `sshmng update` — 手动检查并升级到最新 release（不受 `auto_update_enabled` 影响）
+- `sshmng version [--check]` — 打印版本 / commit / date；`--check` 对比远端最新版本
+- `sshmng server|jumphost|proxy <list|get>` — 在 shell 中查询配置（MCP `list_*` / `get_*` 的 CLI 等价物）
+- `sshmng ssh <name> [command]` — 交互式登录；带 command 时非交互执行（OpenSSH 约定）。支持直连 / Pattern A / Pattern B
 - `sshmng help` / `-h` / `--help` / 无参数 — 打印帮助
 
 ### Agent 注入器

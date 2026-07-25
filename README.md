@@ -17,6 +17,7 @@ SSH session manager exposed as an MCP (Model Context Protocol) server. Lets AI a
 - **Command diagnostics**: `run_in_session` timeout auto Ctrl-C + drain, returns timed_out/ctrl_c_sent; `get_trace` retrieves command history (including raw_output, ctrl_c_sent)
 - **Self-healing config**: Agent diagnoses failures via `error` / `login_trace`, calls `update_*` to patch config, retries `login`
 - **First-time setup wizard**: `sshmng install` creates the config directory + template + injects into AI Agents; `sshmng doctor` verifies config correctness
+- **Shell-side CLI**: `sshmng ssh <name> [command]` for direct SSH login (interactive, or one-shot when a command is given); `sshmng server|jumphost|proxy list|get` for querying config from the shell — same direct / Pattern A / Pattern B patterns as the MCP tools, no Agent needed
 
 ## Install & Build
 
@@ -63,6 +64,11 @@ Run:
 ./sshmng update                           # Self-update to latest release
 ./sshmng mcp --config /path/to/config.json  # MCP server with custom config
 SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
+./sshmng server list [keywords...]        # List SSH servers (AND match on name/addr/tags)
+./sshmng server get <name>                # Show SSH server details (full auth)
+./sshmng jumphost list|get ...            # Same for jumphosts
+./sshmng proxy list|get ...               # Same for proxies
+./sshmng ssh <name> [command]             # Interactive SSH login; with command, non-interactive
 ```
 
 ## Quick Start

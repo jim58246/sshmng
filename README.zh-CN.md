@@ -17,6 +17,7 @@ SSH 会话管理工具，以 MCP (Model Context Protocol) server 形式对外提
 - **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 timed_out/ctrl_c_sent；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）
 - **配置自愈**：Agent 据 `error` / `login_trace` 诊断失败后可调 `update_*` 修配置再重试 `login`
 - **首次上手辅助**：`sshmng install` 一键创建配置目录 + 模板 + 注入到 AI Agent；`sshmng doctor` 验证配置正确性
+- **Shell 端 CLI**：`sshmng ssh <name> [command]` 直接 SSH 登录（不带 command 交互式，带 command 非交互执行）；`sshmng server|jumphost|proxy list|get` 在 shell 中查询配置——与 MCP 工具同样的直连 / Pattern A / Pattern B 模式，无需 Agent
 
 ## 安装与构建
 
@@ -63,6 +64,11 @@ go build -ldflags="-X github.com/jim58246/sshmng/internal/version.Version=v1.2.3
 ./sshmng update                           # Self-update to latest release
 ./sshmng mcp --config /path/to/config.json  # MCP server with custom config
 SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
+./sshmng server list [keywords...]        # List SSH servers (AND match on name/addr/tags)
+./sshmng server get <name>                # Show SSH server details (full auth)
+./sshmng jumphost list|get ...            # Same for jumphosts
+./sshmng proxy list|get ...               # Same for proxies
+./sshmng ssh <name> [command]             # Interactive SSH login; with command, non-interactive
 ```
 
 ## 快速上手

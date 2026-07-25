@@ -1,5 +1,5 @@
 // Command sshmng is the SSH session manager CLI.
-// Subcommands: mcp (MCP server), install (first-time setup), doctor (verify).
+// Subcommands: mcp, install, doctor, update, version, server, jumphost, proxy, ssh.
 // Run 'sshmng help' for usage.
 package main
 
