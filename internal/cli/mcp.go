@@ -50,7 +50,7 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 
 	level, _ := config.ParseLogLevel(cfg.LogLevel)
 
-	writer, writerCleanup, err := openLogWriter(cfg.LogPath)
+	writer, writerCleanup, err := mcp.OpenLogFile(cfg.LogPath)
 	if err != nil {
 		bootstrapLogger.Error("open log writer", "log_path", cfg.LogPath, "err", err)
 		return 1
@@ -102,18 +102,4 @@ func runMCP(ctx context.Context, args []string, out io.Writer) int {
 		return 1
 	}
 	return 0
-}
-
-// openLogWriter opens the log writer based on logPath.
-//   - empty: io.Discard (no logs)
-//   - non-empty: RotatingWriter writing to <logPath>/sshmng.log
-func openLogWriter(logPath string) (io.Writer, func() error, error) {
-	if logPath == "" {
-		return io.Discard, func() error { return nil }, nil
-	}
-	rw, err := mcp.NewRotatingWriter(logPath, 10*1024*1024, 4)
-	if err != nil {
-		return nil, nil, err
-	}
-	return rw, func() error { return rw.Close() }, nil
 }
