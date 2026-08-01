@@ -74,7 +74,9 @@ Subcommands:
   doctor    Verify setup is correct: files, permissions, Agent config entries.
   update    Check for a newer release and apply it. Manual; unaffected by
             auto_update_enabled. Uses GitHub Releases by default, or a
-            self-hosted HTTP server if update_url is configured.
+            self-hosted HTTP server if update_url is configured. Hit the
+            GitHub rate limit? Download the asset with your browser and
+            run 'sshmng update --file <path>' (accepts .tar.gz / .tar / dir).
   version   Print the current version, commit, and build date. With --check,
             also query the remote source for the latest version.
   server    List and view SSH server configurations.
