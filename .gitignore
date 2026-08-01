@@ -28,6 +28,9 @@ desktop.ini
 .env.local
 *.local
 
+# Local-only planning docs (not for git)
+*.local.md
+
 # Tool-generated indexes
 .codegraph/
 .superpowers/
