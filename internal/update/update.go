@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/creativeprojects/go-selfupdate"
+	goupdate "github.com/creativeprojects/go-selfupdate/update"
 	"github.com/jim58246/sshmng/internal/version"
 )
 
@@ -165,4 +167,71 @@ func (u *Updater) UpdateToLatest(ctx context.Context) (latest string, applied bo
 // staging.
 func (u *Updater) cleanupStaleStaging() error {
 	return nil
+}
+
+// UpdateFromFile 用用户本地下载的 release asset 升级，绕过 GitHub API 限流。
+//
+// 用户用浏览器（带 GitHub 登录 session）下载 asset，比 unauthenticated API
+// 稳得多。assetPath 支持三种输入（适配 Safari 自动解压行为，降低用户心智负担）：
+//   - .tar.gz：goreleaser 原始产出
+//   - .tar：Safari 把 .tar.gz 剥掉 gzip 层后的产物
+//   - 目录：Safari 进一步解压后的目录树（内含 sshmng 二进制）
+//
+// 不做 checksum 校验——用户自己下载的文件，信任源就是用户自己；Safari 解压后
+// hash 也对不上，强校验反而阻碍使用。平台校验仍做（文件名解析 goos/goarch，
+// 目录输入跳过此检查）。
+//
+// 不检查版本新旧——用户显式指定文件，即使"降级"也执行（如回滚到旧版）。
+// dev 构建也允许（用户可能用本地构建的 release 包升级 dev 实例）。
+//
+// 返回从文件名解析出的版本 tag（目录输入返回空字符串）。
+func (u *Updater) UpdateFromFile(ctx context.Context, assetPath string) (string, error) {
+	cmdPath, err := selfupdate.ExecutablePath()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	return u.updateFromFileWithTarget(ctx, assetPath, cmdPath)
+}
+
+// updateFromFileWithTarget 是 UpdateFromFile 的可测试核心：接受显式 targetPath，
+// 测试时指向临时文件而非真实二进制，避免修改测试二进制。
+func (u *Updater) updateFromFileWithTarget(ctx context.Context, assetPath, targetPath string) (string, error) {
+	if assetPath == "" {
+		return "", fmt.Errorf("asset file path is required")
+	}
+	if _, err := os.Stat(assetPath); err != nil {
+		return "", fmt.Errorf("asset: %w", err)
+	}
+
+	if err := validateAssetPlatform(assetPath); err != nil {
+		return "", err
+	}
+
+	binaryReader, err := findBinaryReader(assetPath)
+	if err != nil {
+		return "", err
+	}
+	defer binaryReader.Close()
+
+	tag := assetVersionFromName(assetPath)
+	u.log.Info("applying update from local file", "asset", assetPath, "version", tag, "target", targetPath)
+
+	if err := goupdate.Apply(binaryReader, goupdate.Options{TargetPath: targetPath}); err != nil {
+		return tag, wrapUpdateApplyError(err, targetPath)
+	}
+	return tag, nil
+}
+
+// wrapUpdateApplyError 在 update.Apply 失败时包装友好提示。
+// 权限错误（二进制路径不可写）是常见场景：用户装在 /usr/local/bin 等系统目录
+// 时，update.Apply 的 rename 会失败。检测 permission denied 并提示检查安装位置。
+func wrapUpdateApplyError(err error, cmdPath string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "permission denied") || strings.Contains(msg, "operation not permitted") {
+		return fmt.Errorf("apply update: %w (hint: %s is not writable by current user; check install location permissions, or reinstall to a user-writable path like ~/.local/bin)", err, cmdPath)
+	}
+	return fmt.Errorf("apply update: %w", err)
 }

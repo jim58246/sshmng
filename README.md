@@ -135,7 +135,7 @@ For manual config fallback and per-Agent integration steps, see [docs/agents.md]
 
 ## Auto-update
 
-sshmng silently checks for updates in a background goroutine on `mcp` startup (writes `log_path` log only, never stdout). Disable via `{"auto_update_enabled": false}`. Manual update: `sshmng update`. Version check: `sshmng version --check`. Custom source: set `update_url` (see [docs/auto-update.md](docs/auto-update.md) for self-hosted source layout, macOS notes, and release flow).
+sshmng silently checks for updates in a background goroutine on `mcp` startup (writes `log_path` log only, never stdout). Disable via `{"auto_update_enabled": false}`. Manual update: `sshmng update`. Rate-limited by GitHub? Download the asset with your browser and run `sshmng update --file <path>` (bypasses the API quota; accepts `.tar.gz`, `.tar`, or an extracted directory). Version check: `sshmng version --check`. Custom source: set `update_url` (see [docs/auto-update.md](docs/auto-update.md) for self-hosted source layout, macOS notes, `--file` mode, and release flow).
 
 ## Testing & Development
 

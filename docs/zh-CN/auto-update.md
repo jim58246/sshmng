@@ -26,6 +26,26 @@ sshmng update
 sshmng version --check
 ```
 
+## 用本地文件升级（绕过 GitHub API 限流）
+
+sshmng 自动升级走 GitHub unauthenticated API，所有进程共享 60 req/hour 配额。撞限流时，用浏览器手动下载 release 资产（你的 GitHub 登录 session 不占 API 配额），然后本地应用：
+
+```bash
+sshmng update --file ~/Downloads/sshmng-v0.1.4-darwin-arm64.tar.gz
+```
+
+`--file` 接受三种输入形式（无需跟 Safari 自动解压作斗争）：
+
+- `.tar.gz`：goreleaser 原始归档，直接传。
+- `.tar`：Safari 自动剥掉 `.gz` 层后的产物，传 `.tar` 文件即可。
+- **目录**：如果 Safari 把归档解压成了文件夹，传文件夹路径。sshmng 会在目录里找 `sshmng` 二进制。
+
+不做 checksum 校验——文件是你自己下载的，信任源就是你自己。平台仍会从文件名校验（目录输入跳过此检查）。
+
+`--file` 模式不检查版本新旧——你给什么就应用什么，允许降级（可用于回滚）。dev 构建也允许（可以用 release 包升级 dev 二进制）。
+
+如果升级报权限错误，说明二进制装在系统目录（如 `/usr/local/bin`）。请重装到用户可写路径（`~/.local/bin` 或 `~/go/bin`）。
+
 默认从 GitHub Releases 拉取。若需走自建 HTTP 源（内部镜像 / 离线环境），设置 `update_url`：
 
 ```json
@@ -58,7 +78,7 @@ sshmng version --check
 
 若通过符号链接调用 sshmng（如 `~/.local/bin/sshmng -> ~/go/bin/sshmng`），自更新会替换符号链接而非目标二进制。请以普通文件方式安装（`go install` / `sshmng install` 的默认行为）以避免此问题。
 
-自动更新的二进制**不**带 Gatekeeper 隔离属性（`com.apple.quarantine`）——`sshmng update` 后无需 `xattr -d`。隔离属性仅由 macOS LaunchServices 设置（浏览器 / Mail 下载触发）；`sshmng update` 走 Go 的 `net/http` 下载、`archive/tar` / `archive/zip` 解压，均不经过 LaunchServices。浏览器下载的 release 二进制首次运行前需要 `xattr -d com.apple.quarantine sshmng`（见 README 安装章节）。
+自动更新的二进制**不**带 Gatekeeper 隔离属性（`com.apple.quarantine`）——`sshmng update` 后无需 `xattr -d`。隔离属性仅由 macOS LaunchServices 设置（浏览器 / Mail 下载触发）；`sshmng update` 走 Go 的 `net/http` 下载、`archive/tar` / `archive/zip` 解压，均不经过 LaunchServices。浏览器下载的 release 二进制首次运行前需要 `xattr -d com.apple.quarantine sshmng`（见 README 安装章节）。`sshmng update --file` 同样绕过 LaunchServices（直接读本地文件，通过 Go 的文件 API 应用二进制），所以 `--file` 升级后二进制无需 `xattr -d`。Safari 可能已经替你解压了归档——把 `.tar` 文件或解压后的目录传给 `--file` 即可。
 
 ## 发布流程（maintainers）
 

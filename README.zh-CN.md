@@ -135,7 +135,7 @@ go build -o sshmng ./cmd/sshmng
 
 ## 自动更新
 
-sshmng 在 `mcp` 启动时后台 goroutine 静默检查更新（仅写 `log_path` 日志，不输出 stdout）。关闭：`{"auto_update_enabled": false}`。手动更新：`sshmng update`。版本对比：`sshmng version --check`。自定义源：设置 `update_url`（自建源布局、macOS 注意、发布流程见 [docs/zh-CN/auto-update.md](docs/zh-CN/auto-update.md)）。
+sshmng 在 `mcp` 启动时后台 goroutine 静默检查更新（仅写 `log_path` 日志，不输出 stdout）。关闭：`{"auto_update_enabled": false}`。手动更新：`sshmng update`。撞 GitHub 限流了？用浏览器下载资产后执行 `sshmng update --file <path>`（绕过 API 配额；接受 `.tar.gz`、`.tar` 或解压后的目录）。版本对比：`sshmng version --check`。自定义源：设置 `update_url`（自建源布局、macOS 注意、`--file` 模式、发布流程见 [docs/zh-CN/auto-update.md](docs/zh-CN/auto-update.md)）。
 
 ## 测试与开发
 

@@ -26,6 +26,26 @@ Check current version against the latest:
 sshmng version --check
 ```
 
+## Update from a local file (bypass GitHub API rate limit)
+
+sshmng's auto-update hits GitHub's unauthenticated API, shared across all processes at 60 req/hour. When you hit the rate limit, download the release asset manually with your browser (your GitHub login session doesn't count against the API quota) and apply it locally:
+
+```bash
+sshmng update --file ~/Downloads/sshmng-v0.1.4-darwin-arm64.tar.gz
+```
+
+`--file` accepts three input forms (so you don't have to fight Safari's auto-extraction):
+
+- `.tar.gz` — the original goreleaser archive. Just pass it as-is.
+- `.tar` — Safari strips the `.gz` layer automatically; pass the resulting `.tar` file.
+- **a directory** — if Safari extracted the archive into a folder, pass the folder path. sshmng walks it to find the `sshmng` binary.
+
+No checksum verification is performed — you downloaded the file yourself, so you are the trust source. Platform is still validated from the filename (directory input skips this check).
+
+`--file` mode does not check version freshness — it applies whatever you give it, even a downgrade (useful for rollback). Dev builds are allowed (you can use a release archive to upgrade a `dev` binary).
+
+If the update fails with a permission error, your binary is installed in a system-owned location (e.g., `/usr/local/bin`). Reinstall to a user-writable path (`~/.local/bin` or `~/go/bin`).
+
 By default, sshmng pulls from GitHub Releases. To use a self-hosted HTTP source (internal mirror / offline environment), set `update_url`:
 
 ```json
@@ -58,7 +78,7 @@ To release a new version: run `goreleaser release --clean`, copy `dist/sshmng-*`
 
 If you invoke sshmng via a symlink (e.g. `~/.local/bin/sshmng -> ~/go/bin/sshmng`), self-update will replace the symlink, not the target binary. Install as a regular file (`go install` / `sshmng install` default behavior) to avoid this.
 
-Auto-updated binaries do **not** carry the Gatekeeper quarantine attribute (`com.apple.quarantine`) — no `xattr -d` needed after `sshmng update`. The quarantine attribute is only set by macOS LaunchServices (invoked by browser/Mail downloads); `sshmng update` downloads via Go's `net/http` and extracts via Go's `archive/tar` / `archive/zip`, neither of which touches LaunchServices. Browser-downloaded release binaries do need `xattr -d com.apple.quarantine sshmng` before first run (see README install section).
+Auto-updated binaries do **not** carry the Gatekeeper quarantine attribute (`com.apple.quarantine`) — no `xattr -d` needed after `sshmng update`. The quarantine attribute is only set by macOS LaunchServices (invoked by browser/Mail downloads); `sshmng update` downloads via Go's `net/http` and extracts via Go's `archive/tar` / `archive/zip`, neither of which touches LaunchServices. Browser-downloaded release binaries do need `xattr -d com.apple.quarantine sshmng` before first run (see README install section). `sshmng update --file` also bypasses LaunchServices (it reads the local file directly and applies the binary via Go's file APIs), so no `xattr -d` is needed on the binary after a `--file` update. Safari may have already extracted the archive for you — just pass the `.tar` file or the extracted directory to `--file`.
 
 ## Release flow (maintainers)
 

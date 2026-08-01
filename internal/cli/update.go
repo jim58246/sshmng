@@ -16,11 +16,20 @@ import (
 // runUpdate manually checks for a newer version and applies it. Blocks
 // until done; writes progress to out. Unaffected by auto_update_enabled
 // (the manual command is always allowed, even when auto-update is off).
+//
+// --file <path>: 用本地下载的 release asset 升级，绕过 GitHub API 限流。
+// 支持 .tar.gz / .tar / 目录三种输入（适配 Safari 自动解压行为）。
+// 不检查版本新旧（允许降级/回滚），也允许 dev 构建。
 func runUpdate(ctx context.Context, args []string, out io.Writer) int {
 	fs := pflag.NewFlagSet("update", pflag.ContinueOnError)
 	fs.SetOutput(out)
+	filePath := fs.String("file", "", "path to a locally downloaded release asset (.tar.gz/.tar) or extracted directory; bypasses GitHub API rate limit")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	if *filePath != "" {
+		return runUpdateFromFile(ctx, *filePath, out)
 	}
 
 	fmt.Fprintln(out, "sshmng update - checking for updates")
@@ -73,6 +82,47 @@ func runUpdate(ctx context.Context, args []string, out io.Writer) int {
 	fmt.Fprintln(out, "Updating ... done")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Update applied: %s -> %s\n", version.Version, latest)
+	fmt.Fprintln(out, "Restart your Agent (Claude Desktop / Code / Cursor) to use the new version.")
+	return 0
+}
+
+// runUpdateFromFile 执行 --file 模式升级。dev 构建也允许（用户显式指定文件）。
+func runUpdateFromFile(ctx context.Context, assetPath string, out io.Writer) int {
+	fmt.Fprintln(out, "sshmng update --file")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Asset: %s\n", assetPath)
+	fmt.Fprintln(out)
+
+	path, err := ResolveConfigPath("")
+	if err != nil {
+		fmt.Fprintf(out, "[FAIL] resolve config path: %v\n", err)
+		return 1
+	}
+	u, err := update.New(update.Config{
+		RepoOwner: version.RepoOwner,
+		RepoName:  version.RepoName,
+		CachePath: filepath.Join(filepath.Dir(path), "update_cache.json"),
+	})
+	if err != nil {
+		fmt.Fprintf(out, "[FAIL] %v\n", err)
+		return 1
+	}
+
+	appliedVersion, err := u.UpdateFromFile(ctx, assetPath)
+	if err != nil {
+		fmt.Fprintf(out, "[FAIL] %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(out, "Updating ... done")
+	fmt.Fprintln(out)
+	if appliedVersion == "" {
+		fmt.Fprintln(out, "Update applied (version unknown — asset was a directory)")
+	} else if version.Version == "dev" {
+		fmt.Fprintf(out, "Update applied: dev -> %s\n", appliedVersion)
+	} else {
+		fmt.Fprintf(out, "Update applied: %s -> %s\n", version.Version, appliedVersion)
+	}
 	fmt.Fprintln(out, "Restart your Agent (Claude Desktop / Code / Cursor) to use the new version.")
 	return 0
 }
