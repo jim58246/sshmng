@@ -63,8 +63,14 @@ func TestFanWriterIsolatesDeadDest(t *testing.T) {
 	wg.Add(1)
 	go func() { defer wg.Done(); io.Copy(&got2, pr2) }()
 
-	fw.Write([]byte("abc"))   // dest1 读到 "abc" 后关闭
-	fw.Write([]byte("def"))   // dest1 dead，只写 dest2
+	n, err := fw.Write([]byte("abc")) // dest1 读到 "abc" 后关闭
+	if err != nil || n != 3 {
+		t.Errorf("Write 1 = (%d, %v), want (3, nil)", n, err)
+	}
+	n, err = fw.Write([]byte("def")) // dest1 dead，只写 dest2
+	if err != nil || n != 3 {
+		t.Errorf("Write 2 = (%d, %v), want (3, nil)", n, err)
+	}
 	pw1.Close()
 	pw2.Close()
 	wg.Wait()
