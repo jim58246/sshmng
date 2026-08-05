@@ -113,6 +113,23 @@ func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int,
 	return len(n), false, err
 }
 
+// UploadSized 模拟有尺寸上传：读至多 size 字节存入 uploadedBytes。
+// fakeConn 不区分 pipelining 路径，行为与 Upload 一致但以 size 截断。
+func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, timeoutMs int) (int, bool, error) {
+	if !f.sftpEnabled {
+		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.uploadBlock != nil {
+		<-f.uploadBlock
+	}
+	if f.uploadDelay > 0 {
+		time.Sleep(f.uploadDelay)
+	}
+	n, err := io.ReadAll(io.LimitReader(src, size))
+	f.uploadedBytes = append(f.uploadedBytes, n...)
+	return len(n), false, err
+}
+
 // Download 把 downloadData 写入 dst，支持 downloadBlock 阻塞与 uploadDelay 慢传输模拟。
 func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
@@ -852,5 +869,30 @@ func TestSessionStatBusy(t *testing.T) {
 
 	if _, err := s.Stat("/x"); err == nil || !strings.Contains(err.Error(), "busy") {
 		t.Errorf("Stat err = %v, want 'session busy'", err)
+	}
+}
+
+// --- Task 2: Session.UploadSized 转发 ---
+
+// TestSessionUploadSizedForwards: Session.UploadSized 转发字节数与内容正确。
+func TestSessionUploadSizedForwards(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	content := []byte("hello sized world")
+	n, _, err := s.UploadSized(bytes.NewReader(content), int64(len(content)), "/r.txt", 0)
+	if err != nil {
+		t.Fatalf("UploadSized: %v", err)
+	}
+	if n != len(content) {
+		t.Errorf("bytes = %d, want %d", n, len(content))
+	}
+	if !bytes.Equal(conn.uploadedBytes, content) {
+		t.Errorf("uploaded bytes mismatch: got %q, want %q", conn.uploadedBytes, content)
+	}
+	if s.State() != StateIdle {
+		t.Errorf("after UploadSized, state = %v, want Idle", s.State())
 	}
 }
