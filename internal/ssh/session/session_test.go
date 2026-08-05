@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -100,6 +101,8 @@ func (f *fakeConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, s
 func (f *fakeConn) SftpAvailable() bool { return f.sftpEnabled }
 
 // Upload 把 src 读到的字节存入 uploadedBytes，支持 uploadBlock 阻塞与 uploadDelay 慢传输模拟。
+// uploadDelay > timeoutMs > 0 时模拟超时：sleep timeoutMs 后返回 timed_out=true +
+// context.DeadlineExceeded（与 PtyConn.Upload 的真实超时返回形状一致）。
 func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
@@ -111,6 +114,10 @@ func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int,
 		<-f.uploadBlock
 	}
 	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
 		time.Sleep(f.uploadDelay)
 	}
 	n, err := io.ReadAll(src)
@@ -120,6 +127,7 @@ func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int,
 
 // UploadSized 模拟有尺寸上传：读至多 size 字节存入 uploadedBytes。
 // fakeConn 不区分 pipelining 路径，行为与 Upload 一致但以 size 截断。
+// 超时模拟同 Upload。
 func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
@@ -131,6 +139,10 @@ func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, tim
 		<-f.uploadBlock
 	}
 	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
 		time.Sleep(f.uploadDelay)
 	}
 	n, err := io.ReadAll(io.LimitReader(src, size))
@@ -139,6 +151,7 @@ func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, tim
 }
 
 // Download 把 downloadData 写入 dst，支持 downloadBlock 阻塞与 uploadDelay 慢传输模拟。
+// uploadDelay > timeoutMs > 0 时模拟超时（同 Upload）。
 func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
@@ -150,6 +163,10 @@ func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (in
 		<-f.downloadBlock
 	}
 	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
 		time.Sleep(f.uploadDelay)
 	}
 	n, err := dst.Write(f.downloadData)

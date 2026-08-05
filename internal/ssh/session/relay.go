@@ -119,6 +119,21 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 		return RelayResult{}, errors.New("no relay destinations")
 	}
 
+	// M-2: 预检源 sftp 通道。源 sftp 不可用则整个传输必然失败（所有目标都拿不到数据），
+	// 与"源非普通文件"同构：返回 (res, nil)，res.Err = conn.ErrSftpUnavailable，
+	// 每个目标记 per-dest 错误——避免无谓 spawn N+1 个立即失败的 goroutine。
+	if !srcSess.SftpAvailable() {
+		dests := make([]RelayDest, len(dstSids))
+		for i, sid := range dstSids {
+			dests[i] = RelayDest{DstSid: sid, Err: errors.New("source sftp unavailable")}
+		}
+		return RelayResult{
+			SrcServer:    srcSess.ServerName(),
+			Destinations: dests,
+			Err:          conn.ErrSftpUnavailable,
+		}, nil
+	}
+
 	dests := make([]RelayDest, len(dstSids))
 
 	type liveEntry struct {
@@ -235,6 +250,15 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 		TimedOut:        dlTimedOut,
 		SrcServer:       srcSess.ServerName(),
 		Destinations:    dests,
+	}
+	// I-1: 顶层 timed_out = 下载超时 || 任一上传超时。
+	// dests[i].TimedOut 只反映该目标；顶层需汇总，否则上传侧超时（慢目标磁盘）时
+	// 顶层 timed_out=false 而 destinations[i].timed_out=true，与文档"download or any
+	// destination timed out"不符，误导调用方。
+	for i := range dests {
+		if dests[i].TimedOut {
+			res.TimedOut = true
+		}
 	}
 	allOK := dlErr == nil && !dlTimedOut
 	for i := range dests {

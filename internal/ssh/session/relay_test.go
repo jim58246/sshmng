@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
 // TestFanWriterBroadcastsToAll: 数据块并发分发到所有存活目标，全部收到完整内容。
@@ -275,5 +278,176 @@ func TestRelayTransferStatFallback(t *testing.T) {
 	}
 	if !bytes.Equal(h.dst[0].conn.uploadedBytes, data) {
 		t.Errorf("content mismatch after stat fallback")
+	}
+}
+
+// setSftpAvail 直接改 session 的缓存 sftpAvail 字段（同包测试可访问）。
+// SftpAvailable() 读的是 s.sftpAvail（创建时从 conn.SftpAvailable() 快照），
+// 故创建后改 conn.sftpEnabled 不影响 pre-flight；需直接改缓存值。调用前无 goroutine 运行。
+func setSftpAvail(t *testing.T, sess *Session, avail bool) {
+	t.Helper()
+	sess.mu.Lock()
+	sess.sftpAvail = avail
+	sess.mu.Unlock()
+}
+
+// TestRelayTransferDownloadTimeout: 下载侧超时 → res.TimedOut=true、res.Err!=nil、ok=false。
+// fakeConn.Download 在 uploadDelay > timeoutMs 时模拟真实超时返回 (0, true, ctx.Err)。
+func TestRelayTransferDownloadTimeout(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), 500)
+	h := newRelayHarness(t, 1, data)
+	// 源下载慢：delay 200ms > timeoutMs 50ms → 触发下载侧超时
+	h.srcConn.uploadDelay = 200 * time.Millisecond
+	dstSid := h.dst[0].sid
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", []string{dstSid}, "/dst.bin", 50)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if !res.TimedOut {
+		t.Errorf("res.TimedOut = false, want true (download timed out)")
+	}
+	if res.Err == nil {
+		t.Errorf("res.Err = nil, want timeout error")
+	}
+	if res.DownloadedBytes != 0 {
+		t.Errorf("downloaded_bytes = %d, want 0 (timed out before write)", res.DownloadedBytes)
+	}
+	if res.Destinations[0].OK {
+		t.Errorf("dest ok = true, want false (download timed out)")
+	}
+}
+
+// TestRelayTransferUploadTimeoutTopLevel: 一个目标上传超时（其余成功）→ 顶层 timed_out=true。
+// 这是 I-1 的回归测试：顶层 timed_out 必须 OR 入 dests[i].TimedOut，不能只看下载侧。
+// 下载侧不超时（srcConn 无 delay）；仅 dst1 上传超时。
+func TestRelayTransferUploadTimeoutTopLevel(t *testing.T) {
+	data := bytes.Repeat([]byte("u"), 500)
+	h := newRelayHarness(t, 3, data)
+	// dst1 上传慢：delay 200ms > timeoutMs 50ms → 上传侧超时；其余目标正常
+	h.dst[1].conn.uploadDelay = 200 * time.Millisecond
+	sids := []string{h.dst[0].sid, h.dst[1].sid, h.dst[2].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 50)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	// I-1 核心：顶层 timed_out 必须为 true（上传侧超时 OR 入顶层）
+	if !res.TimedOut {
+		t.Errorf("res.TimedOut = false, want true (one dest upload timed out — I-1 regression)")
+	}
+	// 超时目标自身
+	if !res.Destinations[1].TimedOut {
+		t.Errorf("dest1 timed_out = false, want true")
+	}
+	if res.Destinations[1].OK {
+		t.Errorf("dest1 ok = true, want false (timed out)")
+	}
+	// 其余目标仍成功
+	if !res.Destinations[0].OK {
+		t.Errorf("dest0 ok = false, want true; err=%v", res.Destinations[0].Err)
+	}
+	if !res.Destinations[2].OK {
+		t.Errorf("dest2 ok = false, want true; err=%v", res.Destinations[2].Err)
+	}
+	if res.Err == nil {
+		t.Errorf("res.Err = nil, want failure (one dest timed out)")
+	}
+}
+
+// TestRelayTransferDestSftpUnavailable: 一个目标 sftp 未启用 → 该目标 pre-flight 失败、
+// 其余目标仍成功、整体 ok=false。
+func TestRelayTransferDestSftpUnavailable(t *testing.T) {
+	data := bytes.Repeat([]byte("s"), 500)
+	h := newRelayHarness(t, 3, data)
+	// dst1 sftp 不可用：改 session 缓存的 sftpAvail（创建后改 conn 字段无效）
+	ds1, _ := h.mgr.Get(h.dst[1].sid)
+	setSftpAvail(t, ds1, false)
+	sids := []string{h.dst[0].sid, h.dst[1].sid, h.dst[2].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if res.Destinations[1].OK {
+		t.Errorf("dest1 ok = true, want false (sftp unavailable)")
+	}
+	if res.Destinations[1].Err == nil || !strings.Contains(res.Destinations[1].Err.Error(), "sftp") {
+		t.Errorf("dest1 err = %v, want sftp-unavailable error", res.Destinations[1].Err)
+	}
+	if !res.Destinations[0].OK {
+		t.Errorf("dest0 ok = false, want true; err=%v", res.Destinations[0].Err)
+	}
+	if !res.Destinations[2].OK {
+		t.Errorf("dest2 ok = false, want true; err=%v", res.Destinations[2].Err)
+	}
+	if res.Err == nil {
+		t.Errorf("res.Err = nil, want failure (one dest sftp-unavailable)")
+	}
+}
+
+// TestRelayTransferSourceNotRegular: 源是目录（非普通文件）→ res.Err!=nil、无传输、ok=false。
+func TestRelayTransferSourceNotRegular(t *testing.T) {
+	data := []byte("dir-data")
+	h := newRelayHarness(t, 2, data)
+	// 源 stat 返回目录（IsRegular()=false）
+	h.srcConn.statFi = fakeFileInfo{size: 0, mode: os.ModeDir | 0755}
+	sids := []string{h.dst[0].sid, h.dst[1].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "regular") {
+		t.Errorf("res.Err = %v, want 'source not a regular file'", res.Err)
+	}
+	for i, d := range res.Destinations {
+		if d.OK {
+			t.Errorf("dest %d ok = true, want false", i)
+		}
+		if d.Bytes != 0 {
+			t.Errorf("dest %d bytes = %d, want 0 (no transfer)", i, d.Bytes)
+		}
+	}
+	for i, d := range h.dst {
+		if len(d.conn.uploadedBytes) != 0 {
+			t.Errorf("dest %d uploaded %d bytes, want 0 (no transfer spawned)", i, len(d.conn.uploadedBytes))
+		}
+	}
+}
+
+// TestRelayTransferSourceSftpUnavailable: 源 sftp 不可用 → M-2 pre-flight 直接返回，
+// res.Err=ErrSftpUnavailable、每个目标记 per-dest 错误、不 spawn 任何传输 goroutine。
+func TestRelayTransferSourceSftpUnavailable(t *testing.T) {
+	data := []byte("x")
+	h := newRelayHarness(t, 2, data)
+	// 源 sftp 不可用：改 session 缓存的 sftpAvail
+	srcSess, _ := h.mgr.Get(h.srcSid)
+	setSftpAvail(t, srcSess, false)
+	sids := []string{h.dst[0].sid, h.dst[1].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if !errors.Is(res.Err, conn.ErrSftpUnavailable) {
+		t.Errorf("res.Err = %v, want conn.ErrSftpUnavailable", res.Err)
+	}
+	if len(res.Destinations) != 2 {
+		t.Fatalf("destinations len = %d, want 2", len(res.Destinations))
+	}
+	for i, d := range res.Destinations {
+		if d.OK {
+			t.Errorf("dest %d ok = true, want false", i)
+		}
+		if d.Err == nil || !strings.Contains(d.Err.Error(), "source sftp unavailable") {
+			t.Errorf("dest %d err = %v, want 'source sftp unavailable'", i, d.Err)
+		}
+	}
+	// M-2 核心收益：不 spawn 传输 goroutine，目标端零字节
+	for i, d := range h.dst {
+		if len(d.conn.uploadedBytes) != 0 {
+			t.Errorf("dest %d uploaded %d bytes, want 0 (no transfer spawned)", i, len(d.conn.uploadedBytes))
+		}
 	}
 }
