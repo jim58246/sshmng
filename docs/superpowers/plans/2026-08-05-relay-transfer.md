@@ -248,7 +248,7 @@ func TestSessionStatForwards(t *testing.T) {
 	conn := newFakeConn()
 	conn.sftpEnabled = true
 	conn.statFi = fakeFileInfo{size: 123, mode: 0644}
-	mgr := NewManager(time.Minute, nil)
+	mgr := NewManager()
 	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	fi, err := s.Stat("/some/path")
@@ -267,7 +267,7 @@ func TestSessionStatForwards(t *testing.T) {
 func TestSessionStatBusy(t *testing.T) {
 	conn := newFakeConn()
 	conn.sftpEnabled = true
-	mgr := NewManager(time.Minute, nil)
+	mgr := NewManager()
 	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	// 手动置 Running 模拟传输进行中
@@ -540,7 +540,7 @@ Add to `internal/ssh/session/session_test.go`:
 func TestSessionUploadSizedForwards(t *testing.T) {
 	conn := newFakeConn()
 	conn.sftpEnabled = true
-	mgr := NewManager(time.Minute, nil)
+	mgr := NewManager()
 	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
 	content := []byte("hello sized world")
@@ -841,7 +841,7 @@ type relayTransferTestHarness struct {
 
 func newRelayHarness(t *testing.T, nDst int, srcData []byte) *relayTransferTestHarness {
 	t.Helper()
-	mgr := NewManager(time.Minute, nil)
+	mgr := NewManager()
 	srcConn := newFakeConn()
 	srcConn.sftpEnabled = true
 	srcConn.downloadData = srcData
@@ -1313,7 +1313,7 @@ import (
 // 由于 fakeConn 未导出，本测试改为验证 handler 的错误分支（hard error）与结果体形状，
 // 端到端流式已在 session 包覆盖。
 func newRelayService() *Service {
-	mgr := session.NewManager(time.Minute, nil)
+	mgr := session.NewManager()
 	return &Service{manager: mgr, baseLogger: nil}
 }
 
