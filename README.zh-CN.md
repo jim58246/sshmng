@@ -11,7 +11,7 @@ sshmng 是一个**统一的 SSH 管理器**，覆盖**所有连接形态**——
 - **一键安装向导**：`sshmng install` 创建配置目录 + 模板，自动检测已装的 AI Agent（Claude Code / Hermes / OpenCode）并把 sshmng 注入到它们的配置里（带时间戳备份）；`sshmng doctor` 验证一切就绪
 - **一份配置，两种用法**：MCP server 给 AI Agent（Claude Code / Hermes / OpenCode / Claude Desktop / Cursor）调用，`sshmng ssh` CLI 给人直接登。同一份 `config.json`，同样的直连 / Pattern A（`ssh -J`）/ Pattern B（堡垒机）模式——配一次，两边都能用
 - **显式会话管理**：`login` → `run_in_session` → `close_session` 三件套，连续多命令共享 cwd / env / 后台任务，不像一次性 `ssh host cmd` 那样每次都重新来
-- **sftp 文件传输**：`upload` / `download` 单文件走独立 sftp 通道，与 PTY 命令通道分离，不可用时优雅降级；`upload_dir` / `download_dir` 递归传输目录树，并发（默认 4），冲突策略 overwrite / skip / rename
+- **sftp 文件传输**：`upload` / `download` 单文件走独立 sftp 通道，与 PTY 命令通道分离，不可用时优雅降级；`upload_dir` / `download_dir` 递归传输目录树，并发（默认 4），冲突策略 overwrite / skip / rename；`relay_transfer` 经 sshmng 中转流式传输文件到一个或多个 session（不落盘、1:N 扇出、源只读一次）
 - **命令诊断**：`run_in_session` 超时自动 Ctrl-C + drain，返回 `timed_out` / `ctrl_c_sent`；`get_trace` 取回命令历史（含 raw_output、ctrl_c_sent）供事后排查
 - **TOFU host key**：首次连接记录公钥到 `known_hosts`，变更拒绝（"host key changed, possible MITM"）
 - **配置 CRUD**：`list_*` / `get_*` / `update_*` 三类工具管理 SSHServer / Jumphost / Proxy，RFC 7396 JSON Merge Patch 语义
@@ -106,7 +106,7 @@ go build -o sshmng ./cmd/sshmng
 
 ## MCP 工具一览
 
-共 18 个工具：
+共 19 个工具：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -122,6 +122,7 @@ go build -o sshmng ./cmd/sshmng
 | 文件传输 | `download(sid, src, dst, timeout_ms?)` | 远端 → 本地，走 sftp |
 | 文件传输 | `upload_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | 本地目录树 → 远端，递归 sftp，并发默认 4，冲突策略 overwrite/skip/rename |
 | 文件传输 | `download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | 远端目录树 → 本地，递归 sftp，并发默认 4，冲突策略 overwrite/skip/rename |
+| 文件传输 | `relay_transfer(src_sid, src_path, dst_sids[], dst_path, timeout_ms?)` | 经 sshmng 中转流式传输远端文件到一个或多个 session（不落盘、1:N 扇出、源只读一次）；需源与所有目标 sftp 可用；部分失败返回 ok:false（看 ok 字段而非 IsError） |
 
 > 不提供 `send_input` / `send_special`：MCP 客户端串行化工具调用，`run_in_session` 执行中调不到这两个工具；命令结束（正常退出或超时 Ctrl-C 后）session 已回 idle 或 closed，再调也报错。交互式命令（sudo/read/cat>file）靠 `run_in_session` 自身超时 + `get_trace` 看 raw_output 诊断，不靠 send_input 喂入。
 
