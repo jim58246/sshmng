@@ -695,7 +695,7 @@ func TestFanWriterAllDeadReturnsError(t *testing.T) {
 		t.Errorf("Write err = %v, want errAllDestinationsFailed", err)
 	}
 }
-
+```
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/ssh/session/ -run TestFanWriter -v`
