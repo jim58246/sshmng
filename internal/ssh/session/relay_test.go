@@ -194,9 +194,6 @@ func TestRelayTransferOneToN(t *testing.T) {
 // TestRelayTransferSourceMissing: 源文件不存在（download 出错）→ ok=false，根因清晰。
 func TestRelayTransferSourceMissing(t *testing.T) {
 	h := newRelayHarness(t, 1, []byte("x"))
-	h.srcConn.downloadData = nil
-	// 让 Download 返回错误：用一个能注入 download 错误的方式——设 downloadData 为 nil
-	// 不足以报错；改用 downloadErr。先给 fakeConn 加 downloadErr 字段（见下方实现）。
 	h.srcConn.downloadErr = errors.New("open remote /src.bin: no such file")
 	dstSid := h.dst[0].sid
 
@@ -206,12 +203,6 @@ func TestRelayTransferSourceMissing(t *testing.T) {
 	}
 	if res.Err == nil {
 		t.Fatalf("res.Err = nil, want download error")
-	}
-	if !res.Destinations[0].OK && res.Destinations[0].Err != nil {
-		// dest 应因 pipe 关闭收到错误或 0 字节
-		if res.Destinations[0].Bytes != 0 && !res.Destinations[0].OK {
-			// 接受：download 失败时 dest 不可能成功
-		}
 	}
 	if res.Destinations[0].OK {
 		t.Errorf("dest ok = true, want false (source missing)")

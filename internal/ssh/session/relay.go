@@ -168,7 +168,7 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 	if fi, statErr := srcSess.Stat(srcPath); statErr == nil {
 		if !fi.Mode().IsRegular() {
 			for _, e := range live {
-				e.pr.CloseWithError(errors.New("source not a regular file"))
+				e.pw.CloseWithError(errors.New("source not a regular file"))
 				dests[e.idx].Err = errors.New("source not a regular file")
 			}
 			return RelayResult{
