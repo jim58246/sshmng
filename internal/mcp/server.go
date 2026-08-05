@@ -126,7 +126,7 @@ type UpdateArgs struct {
 	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges (or creates if name not found). Structure mirrors get_* output; via/proxy fields are name strings"`
 }
 
-// NewServer 创建 MCP server 并注册 18 个工具（9 CRUD + 7 session/file + 2 dir transfer）。
+// NewServer 创建 MCP server 并注册 19 个工具（9 CRUD + 7 session/file + 2 dir transfer + 1 relay transfer）。
 func NewServer(svc *Service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: version.Version}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
@@ -207,6 +207,10 @@ func NewServer(svc *Service) *mcp.Server {
 		Name:        "download_dir",
 		Description: "Download a remote directory tree to local via sftp. Walks the remote tree (sftp.Walk), creates local dirs (os.MkdirAll), transfers files concurrently (default 4). Conflict policy: overwrite (default) / skip / rename. Per-file errors don't abort the transfer; aggregated in result. Requires sftp_available=true on the session. Note: partial failures return ok:false in the result body with IsError not set; check the ok field, not the MCP error flag.",
 	}, svc.DownloadDir)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "relay_transfer",
+		Description: "Relay (stream) a remote file from one session to one or more other sessions through the sshmng process, without landing it on local disk and without waiting for the full download before uploading. 1:N fanout: the source is read once and streamed concurrently to all destinations (sharded/replicated deploy). 1:1 is the single-element dst_sids case. Requires sftp_available=true on the source and every destination (check stat first). All destinations share the same dst_path. Returns {ok, downloaded_bytes, timed_out, src_server, destinations:[{dst_sid, dst_server, ok, bytes, timed_out, error}]}. Per-destination failures do not abort the others; partial failures return ok:false in the result body with IsError not set (check the ok field, not the MCP error flag).",
+	}, svc.RelayTransfer)
 	return server
 }
 

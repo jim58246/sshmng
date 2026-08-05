@@ -3,6 +3,7 @@ package pty
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -173,6 +174,89 @@ func TestUploadTimeout(t *testing.T) {
 	}
 	if n >= len(data) {
 		t.Errorf("bytes = %d, want < %d (timeout should interrupt before full upload)", n, len(data))
+	}
+}
+
+// --- UploadSized ---
+
+// TestPtyConnUploadSized: UploadSized 传输正确字节数且远端内容一致。
+// 关键：src 是 io.PipeReader（无 Stat/Size），UploadSized 用 io.LimitReader 触发
+// *sftp.File.ReadFrom 的并发 pipelining 路径，而非串行 writeChunkAt。
+func TestPtyConnUploadSized(t *testing.T) {
+	srv := newFakeShellServerWithSftp(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	content := bytes.Repeat([]byte("sized\n"), 200) // 1200 bytes
+	pr, pw := io.Pipe()
+	go func() {
+		pw.Write(content)
+		pw.Close()
+	}()
+
+	n, timedOut, err := p.UploadSized(pr, int64(len(content)), "/sized.txt", 30000)
+	if err != nil {
+		t.Fatalf("UploadSized: %v", err)
+	}
+	if timedOut {
+		t.Errorf("timed_out = true, want false")
+	}
+	if n != len(content) {
+		t.Errorf("bytes = %d, want %d", n, len(content))
+	}
+
+	remote, err := p.sftpClient.Open("/sized.txt")
+	if err != nil {
+		t.Fatalf("Open remote: %v", err)
+	}
+	defer remote.Close()
+	got, err := io.ReadAll(remote)
+	if err != nil {
+		t.Fatalf("ReadAll remote: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("remote content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+// TestPtyConnUploadSizedBoundsToSize: src 字节数多于 size 时，只写 size 字节。
+func TestPtyConnUploadSizedBoundsToSize(t *testing.T) {
+	srv := newFakeShellServerWithSftp(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	content := bytes.Repeat([]byte("x"), 1000)
+	// size=400：只应写 400 字节
+	n, _, err := p.UploadSized(bytes.NewReader(content), 400, "/trunc.txt", 30000)
+	if err != nil {
+		t.Fatalf("UploadSized: %v", err)
+	}
+	if n != 400 {
+		t.Errorf("bytes = %d, want 400", n)
 	}
 }
 
@@ -385,5 +469,67 @@ func TestCtxReaderStillChecksCtx(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("Read n = %d, want 0", n)
+	}
+}
+
+// --- Stat ---
+
+// TestPtyConnStat: Upload 后 Stat 返回正确的 size，且是普通文件。
+func TestPtyConnStat(t *testing.T) {
+	srv := newFakeShellServerWithSftp(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	content := bytes.Repeat([]byte("stat me\n"), 50) // 400 bytes
+	if _, _, err := p.Upload(bytes.NewReader(content), "/statme.txt", 30000); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	fi, err := p.Stat("/statme.txt")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() != int64(len(content)) {
+		t.Errorf("Size() = %d, want %d", fi.Size(), len(content))
+	}
+	if !fi.Mode().IsRegular() {
+		t.Errorf("IsRegular() = false, want true")
+	}
+}
+
+// TestPtyConnStatSftpUnavailable: sftp 未建立时 Stat 返回 ErrSftpUnavailable。
+func TestPtyConnStatSftpUnavailable(t *testing.T) {
+	srv := newFakeShellServer(t) // 不支持 sftp
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	if _, err := p.Stat("/whatever"); !errors.Is(err, conn.ErrSftpUnavailable) {
+		t.Errorf("Stat err = %v, want ErrSftpUnavailable", err)
 	}
 }

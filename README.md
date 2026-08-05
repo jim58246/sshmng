@@ -11,7 +11,7 @@ sshmng is a **unified SSH manager** covering **every connection shape** — dire
 - **One-command setup wizard**: `sshmng install` creates the config directory + template, auto-detects installed AI Agents (Claude Code / Hermes / OpenCode) and injects itself into their configs with timestamped backups; `sshmng doctor` verifies everything is wired up
 - **One config, two interfaces**: MCP server for AI agents (Claude Code / Hermes / OpenCode / Claude Desktop / Cursor), `sshmng ssh` CLI for humans. Same `config.json`, same direct / Pattern A (`ssh -J`) / Pattern B (bastion) patterns — set up a server once, use it from either side
 - **Explicit session management**: `login` → `run_in_session` → `close_session` trio; consecutive commands share cwd / env / background jobs, unlike one-shot `ssh host cmd`
-- **sftp file transfer**: `upload` / `download` single files over a dedicated sftp channel, separate from the PTY command channel; graceful degradation when unavailable. `upload_dir` / `download_dir` recursively transfer directory trees, concurrent (default 4), conflict policy overwrite / skip / rename
+- **sftp file transfer**: `upload` / `download` single files over a dedicated sftp channel, separate from the PTY command channel; graceful degradation when unavailable. `upload_dir` / `download_dir` recursively transfer directory trees, concurrent (default 4), conflict policy overwrite / skip / rename. `relay_transfer` streams a file from one session to N others via sshmng (no local disk, 1:N fanout, source read once)
 - **Command diagnostics**: `run_in_session` timeout auto Ctrl-C + drain, returns `timed_out` / `ctrl_c_sent`; `get_trace` retrieves command history (including raw_output, ctrl_c_sent)
 - **TOFU host key**: first connection records the public key to `known_hosts`; changes are rejected ("host key changed, possible MITM")
 - **Config CRUD**: `list_*` / `get_*` / `update_*` tool families manage SSHServer / Jumphost / Proxy, with RFC 7396 JSON Merge Patch semantics
@@ -106,7 +106,7 @@ For manual config fallback and per-Agent integration steps, see [docs/agents.md]
 
 ## MCP Tools Overview
 
-18 tools total:
+19 tools total:
 
 | Category | Tool | Description |
 |------|------|------|
@@ -122,6 +122,7 @@ For manual config fallback and per-Agent integration steps, see [docs/agents.md]
 | File transfer | `download(sid, src, dst, timeout_ms?)` | Remote → local, via sftp |
 | File transfer | `upload_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | Local directory tree → remote, recursive sftp, concurrent default 4, conflict policy overwrite/skip/rename |
 | File transfer | `download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | Remote directory tree → local, recursive sftp, concurrent default 4, conflict policy overwrite/skip/rename |
+| File transfer | `relay_transfer(src_sid, src_path, dst_sids[], dst_path, timeout_ms?)` | Stream a remote file from one session to N others via sshmng (no local disk, 1:N fanout, source read once); requires sftp on source + all dests; partial failures return ok:false (check ok field, not IsError) |
 
 > No `send_input` / `send_special` provided: MCP clients serialize tool calls, so during `run_in_session` execution these two tools can't be invoked; after the command ends (normal exit or timeout Ctrl-C), the session is already idle or closed, and calling them also errors. Interactive commands (sudo/read/cat>file) rely on `run_in_session`'s own timeout + `get_trace` for raw_output diagnostics, not on send_input feeding.
 

@@ -2,7 +2,9 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,26 +15,32 @@ import (
 
 // fakeConn 是 Conn 接口的测试替身，记录所有调用并允许控制 Run 的行为。
 type fakeConn struct {
-	mu           sync.Mutex
-	closed       bool
-	runCalls     []string
-	runResult    fakeRunResult
-	runDelay     time.Duration // Run 阻塞时长，模拟命令执行
-	runBlocking  bool          // Run 是否阻塞直到 Close 中断
-	runCh        chan struct{} // 用于 blocking 模式下通知 Run 返回
-	runUnusable  bool          // Run 返回 connUnusable=true（模拟 drain 超时，但不自己 Close）
+	mu          sync.Mutex
+	closed      bool
+	runCalls    []string
+	runResult   fakeRunResult
+	runDelay    time.Duration // Run 阻塞时长，模拟命令执行
+	runBlocking bool          // Run 是否阻塞直到 Close 中断
+	runCh       chan struct{} // 用于 blocking 模式下通知 Run 返回
+	runUnusable bool          // Run 返回 connUnusable=true（模拟 drain 超时，但不自己 Close）
 
 	// sftp 支持（Part A 测试用）
-	sftpEnabled    bool
-	uploadBlock    chan struct{} // nil = 不阻塞；非 nil = Upload 阻塞直到该 chan 关闭
-	downloadBlock  chan struct{} // nil = 不阻塞；非 nil = Download 阻塞直到该 chan 关闭
-	uploadedBytes  []byte        // Upload 读到的字节
-	downloadData   []byte        // Download 写到 dst 的字节
-	uploadDelay    time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+	sftpEnabled   bool
+	uploadBlock   chan struct{} // nil = 不阻塞；非 nil = Upload 阻塞直到该 chan 关闭
+	downloadBlock chan struct{} // nil = 不阻塞；非 nil = Download 阻塞直到该 chan 关闭
+	uploadedBytes []byte        // Upload 读到的字节
+	downloadData  []byte        // Download 写到 dst 的字节
+	uploadDelay   time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+	downloadErr   error         // 非 nil 时 Download 直接返回该错误（模拟源文件不存在等）
+	uploadErr     error         // 非 nil 时 Upload/UploadSized 直接返回该错误
+
+	// Stat 支持（relay 测试用）
+	statFi  os.FileInfo // nil 时 Stat 返回 (nil, statErr)
+	statErr error
 
 	// dir 传输支持（Task 5 测试用）
-	uploadDirBlock    chan struct{}        // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
-	downloadDirBlock  chan struct{}        // 同上
+	uploadDirBlock    chan struct{} // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
+	downloadDirBlock  chan struct{} // 同上
 	uploadDirResult   conn.DirTransferResult
 	downloadDirResult conn.DirTransferResult
 	uploadDirErr      error
@@ -93,14 +101,23 @@ func (f *fakeConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, s
 func (f *fakeConn) SftpAvailable() bool { return f.sftpEnabled }
 
 // Upload 把 src 读到的字节存入 uploadedBytes，支持 uploadBlock 阻塞与 uploadDelay 慢传输模拟。
+// uploadDelay > timeoutMs > 0 时模拟超时：sleep timeoutMs 后返回 timed_out=true +
+// context.DeadlineExceeded（与 PtyConn.Upload 的真实超时返回形状一致）。
 func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.uploadErr != nil {
+		return 0, false, f.uploadErr
 	}
 	if f.uploadBlock != nil {
 		<-f.uploadBlock
 	}
 	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
 		time.Sleep(f.uploadDelay)
 	}
 	n, err := io.ReadAll(src)
@@ -108,19 +125,66 @@ func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int,
 	return len(n), false, err
 }
 
+// UploadSized 模拟有尺寸上传：读至多 size 字节存入 uploadedBytes。
+// fakeConn 不区分 pipelining 路径，行为与 Upload 一致但以 size 截断。
+// 超时模拟同 Upload。
+func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, timeoutMs int) (int, bool, error) {
+	if !f.sftpEnabled {
+		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.uploadErr != nil {
+		return 0, false, f.uploadErr
+	}
+	if f.uploadBlock != nil {
+		<-f.uploadBlock
+	}
+	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
+		time.Sleep(f.uploadDelay)
+	}
+	n, err := io.ReadAll(io.LimitReader(src, size))
+	f.uploadedBytes = append(f.uploadedBytes, n...)
+	return len(n), false, err
+}
+
 // Download 把 downloadData 写入 dst，支持 downloadBlock 阻塞与 uploadDelay 慢传输模拟。
+// uploadDelay > timeoutMs > 0 时模拟超时（同 Upload）。
 func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.downloadErr != nil {
+		return 0, false, f.downloadErr
 	}
 	if f.downloadBlock != nil {
 		<-f.downloadBlock
 	}
 	if f.uploadDelay > 0 {
+		if timeoutMs > 0 && f.uploadDelay > time.Duration(timeoutMs)*time.Millisecond {
+			time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+			return 0, true, context.DeadlineExceeded
+		}
 		time.Sleep(f.uploadDelay)
 	}
 	n, err := dst.Write(f.downloadData)
 	return n, false, err
+}
+
+// Stat 返回配置的 statFi/statErr。relay 测试用 statFi 模拟源文件元信息。
+func (f *fakeConn) Stat(path string) (os.FileInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.statErr != nil {
+		return nil, f.statErr
+	}
+	if f.statFi != nil {
+		return f.statFi, nil
+	}
+	// 默认：返回一个 0 字节普通文件，避免未配置时 nil 解引用
+	return fakeFileInfo{size: 0, mode: 0644}, nil
 }
 
 // UploadDir 模拟文件夹上传：检查 sftpEnabled，阻塞于 uploadDirBlock（若非 nil），返回配置的 result/err。
@@ -144,6 +208,19 @@ func (f *fakeConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransfer
 	}
 	return f.downloadDirResult, f.downloadDirErr
 }
+
+// fakeFileInfo 是测试用的 os.FileInfo 替身，relay 测试用它配置 fakeConn.Stat 的返回。
+type fakeFileInfo struct {
+	size int64
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 // --- 状态机基本转换 ---
 
@@ -407,10 +484,10 @@ func TestRunInSessionClosesSessionWhenConnReturnsUnusable(t *testing.T) {
 	conn := newFakeConn()
 	conn.runUnusable = true // 模拟 drain 超时：Run 返回 connUnusable=true
 	conn.runResult = fakeRunResult{
-		output:     "",
-		exitCode:   -1,
-		timedOut:   true,
-		ctrlCSent:  true,
+		output:    "",
+		exitCode:  -1,
+		timedOut:  true,
+		ctrlCSent: true,
 	}
 	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
@@ -781,5 +858,69 @@ func TestUploadDirBlocksRunInSession(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if st := s.State(); st != StateIdle {
 		t.Errorf("state after UploadDir done = %s, want idle", st)
+	}
+}
+
+// --- Task 1: Session.Stat 状态机 ---
+
+// TestSessionStatForwards: Session.Stat 经状态机转发到 conn.Stat，并切回 Idle。
+func TestSessionStatForwards(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.statFi = fakeFileInfo{size: 123, mode: 0644}
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	fi, err := s.Stat("/some/path")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() != 123 {
+		t.Errorf("Size() = %d, want 123", fi.Size())
+	}
+	if s.State() != StateIdle {
+		t.Errorf("after Stat, state = %v, want Idle", s.State())
+	}
+}
+
+// TestSessionStatBusy: 非 idle 态 Stat 返回 "session busy"。
+func TestSessionStatBusy(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	// 手动置 Running 模拟传输进行中
+	s.mu.Lock()
+	s.state = StateRunning
+	s.mu.Unlock()
+
+	if _, err := s.Stat("/x"); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("Stat err = %v, want 'session busy'", err)
+	}
+}
+
+// --- Task 2: Session.UploadSized 转发 ---
+
+// TestSessionUploadSizedForwards: Session.UploadSized 转发字节数与内容正确。
+func TestSessionUploadSizedForwards(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	content := []byte("hello sized world")
+	n, _, err := s.UploadSized(bytes.NewReader(content), int64(len(content)), "/r.txt", 0)
+	if err != nil {
+		t.Fatalf("UploadSized: %v", err)
+	}
+	if n != len(content) {
+		t.Errorf("bytes = %d, want %d", n, len(content))
+	}
+	if !bytes.Equal(conn.uploadedBytes, content) {
+		t.Errorf("uploaded bytes mismatch: got %q, want %q", conn.uploadedBytes, content)
+	}
+	if s.State() != StateIdle {
+		t.Errorf("after UploadSized, state = %v, want Idle", s.State())
 	}
 }

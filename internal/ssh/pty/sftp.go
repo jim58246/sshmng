@@ -18,6 +18,18 @@ func (p *PtyConn) SftpAvailable() bool {
 	return p.sftpClient != nil
 }
 
+// Stat 返回远端 path 的文件信息。
+// sftp 通道未建立时返回 conn.ErrSftpUnavailable。
+func (p *PtyConn) Stat(remotePath string) (os.FileInfo, error) {
+	p.mu.Lock()
+	sftpClient := p.sftpClient
+	p.mu.Unlock()
+	if sftpClient == nil {
+		return nil, conn.ErrSftpUnavailable
+	}
+	return sftpClient.Stat(remotePath)
+}
+
 // Upload 把 src 上传到远端 remotePath。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)
@@ -60,6 +72,52 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 	stop()
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload done",
+		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
+	return int(n), timedOut, err
+}
+
+// UploadSized 把 src（已知 size）上传到远端 remotePath。
+//   - timeoutMs=0 用默认 300s
+//   - 返回 (已传输字节数, 是否超时, error)
+//   - sftp 通道未建立时返回 conn.ErrSftpUnavailable
+//
+// 与 Upload 的区别：用 io.LimitReader(newCtxReader(src, ctx), size) 包装 src。
+// *io.LimitReader 被 *sftp.File.ReadFrom 的 type switch 识别，走 readFromWithConcurrency
+// 并发 pipelining 路径（多个 SSH_FXP_WRITE 包同时在飞）；否则 Upload 对无 Stat/Size 的
+// reader（如 io.PipeReader）退化为串行 writeChunkAt，跨地域 RTT 下慢一个数量级。
+// newCtxReader 保留 ctx 取消响应（AfterFunc 关闭 dst 解除 ReadFrom 阻塞）。
+func (p *PtyConn) UploadSized(src io.Reader, size int64, remotePath string, timeoutMs int) (int, bool, error) {
+	p.logger.Debug("sftp upload_sized start", "sid", p.sid, "remote", remotePath, "size", size, "timeout_ms", timeoutMs)
+	p.mu.Lock()
+	sftpClient := p.sftpClient
+	p.mu.Unlock()
+	if sftpClient == nil {
+		return 0, false, conn.ErrSftpUnavailable
+	}
+
+	timeout := conn.DefaultTransferTimeout
+	if timeoutMs > 0 {
+		timeout = time.Duration(timeoutMs) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	dst, err := sftpClient.Create(remotePath)
+	if err != nil {
+		return 0, false, fmt.Errorf("create remote %s: %w", remotePath, err)
+	}
+	defer dst.Close()
+
+	stop := context.AfterFunc(ctx, func() {
+		dst.Close()
+	})
+
+	// io.LimitReader → *io.LimitReader → ReadFrom 并发 pipelining 路径。
+	// newCtxReader 让 src.Read 在 ctx 取消时及时退出（解除 ReadFrom 在 dst 上的阻塞）。
+	n, err := io.Copy(dst, io.LimitReader(newCtxReader(src, ctx), size))
+	stop()
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	p.logger.Debug("sftp upload_sized done",
 		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
 	return int(n), timedOut, err
 }
