@@ -30,6 +30,8 @@ type fakeConn struct {
 	uploadedBytes []byte        // Upload 读到的字节
 	downloadData  []byte        // Download 写到 dst 的字节
 	uploadDelay   time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+	downloadErr   error         // 非 nil 时 Download 直接返回该错误（模拟源文件不存在等）
+	uploadErr     error         // 非 nil 时 Upload/UploadSized 直接返回该错误
 
 	// Stat 支持（relay 测试用）
 	statFi  os.FileInfo // nil 时 Stat 返回 (nil, statErr)
@@ -102,6 +104,9 @@ func (f *fakeConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int,
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
 	}
+	if f.uploadErr != nil {
+		return 0, false, f.uploadErr
+	}
 	if f.uploadBlock != nil {
 		<-f.uploadBlock
 	}
@@ -119,6 +124,9 @@ func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, tim
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
 	}
+	if f.uploadErr != nil {
+		return 0, false, f.uploadErr
+	}
 	if f.uploadBlock != nil {
 		<-f.uploadBlock
 	}
@@ -134,6 +142,9 @@ func (f *fakeConn) UploadSized(src io.Reader, size int64, remotePath string, tim
 func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int, bool, error) {
 	if !f.sftpEnabled {
 		return 0, false, conn.ErrSftpUnavailable
+	}
+	if f.downloadErr != nil {
+		return 0, false, f.downloadErr
 	}
 	if f.downloadBlock != nil {
 		<-f.downloadBlock

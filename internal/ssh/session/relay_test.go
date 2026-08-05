@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestFanWriterBroadcastsToAll: 数据块并发分发到所有存活目标，全部收到完整内容。
@@ -95,5 +97,192 @@ func TestFanWriterAllDeadReturnsError(t *testing.T) {
 	_, err := fw.Write([]byte("x"))
 	if !errors.Is(err, errAllDestinationsFailed) {
 		t.Errorf("Write err = %v, want errAllDestinationsFailed", err)
+	}
+}
+
+// relayTransferTestHarness 建一个源 session + N 个目标 session，全部用 fakeConn。
+// srcData 是源文件内容；srcSize 用于配置 fakeConn.statFi。
+type relayTransferTestHarness struct {
+	mgr     *Manager
+	srcSid  string
+	srcConn *fakeConn
+	dst     []struct {
+		sid  string
+		conn *fakeConn
+	}
+}
+
+func newRelayHarness(t *testing.T, nDst int, srcData []byte) *relayTransferTestHarness {
+	t.Helper()
+	mgr := NewManager()
+	srcConn := newFakeConn()
+	srcConn.sftpEnabled = true
+	srcConn.downloadData = srcData
+	srcConn.statFi = fakeFileInfo{size: int64(len(srcData)), mode: 0644}
+	mgr.newSessionWithConn("src", "srcsrv", srcConn, time.Minute, nil)
+	h := &relayTransferTestHarness{mgr: mgr, srcSid: "src", srcConn: srcConn}
+	for i := 0; i < nDst; i++ {
+		dc := newFakeConn()
+		dc.sftpEnabled = true
+		sid := "dst" + string(rune('1'+i))
+		mgr.newSessionWithConn(sid, "dstsrv", dc, time.Minute, nil)
+		h.dst = append(h.dst, struct {
+			sid  string
+			conn *fakeConn
+		}{sid, dc})
+	}
+	return h
+}
+
+// TestRelayTransferOneToOne: 1:1 流式中转，字节一致、两侧 ok。
+func TestRelayTransferOneToOne(t *testing.T) {
+	data := bytes.Repeat([]byte("relay\n"), 300) // 1800 bytes
+	h := newRelayHarness(t, 1, data)
+	dstSid := h.dst[0].sid
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", []string{dstSid}, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("RelayTransfer: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v, want nil", res.Err)
+	}
+	if res.DownloadedBytes != len(data) {
+		t.Errorf("downloaded_bytes = %d, want %d", res.DownloadedBytes, len(data))
+	}
+	if len(res.Destinations) != 1 {
+		t.Fatalf("destinations len = %d, want 1", len(res.Destinations))
+	}
+	d := res.Destinations[0]
+	if !d.OK {
+		t.Errorf("dest ok = false, want true; err=%v", d.Err)
+	}
+	if d.Bytes != len(data) {
+		t.Errorf("dest bytes = %d, want %d", d.Bytes, len(data))
+	}
+	if !bytes.Equal(h.dst[0].conn.uploadedBytes, data) {
+		t.Errorf("dest uploaded content mismatch: got %d bytes, want %d", len(h.dst[0].conn.uploadedBytes), len(data))
+	}
+}
+
+// TestRelayTransferOneToN: 1:3 扇出，源只读一次，三个目标各得完整内容。
+func TestRelayTransferOneToN(t *testing.T) {
+	data := bytes.Repeat([]byte("fan\n"), 400) // 1600 bytes
+	h := newRelayHarness(t, 3, data)
+	sids := []string{h.dst[0].sid, h.dst[1].sid, h.dst[2].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("RelayTransfer: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v", res.Err)
+	}
+	for i, d := range res.Destinations {
+		if !d.OK {
+			t.Errorf("dest %d ok=false, err=%v", i, d.Err)
+		}
+		if d.Bytes != len(data) {
+			t.Errorf("dest %d bytes = %d, want %d", i, d.Bytes, len(data))
+		}
+		if !bytes.Equal(h.dst[i].conn.uploadedBytes, data) {
+			t.Errorf("dest %d content mismatch", i)
+		}
+	}
+}
+
+// TestRelayTransferSourceMissing: 源文件不存在（download 出错）→ ok=false，根因清晰。
+func TestRelayTransferSourceMissing(t *testing.T) {
+	h := newRelayHarness(t, 1, []byte("x"))
+	h.srcConn.downloadData = nil
+	// 让 Download 返回错误：用一个能注入 download 错误的方式——设 downloadData 为 nil
+	// 不足以报错；改用 downloadErr。先给 fakeConn 加 downloadErr 字段（见下方实现）。
+	h.srcConn.downloadErr = errors.New("open remote /src.bin: no such file")
+	dstSid := h.dst[0].sid
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", []string{dstSid}, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatalf("res.Err = nil, want download error")
+	}
+	if !res.Destinations[0].OK && res.Destinations[0].Err != nil {
+		// dest 应因 pipe 关闭收到错误或 0 字节
+		if res.Destinations[0].Bytes != 0 && !res.Destinations[0].OK {
+			// 接受：download 失败时 dest 不可能成功
+		}
+	}
+	if res.Destinations[0].OK {
+		t.Errorf("dest ok = true, want false (source missing)")
+	}
+}
+
+// TestRelayTransferOneDestFailsOthersSucceed: 一个目标上传失败，其余仍 ok。
+func TestRelayTransferOneDestFailsOthersSucceed(t *testing.T) {
+	data := bytes.Repeat([]byte("iso\n"), 500) // 2000 bytes
+	h := newRelayHarness(t, 3, data)
+	// dst2 上传失败：设 uploadErr
+	h.dst[1].conn.uploadErr = errors.New("create remote: permission denied")
+	sids := []string{h.dst[0].sid, h.dst[1].sid, h.dst[2].sid}
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", sids, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatalf("res.Err = nil, want failure (one dest failed)")
+	}
+	if res.Destinations[0].OK != true {
+		t.Errorf("dest0 ok = false, want true")
+	}
+	if res.Destinations[1].OK != false {
+		t.Errorf("dest1 ok = true, want false")
+	}
+	if res.Destinations[2].OK != true {
+		t.Errorf("dest2 ok = false, want true")
+	}
+}
+
+// TestRelayTransferSrcEqualsDst: src_sid == dst_sid → 该 dest 报错 "cannot relay to itself"。
+func TestRelayTransferSrcEqualsDst(t *testing.T) {
+	h := newRelayHarness(t, 1, []byte("x"))
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/s", []string{h.srcSid}, "/d", 0)
+	if err != nil {
+		t.Fatalf("hard error: %v", err)
+	}
+	if res.Destinations[0].Err == nil || !strings.Contains(res.Destinations[0].Err.Error(), "itself") {
+		t.Errorf("dest err = %v, want 'cannot relay a session to itself'", res.Destinations[0].Err)
+	}
+}
+
+// TestRelayTransferEmptyDsts: 空 dst_sids → 硬错误。
+func TestRelayTransferEmptyDsts(t *testing.T) {
+	h := newRelayHarness(t, 0, []byte("x"))
+	_, err := h.mgr.RelayTransfer(h.srcSid, "/s", nil, "/d", 0)
+	if err == nil || !strings.Contains(err.Error(), "no relay destinations") {
+		t.Errorf("err = %v, want 'no relay destinations'", err)
+	}
+}
+
+// TestRelayTransferStatFallback: Stat 失败时降级为 Upload（无 size），仍完成传输。
+func TestRelayTransferStatFallback(t *testing.T) {
+	data := bytes.Repeat([]byte("fb\n"), 300)
+	h := newRelayHarness(t, 1, data)
+	h.srcConn.statErr = errors.New("stat: permission denied") // 触发降级
+	dstSid := h.dst[0].sid
+
+	res, err := h.mgr.RelayTransfer(h.srcSid, "/src.bin", []string{dstSid}, "/dst.bin", 0)
+	if err != nil {
+		t.Fatalf("RelayTransfer: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v, want nil (fallback should succeed)", res.Err)
+	}
+	if !res.Destinations[0].OK {
+		t.Errorf("dest ok=false, err=%v", res.Destinations[0].Err)
+	}
+	if !bytes.Equal(h.dst[0].conn.uploadedBytes, data) {
+		t.Errorf("content mismatch after stat fallback")
 	}
 }
