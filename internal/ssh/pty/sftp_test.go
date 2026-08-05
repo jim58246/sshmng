@@ -3,6 +3,7 @@ package pty
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -385,5 +386,67 @@ func TestCtxReaderStillChecksCtx(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("Read n = %d, want 0", n)
+	}
+}
+
+// --- Stat ---
+
+// TestPtyConnStat: Upload 后 Stat 返回正确的 size，且是普通文件。
+func TestPtyConnStat(t *testing.T) {
+	srv := newFakeShellServerWithSftp(t)
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	content := bytes.Repeat([]byte("stat me\n"), 50) // 400 bytes
+	if _, _, err := p.Upload(bytes.NewReader(content), "/statme.txt", 30000); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	fi, err := p.Stat("/statme.txt")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() != int64(len(content)) {
+		t.Errorf("Size() = %d, want %d", fi.Size(), len(content))
+	}
+	if !fi.Mode().IsRegular() {
+		t.Errorf("IsRegular() = false, want true")
+	}
+}
+
+// TestPtyConnStatSftpUnavailable: sftp 未建立时 Stat 返回 ErrSftpUnavailable。
+func TestPtyConnStatSftpUnavailable(t *testing.T) {
+	srv := newFakeShellServer(t) // 不支持 sftp
+	d := newDialerWithTempKnownHosts(t)
+	client, err := d.Dial(conn.DialOptions{
+		Addr: srv.Addr(), User: "alice",
+		Auth: config.SSHAuth{Password: "wonderland"}, HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	if _, err := p.Stat("/whatever"); !errors.Is(err, conn.ErrSftpUnavailable) {
+		t.Errorf("Stat err = %v, want ErrSftpUnavailable", err)
 	}
 }

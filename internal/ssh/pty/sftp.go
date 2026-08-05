@@ -18,6 +18,18 @@ func (p *PtyConn) SftpAvailable() bool {
 	return p.sftpClient != nil
 }
 
+// Stat 返回远端 path 的文件信息。
+// sftp 通道未建立时返回 conn.ErrSftpUnavailable。
+func (p *PtyConn) Stat(remotePath string) (os.FileInfo, error) {
+	p.mu.Lock()
+	sftpClient := p.sftpClient
+	p.mu.Unlock()
+	if sftpClient == nil {
+		return nil, conn.ErrSftpUnavailable
+	}
+	return sftpClient.Stat(remotePath)
+}
+
 // Upload 把 src 上传到远端 remotePath。
 //   - timeoutMs=0 用默认 300s
 //   - 返回 (已传输字节数, 是否超时, error)

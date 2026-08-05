@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -44,6 +45,8 @@ type Conn interface {
 	SftpAvailable() bool
 	Upload(src io.Reader, remotePath string, timeoutMs int) (bytes int, timedOut bool, err error)
 	Download(remotePath string, dst io.Writer, timeoutMs int) (bytes int, timedOut bool, err error)
+	// Stat 返回远端文件的 os.FileInfo。sftp 通道未建立时返回 conn.ErrSftpUnavailable。
+	Stat(path string) (os.FileInfo, error)
 	UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error)
 	DownloadDir(remoteDir, localDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error)
 }
@@ -347,6 +350,36 @@ func (s *Session) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 	}
 	s.mu.Unlock()
 	return n, timedOut, err
+}
+
+// Stat 返回远端 path 的文件信息。
+// 状态机与 Upload/Download 对称：进锁检查 state、切 Running + stopIdleTimer、
+// 查询、切回 Idle + resetIdleTimer + 更新 lastActivity。
+// sftp 错误回到 Idle 而非 Closed——sftp 通道独立于 PTY 通道。
+func (s *Session) Stat(remotePath string) (os.FileInfo, error) {
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return nil, errors.New("session closed")
+	}
+	if s.state == StateRunning {
+		s.mu.Unlock()
+		return nil, errors.New("session busy")
+	}
+	s.state = StateRunning
+	s.stopIdleTimer()
+	s.mu.Unlock()
+
+	fi, err := s.conn.Stat(remotePath)
+
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	if s.state != StateClosed {
+		s.state = StateIdle
+		s.resetIdleTimer()
+	}
+	s.mu.Unlock()
+	return fi, err
 }
 
 // UploadDir 把本地 localDir 整树上传到远端 remoteDir。

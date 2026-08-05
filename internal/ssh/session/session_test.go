@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,10 @@ type fakeConn struct {
 	uploadedBytes  []byte        // Upload 读到的字节
 	downloadData   []byte        // Download 写到 dst 的字节
 	uploadDelay    time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+
+	// Stat 支持（relay 测试用）
+	statFi  os.FileInfo // nil 时 Stat 返回 (nil, statErr)
+	statErr error
 
 	// dir 传输支持（Task 5 测试用）
 	uploadDirBlock    chan struct{}        // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
@@ -123,6 +128,20 @@ func (f *fakeConn) Download(remotePath string, dst io.Writer, timeoutMs int) (in
 	return n, false, err
 }
 
+// Stat 返回配置的 statFi/statErr。relay 测试用 statFi 模拟源文件元信息。
+func (f *fakeConn) Stat(path string) (os.FileInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.statErr != nil {
+		return nil, f.statErr
+	}
+	if f.statFi != nil {
+		return f.statFi, nil
+	}
+	// 默认：返回一个 0 字节普通文件，避免未配置时 nil 解引用
+	return fakeFileInfo{size: 0, mode: 0644}, nil
+}
+
 // UploadDir 模拟文件夹上传：检查 sftpEnabled，阻塞于 uploadDirBlock（若非 nil），返回配置的 result/err。
 func (f *fakeConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOptions) (conn.DirTransferResult, error) {
 	if !f.sftpEnabled {
@@ -144,6 +163,19 @@ func (f *fakeConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransfer
 	}
 	return f.downloadDirResult, f.downloadDirErr
 }
+
+// fakeFileInfo 是测试用的 os.FileInfo 替身，relay 测试用它配置 fakeConn.Stat 的返回。
+type fakeFileInfo struct {
+	size int64
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 // --- 状态机基本转换 ---
 
@@ -781,5 +813,44 @@ func TestUploadDirBlocksRunInSession(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if st := s.State(); st != StateIdle {
 		t.Errorf("state after UploadDir done = %s, want idle", st)
+	}
+}
+
+// --- Task 1: Session.Stat 状态机 ---
+
+// TestSessionStatForwards: Session.Stat 经状态机转发到 conn.Stat，并切回 Idle。
+func TestSessionStatForwards(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	conn.statFi = fakeFileInfo{size: 123, mode: 0644}
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	fi, err := s.Stat("/some/path")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() != 123 {
+		t.Errorf("Size() = %d, want 123", fi.Size())
+	}
+	if s.State() != StateIdle {
+		t.Errorf("after Stat, state = %v, want Idle", s.State())
+	}
+}
+
+// TestSessionStatBusy: 非 idle 态 Stat 返回 "session busy"。
+func TestSessionStatBusy(t *testing.T) {
+	conn := newFakeConn()
+	conn.sftpEnabled = true
+	mgr := NewManager()
+	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
+
+	// 手动置 Running 模拟传输进行中
+	s.mu.Lock()
+	s.state = StateRunning
+	s.mu.Unlock()
+
+	if _, err := s.Stat("/x"); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("Stat err = %v, want 'session busy'", err)
 	}
 }
