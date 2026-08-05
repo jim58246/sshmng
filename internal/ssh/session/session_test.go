@@ -14,30 +14,30 @@ import (
 
 // fakeConn 是 Conn 接口的测试替身，记录所有调用并允许控制 Run 的行为。
 type fakeConn struct {
-	mu           sync.Mutex
-	closed       bool
-	runCalls     []string
-	runResult    fakeRunResult
-	runDelay     time.Duration // Run 阻塞时长，模拟命令执行
-	runBlocking  bool          // Run 是否阻塞直到 Close 中断
-	runCh        chan struct{} // 用于 blocking 模式下通知 Run 返回
-	runUnusable  bool          // Run 返回 connUnusable=true（模拟 drain 超时，但不自己 Close）
+	mu          sync.Mutex
+	closed      bool
+	runCalls    []string
+	runResult   fakeRunResult
+	runDelay    time.Duration // Run 阻塞时长，模拟命令执行
+	runBlocking bool          // Run 是否阻塞直到 Close 中断
+	runCh       chan struct{} // 用于 blocking 模式下通知 Run 返回
+	runUnusable bool          // Run 返回 connUnusable=true（模拟 drain 超时，但不自己 Close）
 
 	// sftp 支持（Part A 测试用）
-	sftpEnabled    bool
-	uploadBlock    chan struct{} // nil = 不阻塞；非 nil = Upload 阻塞直到该 chan 关闭
-	downloadBlock  chan struct{} // nil = 不阻塞；非 nil = Download 阻塞直到该 chan 关闭
-	uploadedBytes  []byte        // Upload 读到的字节
-	downloadData   []byte        // Download 写到 dst 的字节
-	uploadDelay    time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
+	sftpEnabled   bool
+	uploadBlock   chan struct{} // nil = 不阻塞；非 nil = Upload 阻塞直到该 chan 关闭
+	downloadBlock chan struct{} // nil = 不阻塞；非 nil = Download 阻塞直到该 chan 关闭
+	uploadedBytes []byte        // Upload 读到的字节
+	downloadData  []byte        // Download 写到 dst 的字节
+	uploadDelay   time.Duration // Upload/Download 完成前 sleep 这么久（模拟慢传输）
 
 	// Stat 支持（relay 测试用）
 	statFi  os.FileInfo // nil 时 Stat 返回 (nil, statErr)
 	statErr error
 
 	// dir 传输支持（Task 5 测试用）
-	uploadDirBlock    chan struct{}        // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
-	downloadDirBlock  chan struct{}        // 同上
+	uploadDirBlock    chan struct{} // nil = 不阻塞；非 nil = UploadDir 阻塞直到 close
+	downloadDirBlock  chan struct{} // 同上
 	uploadDirResult   conn.DirTransferResult
 	downloadDirResult conn.DirTransferResult
 	uploadDirErr      error
@@ -456,10 +456,10 @@ func TestRunInSessionClosesSessionWhenConnReturnsUnusable(t *testing.T) {
 	conn := newFakeConn()
 	conn.runUnusable = true // 模拟 drain 超时：Run 返回 connUnusable=true
 	conn.runResult = fakeRunResult{
-		output:     "",
-		exitCode:   -1,
-		timedOut:   true,
-		ctrlCSent:  true,
+		output:    "",
+		exitCode:  -1,
+		timedOut:  true,
+		ctrlCSent: true,
 	}
 	s := mgr.newSessionWithConn("sid1", "srv", conn, time.Minute, nil)
 
