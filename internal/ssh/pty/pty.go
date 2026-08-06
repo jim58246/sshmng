@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -195,7 +196,19 @@ func openPtyConnSize(client *ssh.Client, sid string, logger *slog.Logger, rows, 
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	if err := session.RequestPty("xterm", rows, cols, modes); err != nil {
+	// pty-req 的 term：透传本地 TERM（对齐原生 `ssh -t` 行为），让交互式 Relay
+	// 路径获得与本地终端一致的 terminfo（如 xterm-256color → 256 色），而非硬编码
+	// xterm（8 色）。空则回退 xterm-256color（Windows 终端不设 TERM，恒落回退；
+	// Windows Terminal 兼容 xterm-256color，不劣于原硬编码 xterm）。
+	//
+	// 仅交互 Relay 路径受益：auto-capture 路径（run_in_session / sshmng ssh <name> cmd）
+	// 紧接着 InjectRC 会 `export TERM=dumb` 覆盖此值（见 BuildRC），pty-req 传什么
+	// 都被覆盖。符合设计文档 §6.27「PTY 分配时用默认 TERM，不强制 dumb」。
+	term := os.Getenv("TERM")
+	if term == "" {
+		term = "xterm-256color"
+	}
+	if err := session.RequestPty(term, rows, cols, modes); err != nil {
 		session.Close()
 		return nil, fmt.Errorf("request pty: %w", err)
 	}
