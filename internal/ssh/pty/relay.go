@@ -34,6 +34,15 @@ func (p *PtyConn) Relay(ctx context.Context) error {
 	p.stdin.Write([]byte("stty echo\n"))
 	time.Sleep(50 * time.Millisecond)
 
+	// Windows: 启用 console output handle 的 VT processing，让裸 LF 走 xterm
+	// 语义（下移一行、列不变），避免 Windows 默认 LF→CR+LF 把光标甩到行首
+	// 导致全屏 TUI 渲染错乱。Unix 为 no-op。详见 relay_console_windows.go。
+	oldOutMode, err := enableVTOutput()
+	if err != nil {
+		return fmt.Errorf("enable vt output: %w", err)
+	}
+	defer restoreOutputMode(oldOutMode)
+
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
