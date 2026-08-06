@@ -150,6 +150,11 @@ func (u *Updater) UpdateToLatest(ctx context.Context) (latest string, applied bo
 	}
 
 	u.log.Info("applying update", "current", version.Version, "latest", latest)
+	// Windows: clear any stale/locked .old from a prior update so the library's
+	// rename-into-.old succeeds (see prepareWindowsUpdateTarget). Unix: no-op.
+	if cmdPath, err := selfupdate.ExecutablePath(); err == nil {
+		prepareWindowsUpdateTarget(cmdPath)
+	}
 	if _, err := u.lib.UpdateSelf(ctx, version.Version, u.repo); err != nil {
 		return latest, false, fmt.Errorf("update self: %w", err)
 	}
@@ -215,6 +220,10 @@ func (u *Updater) updateFromFileWithTarget(ctx context.Context, assetPath, targe
 
 	tag := assetVersionFromName(assetPath)
 	u.log.Info("applying update from local file", "asset", assetPath, "version", tag, "target", targetPath)
+
+	// Windows: clear any stale/locked .old from a prior update so the library's
+	// rename-into-.old succeeds (see prepareWindowsUpdateTarget). Unix: no-op.
+	prepareWindowsUpdateTarget(targetPath)
 
 	if err := goupdate.Apply(binaryReader, goupdate.Options{TargetPath: targetPath}); err != nil {
 		return tag, wrapUpdateApplyError(err, targetPath)
