@@ -76,6 +76,8 @@ SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
 ./sshmng jumphost list|get ...            # Same for jumphosts
 ./sshmng proxy list|get ...               # Same for proxies
 ./sshmng ssh <name> [command]             # Interactive SSH login; with command, non-interactive
+./sshmng file upload <name> <local> <remote>   # File transfer via sftp (also: download, upload-dir, download-dir, relay)
+./sshmng file relay <src-name> <src-path> <dst-path> --to <dst1,dst2>  # 1:N fanout to multiple servers
 ```
 
 ## Quick Start

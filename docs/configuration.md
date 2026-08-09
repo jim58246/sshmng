@@ -8,7 +8,7 @@ For first-time use, run `sshmng install` — it creates `~/.sshmng/config.json` 
 
 ## Path Resolution Order
 
-1. `--config <path>` CLI arg (supported by `sshmng mcp`, `server`, `jumphost`, `proxy`, `ssh` subcommands)
+1. `--config <path>` CLI arg (supported by `sshmng mcp`, `server`, `jumphost`, `proxy`, `ssh`, `file` subcommands)
 2. `$SSHMNG_HOME/config.json`
 3. `$HOME/.sshmng/config.json`
 

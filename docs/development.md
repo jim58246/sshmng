@@ -6,9 +6,9 @@
 
 ```
 sshmng/
-├── cmd/sshmng/         # 入口（子命令分发：mcp/install/doctor/update/version/server/jumphost/proxy/ssh/help）
+├── cmd/sshmng/         # 入口（子命令分发：mcp/install/doctor/update/version/server/jumphost/proxy/ssh/file/help）
 ├── internal/
-│   ├── cli/            # CLI 子命令处理（dispatch + install + doctor + Agent 注入器 + 文件脚手架）
+│   ├── cli/            # CLI 子命令处理（dispatch + install + doctor + Agent 注入器 + 文件脚手架 + file 传输）
 │   ├── config/         # 数据模型 + 加载/保存/校验/CRUD（Jumphost/Proxy/SSHServer）
 │   ├── loginflow/      # 决策树执行器（纯逻辑，send+expect+ANSI 过滤）
 │   ├── ssh/            # SSH 连接层 + session 管理 + sftp + trace
@@ -41,6 +41,7 @@ sshmng/
 - `sshmng version [--check]` — 打印版本 / commit / date；`--check` 对比远端最新版本
 - `sshmng server|jumphost|proxy <list|get>` — 在 shell 中查询配置（MCP `list_*` / `get_*` 的 CLI 等价物）
 - `sshmng ssh <name> [command]` — 交互式登录；带 command 时非交互执行（OpenSSH 约定）。支持直连 / Pattern A / Pattern B
+- `sshmng file <upload|download|upload-dir|download-dir|relay>` — 文件传输（sftp）。单文件/目录走直连 ptyConn；relay 走临时 session.Manager 复用 `RelayTransfer` 的 1:N 扇出。Pattern B 不支持（sftp 落到 jumphost 而非 target）
 - `sshmng help` / `-h` / `--help` / 无参数 — 打印帮助
 
 ### Agent 注入器
@@ -73,7 +74,7 @@ go test -race -v -run TestGetTrace ./internal/ssh/
 - `internal/ssh/pty`：sentinel 解析 / sftp（InMemHandler）
 - `internal/ssh/session`：状态机 + idle timeout
 - `internal/mcp`：每个 handler 的错误路径 + 端到端集成（fake SSH server + fake sftp subsystem）
-- `internal/cli`：子命令分发、Agent 注入器（3 个 Agent 各 stale-args/stale-env 测试）、install/doctor 端到端、文件脚手架、backup restore
+- `internal/cli`：子命令分发、Agent 注入器（3 个 Agent 各 stale-args/stale-env 测试）、install/doctor 端到端、文件脚手架、file 传输子命令路由/flag 解析、backup restore
 
 TDD：每阶段先写测试再写实现，race detector 全程开启。
 

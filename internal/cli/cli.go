@@ -37,6 +37,8 @@ func Dispatch(ctx context.Context, args []string, out io.Writer) int {
 		return runProxyCmd(nil, args[1:], out)
 	case "ssh":
 		return runSSHCmd(ctx, args[1:], out)
+	case "file":
+		return runFileCmd(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		printHelp(out)
 		return 0
@@ -64,6 +66,7 @@ Usage:
   sshmng jumphost <list|get> [...]  List or view jumphosts
   sshmng proxy <list|get> [...]   List or view proxies
   sshmng ssh <name> [command]   Interactive SSH login; with command, non-interactive
+  sshmng file <upload|download|upload-dir|download-dir|relay> [...]  File transfer
   sshmng help | -h | --help       Print this help
 
 Subcommands:
@@ -85,6 +88,10 @@ Subcommands:
   ssh       Connect to an SSH server by name. Optional second positional arg
             is a command to execute non-interactively (OpenSSH convention).
             Supports direct, Pattern A (ssh -J), and Pattern B (bastion).
+  file      Transfer files over sftp: upload, download, upload-dir,
+            download-dir, and relay (1:N fanout). Mirrors the MCP transfer
+            tools. Pattern B (bastion) is unsupported — sftp lands on the
+            jumphost, not the target; use direct or ssh_j=true.
 
 Run 'sshmng <subcommand> -h' for subcommand-specific flags.
 `

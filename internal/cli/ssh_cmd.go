@@ -67,7 +67,7 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 
 	sid, _ := conn.RandomSID()
 
-	ptyConn, err := setupSSH(srv, dialer, sid, logger, command != "")
+	ptyConn, err := setupSSH(srv, dialer, sid, logger, command != "", false)
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
@@ -88,9 +88,16 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 }
 
 // setupSSH establishes an SSH connection following the same three-way pattern as MCP Login.
-// If needShell is true (non-interactive mode), DetectShell + InjectRC are called for Run().
-// If needShell is false (interactive mode), those are skipped and Relay takes over.
-func setupSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger, needShell bool) (*pty.PtyConn, error) {
+//   - needShell=true (non-interactive 'ssh <name> <command>'): DetectShell + InjectRC for Run().
+//   - needShell=false (interactive Relay, or file transfer): those are skipped.
+//   - needSftp=true (file transfer): TryEnableSftp on direct + Pattern A.
+//     Pattern B never enables sftp — the SSH client is to the jumphost, so the sftp channel
+//     would land on the jumphost, not the target (silently wrong). Mirrors MCP setupPatternB
+//     (tools_session.go:225-227). Caller must check SftpAvailable() and surface a clear error.
+//
+// needShell and needSftp are independent: file transfer needs sftp but not a shell
+// (sftp is a separate SSH channel, independent of the PTY/RC).
+func setupSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger, needShell, needSftp bool) (*pty.PtyConn, error) {
 	var ptyConn *pty.PtyConn
 	var err error
 
@@ -116,6 +123,13 @@ func setupSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *sl
 			ptyConn.Close()
 			return nil, fmt.Errorf("inject rc: %w", err)
 		}
+	}
+
+	// File transfer needs the sftp channel. Only direct + Pattern A: the sftp channel
+	// is to the target. Pattern B's sftp channel is to the jumphost (misleading), so
+	// never enable it — caller sees SftpAvailable()==false and errors out.
+	if needSftp && (srv.Via == nil || srv.Via.SSHJ) {
+		ptyConn.TryEnableSftp()
 	}
 
 	return ptyConn, nil

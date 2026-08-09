@@ -8,7 +8,7 @@ sshmng 的配置文件是 `~/.sshmng/config.json`（路径可由 `--config` 或 
 
 ## 路径解析顺序
 
-1. `--config <path>` 命令行参数（`sshmng mcp` / `server` / `jumphost` / `proxy` / `ssh` 子命令支持）
+1. `--config <path>` 命令行参数（`sshmng mcp` / `server` / `jumphost` / `proxy` / `ssh` / `file` 子命令支持）
 2. `$SSHMNG_HOME/config.json`
 3. `$HOME/.sshmng/config.json`
 
