@@ -472,9 +472,44 @@ func runFileRelay(args []string, out io.Writer) int {
 		return 1
 	}
 
-	res, err := manager.RelayTransfer(srcSid, srcPath, dstSids, dstPath, *timeoutMs)
+	// Size the bar from the source file via the source session's Stat.
+	size := int64(-1)
+	if srcSess, gerr := manager.Get(srcSid); gerr == nil {
+		if fi, statErr := srcSess.Stat(srcPath); statErr == nil {
+			size = fi.Size()
+		}
+	}
+	bar := progress.NewBar(os.Stderr, srcServerName, size)
+
+	// Track dest completion for the status tag: ✓ done, ✗ failed, ⏳ in-flight.
+	// Single bar reflects the barrier fan-out model: live destinations advance in
+	// lockstep, so one bar represents all. No per-destination bars.
+	var doneOK, doneFail, inFlight int
+	for range *to {
+		inFlight++
+	}
+	updateStatus := func() {
+		bar.SetStatus(fmt.Sprintf("%d✓ %d✗ %d⏳", doneOK, doneFail, inFlight))
+	}
+	updateStatus()
+
+	res, err := manager.RelayTransferWithProgress(srcSid, srcPath, dstSids, dstPath, *timeoutMs,
+		func(bytes int64) { bar.SetBytes(bytes) },
+		func(dstSid string, ok bool, _ int64, _ error) {
+			inFlight--
+			if ok {
+				doneOK++
+			} else {
+				doneFail++
+			}
+			updateStatus()
+		},
+	)
+	bar.Finish()
 	if err != nil {
 		// Hard error: srcSid invalid (shouldn't happen here) or dstSids empty.
+		// RelayTransferWithProgress returns (nil, err) here; res is never dereferenced
+		// because we return early.
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
 	}
