@@ -5,6 +5,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/jim58246/sshmng/internal/progress"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
@@ -110,13 +111,39 @@ type RelayResult struct {
 //   - Go error 仅用于硬错误（srcSid 不存在、dstSids 为空）。
 //   - 部分失败（下载失败、某目标失败、源非普通文件）返回 (res, nil)，res.Err 非 nil，
 //     各 dest 的 OK 反映自身成败——一个目标失败不连累其他目标。
+//
+// 它是 RelayTransferWithProgress(nil, nil) 的薄委托层：保留原签名与语义，
+// 不改变 fanWriter 屏障扇出模型。MCP (tools_relay.go) 继续调用本方法。
 func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPath string, timeoutMs int) (RelayResult, error) {
-	srcSess, err := m.Get(srcSid)
+	res, err := m.RelayTransferWithProgress(srcSid, srcPath, dstSids, dstPath, timeoutMs, nil, nil)
 	if err != nil {
 		return RelayResult{}, err
 	}
+	return *res, nil
+}
+
+// RelayTransferWithProgress 是带进度回调的 RelayTransfer。它不改变屏障扇出模型：
+// 存活目标按下载侧节奏锁步推进，onDownload 反映的是共享下载进度（累计字节，高频）；
+// onDestDone 在每个目标上传完成时触发一次（低频）。任一回调可为 nil。
+//
+// 返回 (*RelayResult, error)：
+//   - Go error 仅用于硬错误（srcSid 不存在、dstSids 为空）。
+//   - 部分失败返回 (res, nil)，res.Err 非 nil，各 dest 的 OK 反映自身成败。
+//
+// 进度机制：下载侧的 fanWriter 包一层 progress.CountingWriter，每次 Write 累计字节
+// 并触发 onDownload；这对 sftp 读侧流水线透明（只包装 dst，不改 *sftp.File.WriteTo
+// 的并发路径）。onDestDone 在每个上传 goroutine 末尾 + 每个预检失败分支触发，nil-guarded。
+func (m *Manager) RelayTransferWithProgress(
+	srcSid, srcPath string, dstSids []string, dstPath string, timeoutMs int,
+	onDownload func(bytes int64),
+	onDestDone func(dstSid string, ok bool, bytes int64, err error),
+) (*RelayResult, error) {
+	srcSess, err := m.Get(srcSid)
+	if err != nil {
+		return nil, err
+	}
 	if len(dstSids) == 0 {
-		return RelayResult{}, errors.New("no relay destinations")
+		return nil, errors.New("no relay destinations")
 	}
 
 	// M-2: 预检源 sftp 通道。源 sftp 不可用则整个传输必然失败（所有目标都拿不到数据），
@@ -126,8 +153,11 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 		dests := make([]RelayDest, len(dstSids))
 		for i, sid := range dstSids {
 			dests[i] = RelayDest{DstSid: sid, Err: errors.New("source sftp unavailable")}
+			if onDestDone != nil {
+				onDestDone(sid, false, 0, errors.New("source sftp unavailable"))
+			}
 		}
-		return RelayResult{
+		return &RelayResult{
 			SrcServer:    srcSess.ServerName(),
 			Destinations: dests,
 			Err:          conn.ErrSftpUnavailable,
@@ -138,6 +168,7 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 
 	type liveEntry struct {
 		idx  int
+		sid  string
 		sess *Session
 		pr   *io.PipeReader
 		pw   *io.PipeWriter
@@ -149,28 +180,40 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 		dests[i] = RelayDest{DstSid: sid}
 		if sid == srcSid {
 			dests[i].Err = errors.New("cannot relay a session to itself")
+			if onDestDone != nil {
+				onDestDone(sid, false, 0, errors.New("cannot relay a session to itself"))
+			}
 			continue
 		}
 		ds, gerr := m.Get(sid)
 		if gerr != nil {
 			dests[i].Err = gerr
+			if onDestDone != nil {
+				onDestDone(sid, false, 0, gerr)
+			}
 			continue
 		}
 		dests[i].DstServer = ds.ServerName()
 		if !ds.SftpAvailable() {
 			dests[i].Err = conn.ErrSftpUnavailable
+			if onDestDone != nil {
+				onDestDone(sid, false, 0, conn.ErrSftpUnavailable)
+			}
 			continue
 		}
 		if ds.State() != StateIdle {
 			dests[i].Err = errors.New("session busy")
+			if onDestDone != nil {
+				onDestDone(sid, false, 0, errors.New("session busy"))
+			}
 			continue
 		}
 		pr, pw := io.Pipe()
-		live = append(live, &liveEntry{idx: i, sess: ds, pr: pr, pw: pw})
+		live = append(live, &liveEntry{idx: i, sid: sid, sess: ds, pr: pr, pw: pw})
 	}
 
 	if len(live) == 0 {
-		return RelayResult{
+		return &RelayResult{
 			SrcServer:    srcSess.ServerName(),
 			Destinations: dests,
 			Err:          errors.New("no live relay destinations (all failed pre-flight)"),
@@ -185,8 +228,11 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 			for _, e := range live {
 				e.pw.CloseWithError(errors.New("source not a regular file"))
 				dests[e.idx].Err = errors.New("source not a regular file")
+				if onDestDone != nil {
+					onDestDone(e.sid, false, 0, errors.New("source not a regular file"))
+				}
 			}
-			return RelayResult{
+			return &RelayResult{
 				SrcServer:    srcSess.ServerName(),
 				Destinations: dests,
 				Err:          errors.New("source not a regular file"),
@@ -204,6 +250,13 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 	}
 	fw := newFanWriter(pws)
 
+	// 包一层 CountingWriter：每次下载侧 Write 累计字节并触发 onDownload。
+	// 对 sftp 读侧流水线透明（只包装 dst io.Writer，不改 *sftp.File.WriteTo 并发路径）。
+	var dlSink io.Writer = fw
+	if onDownload != nil {
+		dlSink = &progress.CountingWriter{W: fw, Fn: onDownload}
+	}
+
 	// 下载侧 goroutine
 	var dlN int
 	var dlTimedOut bool
@@ -211,7 +264,7 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 	dlDone := make(chan struct{})
 	go func() {
 		defer close(dlDone)
-		dlN, dlTimedOut, dlErr = srcSess.Download(srcPath, fw, timeoutMs)
+		dlN, dlTimedOut, dlErr = srcSess.Download(srcPath, dlSink, timeoutMs)
 		// 下载结束：关闭所有 pw，让上传侧收尾（nil → EOF，非 nil → 传播错误）
 		for _, e := range live {
 			e.pw.CloseWithError(dlErr)
@@ -238,6 +291,9 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 			dests[e.idx].Bytes = n
 			dests[e.idx].TimedOut = tOut
 			dests[e.idx].Err = uerr
+			if onDestDone != nil {
+				onDestDone(e.sid, dests[e.idx].OK, int64(n), uerr)
+			}
 		}(e)
 	}
 
@@ -245,7 +301,7 @@ func (m *Manager) RelayTransfer(srcSid, srcPath string, dstSids []string, dstPat
 	upWg.Wait()
 
 	// 聚合
-	res := RelayResult{
+	res := &RelayResult{
 		DownloadedBytes: dlN,
 		TimedOut:        dlTimedOut,
 		SrcServer:       srcSess.ServerName(),

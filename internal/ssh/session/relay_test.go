@@ -416,6 +416,152 @@ func TestRelayTransferSourceNotRegular(t *testing.T) {
 	}
 }
 
+// TestRelayTransferWithProgressCallbacks: 1:2 relay, asserts onDownload fires
+// with nonzero cumulative byte counts and onDestDone fires once per destination
+// with ok=true. Reuses newRelayHarness (fakeConn) from the existing relay tests.
+func TestRelayTransferWithProgressCallbacks(t *testing.T) {
+	data := bytes.Repeat([]byte("prog\n"), 400) // 2000 bytes
+	h := newRelayHarness(t, 2, data)
+	sids := []string{h.dst[0].sid, h.dst[1].sid}
+
+	var mu sync.Mutex
+	var dlCounts []int64
+	type destDoneEvent struct {
+		sid string
+		ok  bool
+		n   int64
+		err error
+	}
+	var destDone []destDoneEvent
+	onDownload := func(n int64) {
+		mu.Lock()
+		dlCounts = append(dlCounts, n)
+		mu.Unlock()
+	}
+	onDestDone := func(sid string, ok bool, n int64, err error) {
+		mu.Lock()
+		destDone = append(destDone, destDoneEvent{sid: sid, ok: ok, n: n, err: err})
+		mu.Unlock()
+	}
+
+	res, err := h.mgr.RelayTransferWithProgress(h.srcSid, "/src.bin", sids, "/dst.bin", 0, onDownload, onDestDone)
+	if err != nil {
+		t.Fatalf("RelayTransferWithProgress: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v, want nil", res.Err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// onDownload: at least one nonzero cumulative byte count, and the final
+	// cumulative must equal the full data length (barrier model: download
+	// completes with all bytes flushed through fanWriter).
+	nonzero := false
+	for _, c := range dlCounts {
+		if c > 0 {
+			nonzero = true
+		}
+	}
+	if !nonzero {
+		t.Errorf("onDownload never received a nonzero byte count; got %v", dlCounts)
+	}
+	if len(dlCounts) == 0 {
+		t.Fatalf("onDownload never invoked")
+	}
+	if last := dlCounts[len(dlCounts)-1]; last != int64(len(data)) {
+		t.Errorf("last onDownload cumulative = %d, want %d", last, len(data))
+	}
+
+	// onDestDone: exactly len(sids) calls, all ok=true, each with full byte count.
+	if len(destDone) != len(sids) {
+		t.Fatalf("onDestDone called %d times, want %d", len(destDone), len(sids))
+	}
+	okCount := 0
+	for _, d := range destDone {
+		if d.ok {
+			okCount++
+		}
+		if d.n != int64(len(data)) {
+			t.Errorf("onDestDone(%q) bytes = %d, want %d", d.sid, d.n, len(data))
+		}
+	}
+	if okCount != len(sids) {
+		t.Errorf("onDestDone ok count = %d, want %d", okCount, len(sids))
+	}
+}
+
+// TestRelayTransferWithProgressNilCallbacks: nil callbacks must not panic.
+// Also a delegation regression guard: RelayTransfer delegates to
+// RelayTransferWithProgress(nil, nil), so this exercises the nil path.
+func TestRelayTransferWithProgressNilCallbacks(t *testing.T) {
+	data := bytes.Repeat([]byte("nil\n"), 300)
+	h := newRelayHarness(t, 1, data)
+	dstSid := h.dst[0].sid
+
+	res, err := h.mgr.RelayTransferWithProgress(h.srcSid, "/src.bin", []string{dstSid}, "/dst.bin", 0, nil, nil)
+	if err != nil {
+		t.Fatalf("RelayTransferWithProgress: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v, want nil", res.Err)
+	}
+	if !res.Destinations[0].OK {
+		t.Errorf("dest ok=false, err=%v", res.Destinations[0].Err)
+	}
+	if !bytes.Equal(h.dst[0].conn.uploadedBytes, data) {
+		t.Errorf("content mismatch with nil callbacks")
+	}
+}
+
+// TestRelayTransferWithProgressPreFlightFailure: a pre-flight failure (dest sftp
+// unavailable) must still fire onDestDone for that dest with ok=false, and the
+// successful dest fires with ok=true.
+func TestRelayTransferWithProgressPreFlightFailure(t *testing.T) {
+	data := bytes.Repeat([]byte("pf\n"), 300)
+	h := newRelayHarness(t, 2, data)
+	ds1, _ := h.mgr.Get(h.dst[1].sid)
+	setSftpAvail(t, ds1, false)
+	sids := []string{h.dst[0].sid, h.dst[1].sid}
+
+	var mu sync.Mutex
+	type destDoneEvent struct {
+		sid string
+		ok  bool
+	}
+	var destDone []destDoneEvent
+	onDestDone := func(sid string, ok bool, n int64, err error) {
+		mu.Lock()
+		destDone = append(destDone, destDoneEvent{sid: sid, ok: ok})
+		mu.Unlock()
+	}
+
+	res, err := h.mgr.RelayTransferWithProgress(h.srcSid, "/src.bin", sids, "/dst.bin", 0, nil, onDestDone)
+	if err != nil {
+		t.Fatalf("RelayTransferWithProgress: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatalf("res.Err = nil, want failure (one dest sftp unavailable)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(destDone) != len(sids) {
+		t.Fatalf("onDestDone called %d times, want %d", len(destDone), len(sids))
+	}
+	bySid := map[string]bool{}
+	for _, d := range destDone {
+		bySid[d.sid] = d.ok
+	}
+	if !bySid[h.dst[0].sid] {
+		t.Errorf("dest0 onDestDone ok=false, want true")
+	}
+	if bySid[h.dst[1].sid] {
+		t.Errorf("dest1 onDestDone ok=true, want false (sftp unavailable)")
+	}
+}
+
 // TestRelayTransferSourceSftpUnavailable: 源 sftp 不可用 → M-2 pre-flight 直接返回，
 // res.Err=ErrSftpUnavailable、每个目标记 per-dest 错误、不 spawn 任何传输 goroutine。
 func TestRelayTransferSourceSftpUnavailable(t *testing.T) {
