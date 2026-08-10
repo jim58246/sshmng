@@ -387,6 +387,36 @@ func (p *PtyConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransferO
 	return result, nil
 }
 
+// RemoteDirTotals sums the byte size and regular-file count of remoteDir via
+// sftp Walk (symlinks skipped, dirs skipped — matching DownloadDir's walk
+// semantics) so the download-dir progress bar total is accurate. Used to size
+// the progress bar before a download-dir transfer. Errors are tolerated
+// (returns counts seen so far); sftp unavailable returns 0,0 — the bar just
+// runs in indeterminate mode, the transfer is not aborted.
+func (p *PtyConn) RemoteDirTotals(remoteDir string) (bytes int64, files int) {
+	p.mu.Lock()
+	sftpClient := p.sftpClient
+	p.mu.Unlock()
+	if sftpClient == nil {
+		return 0, 0
+	}
+	walker := sftpClient.Walk(remoteDir)
+	for walker.Step() {
+		if walker.Err() != nil {
+			continue
+		}
+		fi := walker.Stat()
+		if fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if !fi.IsDir() {
+			bytes += fi.Size()
+			files++
+		}
+	}
+	return
+}
+
 // resolveLocalConflict 是 resolveConflict 的本地文件版本。
 //   - ConflictOverwrite: 直接返回 localPath
 //   - ConflictSkip: 本地存在则跳过

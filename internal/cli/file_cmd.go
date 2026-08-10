@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/pflag"
 
@@ -273,7 +274,17 @@ func runFileUploadDir(args []string, out io.Writer) int {
 		Concurrency: *concurrency,
 		TimeoutMs:   *timeoutMs,
 	}
+	totalBytes, totalFiles := localDirTotals(local)
+	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, totalBytes)
+	if totalFiles > 0 {
+		bar.SetFiles(totalFiles)
+	}
+	opts.OnProgress = func(bytes int64, files int) {
+		bar.SetBytes(bytes)
+		bar.SetFilesDone(files)
+	}
 	res, err := ptyConn.UploadDir(local, remote, opts)
+	bar.Finish()
 	printDirResult(out, "uploaded", local, srv.Name, remote, res, err)
 	if err != nil {
 		return 1
@@ -325,12 +336,44 @@ func runFileDownloadDir(args []string, out io.Writer) int {
 		Concurrency: *concurrency,
 		TimeoutMs:   *timeoutMs,
 	}
+	totalBytes, totalFiles := ptyConn.RemoteDirTotals(remote)
+	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, totalBytes)
+	if totalFiles > 0 {
+		bar.SetFiles(totalFiles)
+	}
+	opts.OnProgress = func(bytes int64, files int) {
+		bar.SetBytes(bytes)
+		bar.SetFilesDone(files)
+	}
 	res, err := ptyConn.DownloadDir(remote, local, opts)
+	bar.Finish()
 	printDirResult(out, "downloaded", local, srv.Name, remote, res, err)
 	if err != nil {
 		return 1
 	}
 	return 0
+}
+
+// localDirTotals walks localDir (via filepath.Walk) returning the total bytes
+// and regular-file count of regular files (symlinks skipped, matching
+// pty.UploadDir's walk). Used to size the progress bar before transfer starts.
+// Walk errors are tolerated (returns counts seen so far) — a totals-walk
+// failure must not abort the transfer.
+func localDirTotals(localDir string) (bytes int64, files int) {
+	filepath.Walk(localDir, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil || fi == nil {
+			return nil
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if !fi.IsDir() {
+			bytes += fi.Size()
+			files++
+		}
+		return nil
+	})
+	return
 }
 
 // printDirResult prints a human-readable dir transfer summary.
