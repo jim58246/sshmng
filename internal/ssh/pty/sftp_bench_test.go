@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/progress"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
 )
 
@@ -133,6 +134,68 @@ func BenchmarkSftpDownload(b *testing.B) {
 		n, _, err := p.Download("/bench_dl.txt", io.Discard, 60000)
 		if err != nil {
 			b.Fatalf("Download: %v (bytes=%d)", err, n)
+		}
+	}
+}
+
+// BenchmarkSftpUploadSizedCounting validates the core no-regression claim of
+// the progress feature: wrapping *os.File in a CountingReader and uploading via
+// UploadSized must stay on sftp's concurrent pipelining path (*io.LimitedReader
+// type switch), NOT degrade to serial writeChunkAt.
+//
+// Expected: throughput within the same order of magnitude as BenchmarkSftpUpload
+// (which uses *os.File directly). If this regresses by ~10x, CountingReader
+// must forward Stat() (see ctxReaderWithStat) — that is the documented fallback.
+func BenchmarkSftpUploadSizedCounting(b *testing.B) {
+	srv := newFakeShellServerWithSftp(b)
+	d := newDialerWithTempKnownHosts(b)
+	client, err := d.Dial(conn.DialOptions{
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		b.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+	sid, _ := conn.RandomSID()
+	p, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		b.Fatalf("NewPtyConn: %v", err)
+	}
+	defer p.Close()
+
+	data := bytes.Repeat([]byte("x"), 4<<20) // 4MB
+	tmp, err := os.CreateTemp("", "bench-upload-sized")
+	if err != nil {
+		b.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		b.Fatalf("Write tmp: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		b.Fatalf("Close tmp: %v", err)
+	}
+	fi, _ := os.Stat(tmp.Name())
+	size := int64(-1)
+	if fi != nil {
+		size = fi.Size()
+	}
+
+	b.ResetTimer()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		f, err := os.Open(tmp.Name())
+		if err != nil {
+			b.Fatalf("Open: %v", err)
+		}
+		cr := &progress.CountingReader{R: f, Fn: func(int64) {}}
+		n, _, err := p.UploadSized(cr, size, "/bench_sized.txt", 60000)
+		f.Close()
+		if err != nil {
+			b.Fatalf("UploadSized: %v (bytes=%d)", err, n)
 		}
 	}
 }
