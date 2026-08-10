@@ -44,6 +44,11 @@ type DirTransferOptions struct {
 	Conflict    ConflictPolicy // 0 = ConflictOverwrite
 	Concurrency int            // 0 = 默认 4
 	TimeoutMs   int            // 0 = 默认 300000（300s），per file
+	// OnProgress, if non-nil, is invoked after each successfully transferred
+	// file with the cumulative successful byte count and file count. Called
+	// under the worker pool's mutex (serialized) so the callback need not be
+	// goroutine-safe. nil = no progress reporting (MCP path).
+	OnProgress func(bytes int64, files int)
 }
 
 // DirTransferResult 是文件夹传输的汇总结果。

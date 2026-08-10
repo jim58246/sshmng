@@ -129,6 +129,9 @@ func (p *PtyConn) UploadDir(localDir, remoteDir string, opts conn.DirTransferOpt
 				} else {
 					result.Bytes += int64(n)
 					result.Files++
+					if opts.OnProgress != nil {
+						opts.OnProgress(result.Bytes, result.Files)
+					}
 				}
 				if timedOut {
 					result.TimedOut++
@@ -354,6 +357,9 @@ func (p *PtyConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransferO
 				} else {
 					result.Bytes += int64(n)
 					result.Files++
+					if opts.OnProgress != nil {
+						opts.OnProgress(result.Bytes, result.Files)
+					}
 				}
 				if timedOut {
 					result.TimedOut++
