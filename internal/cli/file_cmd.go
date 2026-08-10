@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jim58246/sshmng/internal/config"
+	"github.com/jim58246/sshmng/internal/progress"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
 	"github.com/jim58246/sshmng/internal/ssh/pty"
 	"github.com/jim58246/sshmng/internal/ssh/session"
@@ -141,7 +142,15 @@ func runFileUpload(args []string, out io.Writer) int {
 	}
 	defer f.Close()
 
-	n, timedOut, err := ptyConn.Upload(f, remote, *timeoutMs)
+	fi, _ := os.Stat(local)
+	size := int64(-1)
+	if fi != nil {
+		size = fi.Size()
+	}
+	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, size)
+	cr := &progress.CountingReader{R: f, Fn: func(n int64) { bar.SetBytes(n) }}
+	n, timedOut, err := ptyConn.UploadSized(cr, size, remote, *timeoutMs)
+	bar.Finish()
 	if err != nil && !timedOut {
 		fmt.Fprintf(out, "Error: upload %s -> %s:%s: %v\n", local, srv.Name, remote, err)
 		return 1
@@ -198,7 +207,14 @@ func runFileDownload(args []string, out io.Writer) int {
 	}
 	defer f.Close()
 
-	n, timedOut, err := ptyConn.Download(remote, f, *timeoutMs)
+	total := int64(-1)
+	if fi, statErr := ptyConn.Stat(remote); statErr == nil {
+		total = fi.Size()
+	}
+	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, total)
+	cw := &progress.CountingWriter{W: f, Fn: func(n int64) { bar.SetBytes(n) }}
+	n, timedOut, err := ptyConn.Download(remote, cw, *timeoutMs)
+	bar.Finish()
 	if err != nil && !timedOut {
 		fmt.Fprintf(out, "Error: download %s:%s -> %s: %v\n", srv.Name, remote, local, err)
 		return 1
