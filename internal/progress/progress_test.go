@@ -59,3 +59,36 @@ func TestBarUnknownSizeNoCrash(t *testing.T) {
 		t.Errorf("unknown-size render unexpected: %q", buf.String())
 	}
 }
+
+// TestBarFinishClearsLineLongerThanWidth verifies that Finish() erases the full
+// rendered line when it is longer than the terminal width (long label + gauge +
+// bytes/rate/ETA). Without tracking lastLineLen, Finish only clears b.width
+// spaces, leaving trailing residue.
+func TestBarFinishClearsLineLongerThanWidth(t *testing.T) {
+	var buf bytes.Buffer
+	// Small width (20) with a long label + known size => rendered line far
+	// exceeds the terminal width.
+	b := &Bar{
+		w:     &buf,
+		label: "very-long-server-name-host:/some/very/long/remote/path/to/file.dat",
+		total: 100, tty: true, width: 20, start: time.Now(),
+	}
+	b.SetBytes(50) // first draw always renders (lastDraw zero)
+	rendered := buf.String()
+	renderedLine := strings.TrimPrefix(rendered, "\r")
+	if len(renderedLine) <= b.width {
+		t.Fatalf("rendered line len %d not longer than width %d (test setup issue)", len(renderedLine), b.width)
+	}
+	wantClear := len(renderedLine) // == b.lastLineLen
+
+	b.Finish()
+	// Finish appended "\r" + spaces + "\r".
+	finishOut := buf.String()[len(rendered):]
+	if !strings.HasPrefix(finishOut, "\r") || !strings.HasSuffix(finishOut, "\r") {
+		t.Fatalf("Finish output malformed: %q", finishOut)
+	}
+	spaces := finishOut[1 : len(finishOut)-1]
+	if len(spaces) < wantClear {
+		t.Errorf("Finish cleared %d spaces, but rendered line was %d chars (residue left)", len(spaces), wantClear)
+	}
+}

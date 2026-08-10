@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pkg/sftp"
 	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/pkg/sftp"
 )
 
 // UploadDir 把本地 localDir 整树上传到远端 remoteDir。
@@ -406,6 +406,9 @@ func (p *PtyConn) RemoteDirTotals(remoteDir string) (bytes int64, files int) {
 			continue
 		}
 		fi := walker.Stat()
+		if fi == nil {
+			continue
+		}
 		if fi.Mode()&os.ModeSymlink != 0 {
 			continue
 		}

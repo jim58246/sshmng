@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/pflag"
 
@@ -484,24 +485,34 @@ func runFileRelay(args []string, out io.Writer) int {
 	// Track dest completion for the status tag: ✓ done, ✗ failed, ⏳ in-flight.
 	// Single bar reflects the barrier fan-out model: live destinations advance in
 	// lockstep, so one bar represents all. No per-destination bars.
+	// onDestDone fires from N concurrent upload goroutines inside
+	// RelayTransferWithProgress, so the counters are guarded by a mutex to avoid
+	// a data race. inFlight counts only connected destinations (dstSids):
+	// login-failed dests never fire onDestDone, so counting *to would never
+	// reach 0⏳. The status string is computed under the lock and bar.SetStatus
+	// called outside it, keeping lock ordering one-directional (dstMu → bar.mu).
+	var dstMu sync.Mutex
 	var doneOK, doneFail, inFlight int
-	for range *to {
-		inFlight++
-	}
+	inFlight = len(dstSids)
 	updateStatus := func() {
-		bar.SetStatus(fmt.Sprintf("%d✓ %d✗ %d⏳", doneOK, doneFail, inFlight))
+		dstMu.Lock()
+		status := fmt.Sprintf("%d✓ %d✗ %d⏳", doneOK, doneFail, inFlight)
+		dstMu.Unlock()
+		bar.SetStatus(status)
 	}
 	updateStatus()
 
 	res, err := manager.RelayTransferWithProgress(srcSid, srcPath, dstSids, dstPath, *timeoutMs,
 		func(bytes int64) { bar.SetBytes(bytes) },
 		func(dstSid string, ok bool, _ int64, _ error) {
+			dstMu.Lock()
 			inFlight--
 			if ok {
 				doneOK++
 			} else {
 				doneFail++
 			}
+			dstMu.Unlock()
 			updateStatus()
 		},
 	)

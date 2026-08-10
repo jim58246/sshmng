@@ -16,21 +16,22 @@ const throttle = 100 * time.Millisecond
 // Bar is a TTY-aware single-line progress bar written to w (expected os.Stderr).
 // When w is not a terminal, all methods are no-ops — callers need not check TTY.
 type Bar struct {
-	w          io.Writer
-	tty        bool
-	label      string
-	total      int64
-	current    int64
-	filesTotal int
-	filesDone  int
-	status     string
-	width      int
-	start      time.Time
-	lastDraw   time.Time
-	now        func() time.Time // injectable for tests; nil => time.Now
-	finished   bool
-	mu         sync.Mutex
-	vtRestored bool
+	w           io.Writer
+	tty         bool
+	label       string
+	total       int64
+	current     int64
+	filesTotal  int
+	filesDone   int
+	status      string
+	width       int
+	lastLineLen int // length of the last rendered line, for Finish to clear fully
+	start       time.Time
+	lastDraw    time.Time
+	now         func() time.Time // injectable for tests; nil => time.Now
+	finished    bool
+	mu          sync.Mutex
+	vtRestored  bool
 }
 
 // NewBar creates a progress bar. total<0 = unknown size (indeterminate mode:
@@ -116,6 +117,7 @@ func (b *Bar) maybeRedraw() {
 		width:      b.width,
 		elapsed:    now.Sub(b.start),
 	})
+	b.lastLineLen = len(line)
 	// \r returns to column 0; pad with spaces to clear any prior longer line; no newline.
 	io.WriteString(b.w, "\r"+line)
 }
@@ -143,6 +145,8 @@ func (b *Bar) Finish() {
 		return
 	}
 	b.finished = true
-	// Clear the whole line: \r + spaces + \r.
-	io.WriteString(b.w, "\r"+strings.Repeat(" ", b.width)+"\r")
+	// Clear the whole line: \r + spaces + \r. Clear max(width, lastLineLen) so
+	// a rendered line longer than the terminal width (long labels + gauge +
+	// bytes/rate/ETA) leaves no trailing residue.
+	io.WriteString(b.w, "\r"+strings.Repeat(" ", max(b.width, b.lastLineLen))+"\r")
 }
