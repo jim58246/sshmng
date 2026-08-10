@@ -1,6 +1,6 @@
 //go:build windows
 
-package pty
+package termutil
 
 import (
 	"fmt"
@@ -9,9 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// enableVTOutput 在 Windows console output handle (stdout) 上启用
+// EnableVTOutput 在 Windows console output handle (stdout) 上启用
 // ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN，
-// 返回原 mode 供 restoreOutputMode 恢复。
+// 返回原 mode 供 RestoreOutputMode 恢复。
 //
 // 背景：Windows console 默认 output mode 含 ENABLE_PROCESSED_OUTPUT，它把裸
 // LF (0x0A) 翻译成 CR+LF —— 即光标先回行首再下移一行。而 curses/ncurses 用
@@ -39,13 +39,13 @@ import (
 // 故此 bug 存在。
 //
 // 若 stdout 不是 console（管道/重定向），GetConsoleMode 报错 —— 视为无需处理，
-// 返回 nil 让 Relay 继续（非交互场景本就不进 Relay）。
-func enableVTOutput() (uint32, error) {
+// 返回 nil 让调用方继续（非交互场景本就不进 Relay）。
+func EnableVTOutput() (uint32, error) {
 	h := windows.Handle(os.Stdout.Fd())
 	var old uint32
 	if err := windows.GetConsoleMode(h, &old); err != nil {
 		// stdout 不是 console handle（重定向到文件/管道）。非交互场景，
-		// 无 LF 翻译问题，跳过。返回 0，restoreOutputMode 检测 0 跳过恢复。
+		// 无 LF 翻译问题，跳过。返回 0，RestoreOutputMode 检测 0 跳过恢复。
 		return 0, nil
 	}
 	mode := old | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING | windows.DISABLE_NEWLINE_AUTO_RETURN
@@ -55,9 +55,9 @@ func enableVTOutput() (uint32, error) {
 	return old, nil
 }
 
-// restoreOutputMode 恢复 enableVTOutput 保存的 output mode。old=0 表示
+// RestoreOutputMode 恢复 EnableVTOutput 保存的 output mode。old=0 表示
 // 当时未实际修改（非 console handle），跳过。
-func restoreOutputMode(old uint32) {
+func RestoreOutputMode(old uint32) {
 	if old == 0 {
 		return
 	}

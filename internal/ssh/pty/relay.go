@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/jim58246/sshmng/internal/termutil"
 )
 
 // Relay switches the PTY to interactive mode: enables remote echo, puts the
@@ -36,12 +38,12 @@ func (p *PtyConn) Relay(ctx context.Context) error {
 
 	// Windows: 启用 console output handle 的 VT processing，让裸 LF 走 xterm
 	// 语义（下移一行、列不变），避免 Windows 默认 LF→CR+LF 把光标甩到行首
-	// 导致全屏 TUI 渲染错乱。Unix 为 no-op。详见 relay_console_windows.go。
-	oldOutMode, err := enableVTOutput()
+	// 导致全屏 TUI 渲染错乱。Unix 为 no-op。详见 internal/termutil/termutil_windows.go。
+	oldOutMode, err := termutil.EnableVTOutput()
 	if err != nil {
 		return fmt.Errorf("enable vt output: %w", err)
 	}
-	defer restoreOutputMode(oldOutMode)
+	defer termutil.RestoreOutputMode(oldOutMode)
 
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
