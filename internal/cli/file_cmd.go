@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/spf13/pflag"
@@ -166,6 +167,9 @@ func runFileUpload(args []string, out io.Writer) int {
 	if fi != nil {
 		size = fi.Size()
 	}
+	// scp/cp-style: if the remote destination ends in "/", treat it as a
+	// directory and append the local filename's basename.
+	remote = resolveDstPath(local, remote, strings.HasSuffix(remote, "/"))
 	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, size)
 	cr := &progress.CountingReader{R: f, Fn: func(n int64) { bar.SetBytes(n) }}
 	n, timedOut, err := ptyConn.UploadSized(cr, size, remote, *timeoutMs)
@@ -218,6 +222,17 @@ func runFileDownload(args []string, out io.Writer) int {
 		fmt.Fprintf(out, "Error: %s\n", sftpUnavailableReason(srv))
 		return 1
 	}
+
+	// scp/cp-style: if the local destination is an existing directory (or ends
+	// in "/" / is "."), append the remote filename's basename so the user can
+	// write `sshmng file download srv /root/abc.txt ./` → ./abc.txt.
+	localIsDir := local == "." || strings.HasSuffix(local, "/") || strings.HasSuffix(local, "\\")
+	if !localIsDir {
+		if fi, statErr := os.Stat(local); statErr == nil && fi.IsDir() {
+			localIsDir = true
+		}
+	}
+	local = resolveDstPath(remote, local, localIsDir)
 
 	f, err := os.Create(local)
 	if err != nil {
