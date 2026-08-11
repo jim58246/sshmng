@@ -117,7 +117,7 @@ func (b *Bar) maybeRedraw() {
 		width:      b.width,
 		elapsed:    now.Sub(b.start),
 	})
-	b.lastLineLen = len(line)
+	b.lastLineLen = displayWidth(line) // display cols, not bytes — CJK is 2 cols each
 	// \r returns to column 0; pad with spaces to clear any prior longer line; no newline.
 	io.WriteString(b.w, "\r"+line)
 }

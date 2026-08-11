@@ -60,14 +60,11 @@ func TestBarUnknownSizeNoCrash(t *testing.T) {
 	}
 }
 
-// TestBarFinishClearsLineLongerThanWidth verifies that Finish() erases the full
-// rendered line when it is longer than the terminal width (long label + gauge +
-// bytes/rate/ETA). Without tracking lastLineLen, Finish only clears b.width
-// spaces, leaving trailing residue.
-func TestBarFinishClearsLineLongerThanWidth(t *testing.T) {
+// TestBarFinishClearsFullRenderedLine verifies that, with a long label on a
+// narrow terminal, the rendered line is truncated to fit within width (the
+// 刷屏 fix) AND Finish() erases the full rendered line (no trailing residue).
+func TestBarFinishClearsFullRenderedLine(t *testing.T) {
 	var buf bytes.Buffer
-	// Small width (20) with a long label + known size => rendered line far
-	// exceeds the terminal width.
 	b := &Bar{
 		w:     &buf,
 		label: "very-long-server-name-host:/some/very/long/remote/path/to/file.dat",
@@ -76,10 +73,12 @@ func TestBarFinishClearsLineLongerThanWidth(t *testing.T) {
 	b.SetBytes(50) // first draw always renders (lastDraw zero)
 	rendered := buf.String()
 	renderedLine := strings.TrimPrefix(rendered, "\r")
-	if len(renderedLine) <= b.width {
-		t.Fatalf("rendered line len %d not longer than width %d (test setup issue)", len(renderedLine), b.width)
+	// The fix: the line MUST fit within the terminal width (else it wraps and
+	// \r-refresh floods the screen).
+	if dw := displayWidth(renderedLine); dw > b.width {
+		t.Fatalf("rendered line display width %d exceeds width %d (wraps → 刷屏): %q", dw, b.width, renderedLine)
 	}
-	wantClear := len(renderedLine) // == b.lastLineLen
+	wantClear := displayWidth(renderedLine)
 
 	b.Finish()
 	// Finish appended "\r" + spaces + "\r".
@@ -89,6 +88,6 @@ func TestBarFinishClearsLineLongerThanWidth(t *testing.T) {
 	}
 	spaces := finishOut[1 : len(finishOut)-1]
 	if len(spaces) < wantClear {
-		t.Errorf("Finish cleared %d spaces, but rendered line was %d chars (residue left)", len(spaces), wantClear)
+		t.Errorf("Finish cleared %d spaces, but rendered line was %d cols (residue left)", len(spaces), wantClear)
 	}
 }

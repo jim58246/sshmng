@@ -66,3 +66,78 @@ func TestRenderBarLineStatusTag(t *testing.T) {
 		t.Errorf("missing status tag: %q", line)
 	}
 }
+
+func TestDisplayWidth(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"abc", 3},
+		{"", 0},
+		{"火山云", 6},        // 3 CJK chars × 2 cols
+		{"a中b", 4},         // 1 + 2 + 1
+		{"░", 1},           // block shade U+2591 — single width
+		{"█", 1},           // block U+2588 — single width
+		{"✓", 1},           // check mark — single width (common terminals)
+		{"2✓ 1✗ 1⏳", 8},    // 8 single-width chars (digits, spaces, symbols)
+	}
+	for _, c := range cases {
+		if got := displayWidth(c.in); got != c.want {
+			t.Errorf("displayWidth(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRenderBarLineFitsNarrowWidth is the regression test for the Windows
+// 刷屏 bug: when the rendered line exceeds the terminal width it wraps, and
+// \r-based single-line refresh breaks (each redraw lands on a new line). The
+// line MUST fit within the given width, accounting for CJK double-width chars.
+func TestRenderBarLineFitsNarrowWidth(t *testing.T) {
+	cases := []struct {
+		name   string
+		width  int
+		label  string
+		total  int64
+		cur    int64
+		status string
+	}{
+		{"narrow-40-cjk-label", 40, "火山云/115.190.174.107:/tmp/sshmng_narrow_remote2.bin", 5 << 20, 2_500_000, ""},
+		{"narrow-40-with-status", 40, "web-01", 5 << 20, 2_500_000, "2✓ 1✗ 1⏳"},
+		{"narrow-30-very-long-label", 30, "this-is-a-very-long-server-name.example.com:/some/deep/path/to/file.bin", 1 << 30, 500_000_000, ""},
+		{"default-80-cjk-label", 80, "火山云/115.190.174.107:/tmp/sshmng_narrow_remote2.bin", 5 << 20, 2_500_000, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := barState{label: c.label, total: c.total, current: c.cur,
+				width: c.width, status: c.status, elapsed: 3 * time.Second}
+			line := renderBarLine(s)
+			dw := displayWidth(line)
+			if dw > c.width {
+				t.Errorf("displayWidth = %d, exceeds width %d; line=%q\n(wraps → \\r-refresh breaks → 刷屏)", dw, c.width, line)
+			}
+		})
+	}
+}
+
+// TestRenderBarLineDropsElementsGracefully verifies that as width shrinks,
+// non-essential elements are dropped (ETA, then rate) before truncating the
+// label, and the label is always present (truncated with … if needed).
+func TestRenderBarLineDropsElementsGracefully(t *testing.T) {
+	label := "web-01"
+	// At width 80 the full layout includes ETA.
+	wide := renderBarLine(barState{label: label, total: 100, current: 50, width: 80, elapsed: 5 * time.Second})
+	if !strings.Contains(wide, "ETA") {
+		t.Errorf("wide layout should include ETA: %q", wide)
+	}
+	// At width 20, ETA and rate should be dropped to fit.
+	narrow := renderBarLine(barState{label: label, total: 100, current: 50, width: 20, elapsed: 5 * time.Second})
+	if strings.Contains(narrow, "ETA") {
+		t.Errorf("narrow layout should drop ETA: %q", narrow)
+	}
+	if !strings.Contains(narrow, label) {
+		t.Errorf("label must always be present (truncated ok): %q", narrow)
+	}
+	if dw := displayWidth(narrow); dw > 20 {
+		t.Errorf("narrow displayWidth %d > 20: %q", dw, narrow)
+	}
+}
