@@ -234,20 +234,17 @@ func runFileDownload(args []string, out io.Writer) int {
 	}
 	local = resolveDstPath(remote, local, localIsDir)
 
-	f, err := os.Create(local)
-	if err != nil {
-		fmt.Fprintf(out, "Error: create %s: %v\n", local, err)
-		return 1
-	}
-	defer f.Close()
-
+	// Atomic download: DownloadToFile writes to a temp file in the same dir and
+	// os.Rename's it into place on success, removing the temp on error/timeout so
+	// no half-written target is left. The onBytes callback drives the progress bar
+	// (cumulative bytes, same as the previous CountingWriter wrapper). Stat stays
+	// for bar sizing (total<0 = indeterminate when Stat fails).
 	total := int64(-1)
 	if fi, statErr := ptyConn.Stat(remote); statErr == nil {
 		total = fi.Size()
 	}
 	bar := progress.NewBar(os.Stderr, srv.Name+":"+remote, total)
-	cw := &progress.CountingWriter{W: f, Fn: func(n int64) { bar.SetBytes(n) }}
-	n, timedOut, err := ptyConn.Download(remote, cw, *timeoutMs)
+	n, timedOut, err := ptyConn.DownloadToFile(remote, local, *timeoutMs, func(n int64) { bar.SetBytes(n) })
 	bar.Finish()
 	if err != nil && !timedOut {
 		fmt.Fprintf(out, "Error: download %s:%s -> %s: %v\n", srv.Name, remote, local, err)
