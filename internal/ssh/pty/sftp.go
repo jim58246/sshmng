@@ -2,12 +2,14 @@ package pty
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
 	"github.com/jim58246/sshmng/internal/ssh/conn"
+	"github.com/pkg/sftp"
 )
 
 // SftpAvailable 返回 sftp 通道是否在 login 时成功建立。
@@ -39,6 +41,10 @@ func (p *PtyConn) Stat(remotePath string) (os.FileInfo, error) {
 // 用 io.Copy 触发 *sftp.File.ReadFrom 的内置并发 pipelining——多个 SSH_FXP_WRITE
 // 包同时在飞，ack 异步回收，把跨地域 RTT 摊薄。超时通过 context.AfterFunc 关闭
 // sftp.File 解除 io.Copy 阻塞：在飞的 Write 收到 close 通知后失败返回。
+//
+// 原子写：先 Create 临时路径 <remotePath>.sshmng-tmp-<hex>，io.Copy 完成后
+// finalizeUpload 做 Sync(best-effort)+PosixRename 原子替换为目标路径。失败/超时时
+// 删除临时文件，不残留半写目标。
 func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, bool, error) {
 	p.logger.Debug("sftp upload start", "sid", p.sid, "remote", remotePath, "timeout_ms", timeoutMs)
 	p.mu.Lock()
@@ -55,15 +61,15 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	dst, err := sftpClient.Create(remotePath)
+	tmpPath := conn.AtomicRemotePath(remotePath)
+	dst, err := sftpClient.Create(tmpPath)
 	if err != nil {
-		return 0, false, fmt.Errorf("create remote %s: %w", remotePath, err)
+		return 0, false, fmt.Errorf("create remote %s: %w", tmpPath, err)
 	}
-	defer dst.Close()
 
 	// ctx 到期时关闭 dst，解除 io.Copy 在 dst.Write（内部 ReadFrom）上的阻塞。
 	// sftp.File.Close 不会重复发 SSH_FXP_CLOSE 网络包，但第二次调用返回 os.ErrClosed
-	// （defer 丢弃该错误，无功能影响）。
+	// （finalizeUpload 忽略该错误，无功能影响）。
 	stop := context.AfterFunc(ctx, func() {
 		dst.Close()
 	})
@@ -73,7 +79,7 @@ func (p *PtyConn) Upload(src io.Reader, remotePath string, timeoutMs int) (int, 
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload done",
 		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
-	return int(n), timedOut, err
+	return p.finalizeUpload(dst, tmpPath, remotePath, int(n), timedOut, err)
 }
 
 // UploadSized 把 src（已知 size）上传到远端 remotePath。
@@ -102,11 +108,11 @@ func (p *PtyConn) UploadSized(src io.Reader, size int64, remotePath string, time
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	dst, err := sftpClient.Create(remotePath)
+	tmpPath := conn.AtomicRemotePath(remotePath)
+	dst, err := sftpClient.Create(tmpPath)
 	if err != nil {
-		return 0, false, fmt.Errorf("create remote %s: %w", remotePath, err)
+		return 0, false, fmt.Errorf("create remote %s: %w", tmpPath, err)
 	}
-	defer dst.Close()
 
 	stop := context.AfterFunc(ctx, func() {
 		dst.Close()
@@ -119,7 +125,46 @@ func (p *PtyConn) UploadSized(src io.Reader, size int64, remotePath string, time
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	p.logger.Debug("sftp upload_sized done",
 		"sid", p.sid, "remote", remotePath, "bytes", n, "timed_out", timedOut)
-	return int(n), timedOut, err
+	return p.finalizeUpload(dst, tmpPath, remotePath, int(n), timedOut, err)
+}
+
+// finalizeUpload closes the temp sftp file, then atomically renames it to
+// remotePath (PosixRename; fallback Remove+Rename). On any error after the
+// copy, removes the temp so no half-written target remains. Sync is best-effort
+// (fsync@openssh.com may be unsupported; ignore that error). Returns the copy's
+// (n, timedOut, err) unchanged on success; on rename failure returns a rename
+// error and removes the temp.
+func (p *PtyConn) finalizeUpload(dst *sftp.File, tmpPath, remotePath string, n int, timedOut bool, copyErr error) (int, bool, error) {
+	// Best-effort fsync; ignore unsupported. dst 可能已被 AfterFunc 关闭（超时），
+	// 此时 Sync 返回 os.ErrClosed——忽略。
+	if err := dst.Sync(); err != nil && !errors.Is(err, os.ErrClosed) {
+		// fsync unsupported → not fatal. Log at debug.
+		p.logger.Debug("sftp fsync skipped", "remote", remotePath, "err", err.Error())
+	}
+	dst.Close()
+
+	if copyErr != nil || timedOut {
+		sftpClient := p.sftpClient
+		if sftpClient != nil {
+			sftpClient.Remove(tmpPath)
+		}
+		return n, timedOut, copyErr
+	}
+	// Success: atomic rename.
+	sftpClient := p.sftpClient
+	if sftpClient == nil {
+		return n, timedOut, fmt.Errorf("sftp client lost after upload")
+	}
+	if err := sftpClient.PosixRename(tmpPath, remotePath); err != nil {
+		// Fallback: standard Rename (non-atomic replace) after Remove.
+		p.logger.Debug("posix-rename unsupported, falling back", "remote", remotePath, "err", err.Error())
+		sftpClient.Remove(remotePath)
+		if err2 := sftpClient.Rename(tmpPath, remotePath); err2 != nil {
+			sftpClient.Remove(tmpPath)
+			return n, timedOut, fmt.Errorf("rename %s -> %s: %w (posix: %v)", tmpPath, remotePath, err2, err)
+		}
+	}
+	return n, timedOut, nil
 }
 
 // Download 把远端 remotePath 下载到 dst。
