@@ -8,9 +8,6 @@ import (
 func TestAtomicRemotePath(t *testing.T) {
 	got := AtomicRemotePath("/root/abc.txt")
 	if !strings.HasPrefix(got, "/root/abc.txt.sshmng-tmp-") {
-		// Note: suffix is ".sshmng-tmp-<hex>". Verify prefix + suffix shape.
-	}
-	if !strings.HasPrefix(got, "/root/abc.txt.sshmng-tmp-") {
 		t.Errorf("AtomicRemotePath(%q) = %q, want prefix %q", "/root/abc.txt", got, "/root/abc.txt.sshmng-tmp-")
 	}
 	// 6 hex chars after the dash.
