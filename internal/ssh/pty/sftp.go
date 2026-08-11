@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jim58246/sshmng/internal/ssh/conn"
@@ -206,6 +207,52 @@ func (p *PtyConn) Download(remotePath string, dst io.Writer, timeoutMs int) (int
 	return int(n), timedOut, err
 }
 
+// DownloadToFile downloads remotePath to a local file atomically: writes to a
+// temp file in the same directory (os.CreateTemp), then os.Rename to localPath
+// on success. On error/timeout the temp is removed, leaving no half-written
+// target. Used by CLI and MCP download paths. Same pipelining as Download
+// (writes go through the existing Download into the temp *os.File).
+//
+// onBytes, if non-nil, is invoked with the cumulative byte count after each
+// successful Write — used by the CLI progress bar. It may be nil.
+func (p *PtyConn) DownloadToFile(remotePath, localPath string, timeoutMs int, onBytes func(int64)) (int, bool, error) {
+	dir := filepath.Dir(localPath)
+	base := filepath.Base(localPath) + ".sshmng-tmp-*"
+	tmp, err := os.CreateTemp(dir, base)
+	if err != nil {
+		return 0, false, fmt.Errorf("create temp for %s: %w", localPath, err)
+	}
+	tmpPath := tmp.Name()
+	// Ensure temp is removed on any non-success exit.
+	success := false
+	defer func() {
+		if !success {
+			tmp.Close()
+			os.Remove(tmpPath)
+		}
+	}()
+
+	var w io.Writer = tmp
+	if onBytes != nil {
+		w = &countingWriter{W: tmp, Fn: onBytes}
+	}
+	n, timedOut, err := p.Download(remotePath, w, timeoutMs)
+	if cerr := tmp.Close(); cerr != nil {
+		// Closing the temp failed — surface but still clean up.
+		if err == nil {
+			err = cerr
+		}
+	}
+	if err != nil || timedOut {
+		return n, timedOut, err
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		return n, timedOut, fmt.Errorf("rename temp -> %s: %w", localPath, err)
+	}
+	success = true
+	return n, timedOut, nil
+}
+
 // ctxReader 在每次 Read 前检查 ctx.Err()。用于 Upload 路径，让 *sftp.File.ReadFrom
 // 在 ctx 取消时能及时退出——否则 ReadFrom 持有 f.mu，AfterFunc 的 dst.Close() 会
 // 阻塞直到 ReadFrom 返回（而 ReadFrom 等 src.Read 返回才返回）。
@@ -265,4 +312,25 @@ func (cw *ctxWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return cw.w.Write(p)
+}
+
+// countingWriter 包装一个 io.Writer，累计已写字节并在每次成功 Write 后通过 Fn
+// 回调上报累计字节数。用于 DownloadToFile 把下载进度喂给 CLI 进度条。Fn 可为 nil。
+// 定义在 pty 包内（不导入 internal/progress）以避免分层倒置——这里只需一个 5 行的
+// 透传 writer。
+type countingWriter struct {
+	W  io.Writer
+	n  int64
+	Fn func(int64)
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.W.Write(p)
+	if n > 0 {
+		c.n += int64(n)
+		if c.Fn != nil {
+			c.Fn(c.n)
+		}
+	}
+	return n, err
 }
