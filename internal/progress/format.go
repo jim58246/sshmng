@@ -66,8 +66,11 @@ func displayWidth(s string) int {
 	return w
 }
 
-// truncateToWidth truncates s (by rune) so its display width is <= maxW,
-// appending "…" if truncation occurred. maxW must be >= 1 (the ellipsis width).
+// truncateToWidth truncates s so its display width is <= maxW. When s contains
+// '/', it is path-aware: the last segment (filename) is kept and preceding
+// directories abbreviated to "…", so the transferred filename stays visible
+// (e.g. "/tmp/sshmng_remote2.bin" at maxW 14 → "…/remote2.bin"). Otherwise it
+// right-truncates with "…". maxW must be >= 1.
 func truncateToWidth(s string, maxW int) string {
 	if maxW < 1 {
 		return ""
@@ -75,7 +78,17 @@ func truncateToWidth(s string, maxW int) string {
 	if displayWidth(s) <= maxW {
 		return s
 	}
-	// Reserve 1 column for the ellipsis, fill with runes that fit.
+	// Path-aware: keep the last segment, abbreviate the rest with "…/".
+	if idx := strings.LastIndex(s, "/"); idx >= 0 && idx < len(s)-1 {
+		tail := s[idx+1:]
+		cand := "…/" + tail
+		if displayWidth(cand) <= maxW {
+			return cand
+		}
+		// Even …/tail is too long: truncate the tail itself (no slash → plain).
+		return truncateToWidth(tail, maxW)
+	}
+	// No slash (or trailing slash): plain right-truncate with ellipsis.
 	limit := maxW - 1
 	out := make([]rune, 0, utf8.RuneCountInString(s))
 	w := 0

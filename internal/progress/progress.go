@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -28,11 +29,11 @@ type Bar struct {
 	width       int
 	lastLineLen int // display width of the last rendered line, for padding + Finish
 	start       time.Time
-	lastDraw    time.Time
-	now         func() time.Time // injectable for tests; nil => time.Now
-	finished    bool
-	mu          sync.Mutex
-	vtRestored  bool
+	lastDraw   time.Time
+	now        func() time.Time // injectable for tests; nil => time.Now
+	finished   bool
+	mu         sync.Mutex
+	vtEnabled  bool // VT processing enabled on b.file (stderr); false => \r+pad fallback
 }
 
 // NewBar creates a progress bar. total<0 = unknown size (indeterminate mode:
@@ -63,11 +64,40 @@ func (b *Bar) refreshWidth() {
 	}
 }
 
-// padToPrev appends spaces so the padded line's display width reaches prevWidth,
-// overwriting stale tail characters left by a prior longer line. Returns the
-// padded line and the (unpadded) display width of the input line. When the new
-// line is already >= prevWidth, no padding is added (the line grew; lastLineLen
-// will catch up on the next shorter redraw).
+// clearAndPosition returns the VT control sequence to erase the previous
+// rendered line (which may wrap across multiple rows after a terminal shrink)
+// and position the cursor at column 0 of the topmost row it occupied, ready
+// for the new line to be written. prevLen=0 (first draw) returns just "\r".
+//
+// Why this is needed: \r alone returns to column 0 of the CURRENT (bottom)
+// row. When the previous line wrapped (e.g. the terminal was shrunk below the
+// prior line's width), the old content occupies several rows and \r only
+// touches the bottom one — the upper rows stay as residue. Moving the cursor
+// up to the top of the old content and clearing to end-of-screen erases all of
+// it. \x1b[J from column 0 also clears the single-row case (trailing chars),
+// replacing space-padding.
+//
+//	\r            column 0 of current (bottom) row
+//	\x1b[<N>A     cursor up N rows (to top of old wrapped content)
+//	\x1b[J        erase cursor → end of screen
+func clearAndPosition(prevLen, width int) string {
+	if prevLen <= 0 {
+		return "\r"
+	}
+	w := width
+	if w <= 0 {
+		w = defaultBarWidth
+	}
+	rows := (prevLen + w - 1) / w // ceil(prevLen / w), ≥1
+	if rows <= 1 {
+		return "\r\x1b[J"
+	}
+	return "\r" + fmt.Sprintf("\x1b[%dA", rows-1) + "\x1b[J"
+}
+
+// padToPrev is the non-VT fallback: appends spaces so the padded line's display
+// width reaches prevWidth, overwriting stale tail chars from a prior longer line.
+// Used only when VT could not be enabled (rare); it cannot clear wrapped rows.
 func padToPrev(line string, prevWidth int) (padded string, curWidth int) {
 	curWidth = displayWidth(line)
 	if prevWidth > curWidth {
@@ -145,23 +175,27 @@ func (b *Bar) maybeRedraw() {
 		width:      b.width,
 		elapsed:    now.Sub(b.start),
 	})
-	// Pad to the previous line's width so a shorter redraw overwrites the
-	// stale tail (else \r + shorter line leaves the old line's end visible).
-	padded, curW := padToPrev(line, b.lastLineLen)
-	b.lastLineLen = curW
-	io.WriteString(b.w, "\r"+padded)
+	if b.vtEnabled {
+		// VT clear: erase the previous line's full extent (incl. wrapped rows
+		// after a shrink) and position at col 0, then write the new line.
+		io.WriteString(b.w, clearAndPosition(b.lastLineLen, b.width)+line)
+	} else {
+		// Fallback (no VT): \r + space-pad to previous width.
+		padded, _ := padToPrev(line, b.lastLineLen)
+		io.WriteString(b.w, "\r"+padded)
+	}
+	b.lastLineLen = displayWidth(line)
 }
 
-// ensureVT enables Windows console VT processing once (idempotent). On Unix no-op.
+// ensureVT enables Windows console VT processing on b.file (stderr) once
+// (idempotent). On Unix no-op. If it fails (very old console / non-console
+// handle), vtEnabled stays false and redraw/Finish fall back to \r + space-pad.
 func (b *Bar) ensureVT() {
-	if !b.tty || b.vtRestored {
+	if !b.tty || b.vtEnabled {
 		return
 	}
-	if _, err := termutil.EnableVTOutput(); err == nil {
-		b.vtRestored = true
-		// Note: we leave VT enabled for the process lifetime rather than
-		// restoring after every redraw. Restoring per-draw would thrash; the
-		// flags only affect stdout rendering and are harmless to leave on.
+	if _, err := termutil.EnableVTFile(b.file); err == nil {
+		b.vtEnabled = true
 	}
 }
 
@@ -175,8 +209,11 @@ func (b *Bar) Finish() {
 		return
 	}
 	b.finished = true
-	// Clear the whole line: \r + spaces + \r. Clear max(width, lastLineLen) so
-	// a rendered line longer than the terminal width (long labels + gauge +
-	// bytes/rate/ETA) leaves no trailing residue.
-	io.WriteString(b.w, "\r"+strings.Repeat(" ", max(b.width, b.lastLineLen))+"\r")
+	if b.vtEnabled {
+		// Clear the full previous extent (incl. wrapped rows) and leave cursor
+		// at col 0 of the top row.
+		io.WriteString(b.w, clearAndPosition(b.lastLineLen, b.width))
+	} else {
+		io.WriteString(b.w, "\r"+strings.Repeat(" ", max(b.width, b.lastLineLen))+"\r")
+	}
 }

@@ -2,12 +2,20 @@
 
 package termutil
 
-// EnableVTOutput 在 Unix 上是 no-op：POSIX 终端原生 LF 语义就是"下移一行、
-// 列不变"（与 xterm/curses 一致），无 Windows console 的 LF→CR+LF 翻译问题。
-// 返回 0；RestoreOutputMode(0) 同样 no-op。
-//
-// 仅 Windows 需要 ENABLE_VIRTUAL_TERMINAL_PROCESSING（见 termutil_windows.go）。
-func EnableVTOutput() (uint32, error) { return 0, nil }
+import "os"
 
-// RestoreOutputMode 在 Unix 上是 no-op。
-func RestoreOutputMode(uint32) {}
+// EnableVTFile is a no-op on Unix: POSIX terminals natively interpret VT
+// sequences (cursor movement, clear-line/screen) and use xterm LF semantics.
+// Returns (0, nil); RestoreVTFile is likewise a no-op. The Bar still calls
+// this (and sets vtEnabled=true on nil error) so it uses the VT clear path.
+func EnableVTFile(*os.File) (uint32, error) { return 0, nil }
+
+// RestoreVTFile is a no-op on Unix.
+func RestoreVTFile(*os.File, uint32) {}
+
+// EnableVTOutput enables VT on stdout. Kept for backward compatibility with
+// pty.Relay; delegates to EnableVTFile(os.Stdout).
+func EnableVTOutput() (uint32, error) { return EnableVTFile(os.Stdout) }
+
+// RestoreOutputMode restores stdout's mode saved by EnableVTOutput.
+func RestoreOutputMode(old uint32) { RestoreVTFile(os.Stdout, old) }
