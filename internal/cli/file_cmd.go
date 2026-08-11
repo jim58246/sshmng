@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 
 	"github.com/jim58246/sshmng/internal/config"
 	"github.com/jim58246/sshmng/internal/progress"
@@ -68,6 +69,13 @@ jumphost, not the target. Use a direct or ssh_j=true connection.
 `)
 }
 
+// isStderrTTY reports whether stderr is a terminal. Used to TTY-gate the
+// "connecting to ..." feedback so scripts/CI capturing stderr stay clean (the
+// progress bar is similarly silent on non-TTY via progress.NewBar).
+func isStderrTTY() bool {
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 // setupFileSession resolves <name>, dials, and returns a ptyConn with the sftp
 // channel enabled (direct + Pattern A). Caller must Close the returned ptyConn
 // and check SftpAvailable() before transferring (false => Pattern B or negotiate
@@ -77,13 +85,22 @@ func setupFileSession(cfg *config.Config, name, configPath string, allowPrompt b
 	if err != nil {
 		return nil, nil, err
 	}
+	// Immediate feedback before the ~1s dial+auth+sftp setup — otherwise the
+	// terminal is blank and looks frozen during SSH connection establishment.
+	// TTY-gated so scripts/CI capturing stderr stay clean (the progress bar is
+	// similarly silent on non-TTY).
+	tty := isStderrTTY()
+	if tty {
+		fmt.Fprintf(os.Stderr, "connecting to %s...\r", srv.Name)
+	}
 	knownHosts := conn.NewKnownHostsStore(KnownHostsPath(configPath))
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	dialer := conn.NewDialer(knownHosts, logger)
 	sid, _ := conn.RandomSID()
 	ptyConn, err := setupSSH(srv, dialer, sid, logger, false, true)
-	if err != nil {
-		return nil, srv, err
+	if tty {
+		// Clear the "connecting" line (VT clear-to-end-of-line/screen).
+		fmt.Fprintf(os.Stderr, "\r\x1b[J")
 	}
 	return ptyConn, srv, nil
 }
@@ -563,8 +580,17 @@ func loginRelaySession(cfg *config.Config, dialer *conn.Dialer, manager *session
 	if err != nil {
 		return "", "", err
 	}
+	// Immediate feedback during the ~1s dial+auth+sftp setup per session.
+	// TTY-gated so scripts/CI capturing stderr stay clean.
+	tty := isStderrTTY()
+	if tty {
+		fmt.Fprintf(os.Stderr, "connecting to %s...\r", srv.Name)
+	}
 	sid, _ = conn.RandomSID()
 	ptyConn, err := setupSSH(srv, dialer, sid, logger, false, true)
+	if tty {
+		fmt.Fprintf(os.Stderr, "\r\x1b[J")
+	}
 	if err != nil {
 		return "", srv.Name, err
 	}
