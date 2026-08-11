@@ -143,6 +143,11 @@ func BenchmarkSftpDownload(b *testing.B) {
 // UploadSized must stay on sftp's concurrent pipelining path (*io.LimitedReader
 // type switch), NOT degrade to serial writeChunkAt.
 //
+// Since the atomic-transfer feature (#4), UploadSized also writes to a temp
+// path + PosixRename + best-effort Sync. This bench covers that overhead too:
+// measured 7.82 MB/s vs the 7.83 MB/s pre-atomic baseline (1.00x — temp+rename
+// overhead negligible over 4MB).
+//
 // Expected: throughput within the same order of magnitude as BenchmarkSftpUpload
 // (which uses *os.File directly). If this regresses by ~10x, CountingReader
 // must forward Stat() (see ctxReaderWithStat) — that is the documented fallback.
