@@ -342,15 +342,12 @@ func (p *PtyConn) DownloadDir(remoteDir, localDir string, opts conn.DirTransferO
 					result.Renamed++
 					mu.Unlock()
 				}
-				f, err := os.Create(finalPath)
-				if err != nil {
-					mu.Lock()
-					errs = append(errs, err)
-					mu.Unlock()
-					continue
-				}
-				n, timedOut, err := p.Download(task.remotePath, f, opts.TimeoutMs)
-				f.Close()
+				// Atomic per-file: DownloadToFile writes to a temp file in the
+				// same dir, then os.Rename to finalPath on success. On
+				// error/timeout the temp is removed — no half-written target.
+				// nil onBytes: dir transfers report progress via opts.OnProgress
+				// (aggregate), not per-file byte tracking.
+				n, timedOut, err := p.DownloadToFile(task.remotePath, finalPath, opts.TimeoutMs, nil)
 				mu.Lock()
 				if err != nil {
 					errs = append(errs, err)
