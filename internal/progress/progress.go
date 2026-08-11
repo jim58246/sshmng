@@ -17,6 +17,7 @@ const throttle = 100 * time.Millisecond
 // When w is not a terminal, all methods are no-ops — callers need not check TTY.
 type Bar struct {
 	w           io.Writer
+	file        *os.File       // the *os.File backing w, if any (for term.GetSize on resize)
 	tty         bool
 	label       string
 	total       int64
@@ -25,7 +26,7 @@ type Bar struct {
 	filesDone   int
 	status      string
 	width       int
-	lastLineLen int // length of the last rendered line, for Finish to clear fully
+	lastLineLen int // display width of the last rendered line, for padding + Finish
 	start       time.Time
 	lastDraw    time.Time
 	now         func() time.Time // injectable for tests; nil => time.Now
@@ -42,12 +43,37 @@ func NewBar(w io.Writer, label string, total int64) *Bar {
 	if f, ok := w.(*os.File); ok {
 		if term.IsTerminal(int(f.Fd())) {
 			b.tty = true
-			if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
-				b.width = w
-			}
+			b.file = f
+			b.refreshWidth()
 		}
 	}
 	return b
+}
+
+// refreshWidth re-reads the terminal width from the attached *os.File. Called
+// on every redraw so the bar adapts to window resize in real time (the width
+// captured at NewBar goes stale when the user resizes the terminal mid-transfer).
+// No-op when no file is attached (test/non-TTY bars).
+func (b *Bar) refreshWidth() {
+	if b.file == nil {
+		return
+	}
+	if w, _, err := term.GetSize(int(b.file.Fd())); err == nil && w > 0 {
+		b.width = w
+	}
+}
+
+// padToPrev appends spaces so the padded line's display width reaches prevWidth,
+// overwriting stale tail characters left by a prior longer line. Returns the
+// padded line and the (unpadded) display width of the input line. When the new
+// line is already >= prevWidth, no padding is added (the line grew; lastLineLen
+// will catch up on the next shorter redraw).
+func padToPrev(line string, prevWidth int) (padded string, curWidth int) {
+	curWidth = displayWidth(line)
+	if prevWidth > curWidth {
+		return line + strings.Repeat(" ", prevWidth-curWidth), curWidth
+	}
+	return line, curWidth
 }
 
 // SetFiles enables the file-count dimension (directory transfers). totalFiles<=0 disables.
@@ -107,6 +133,8 @@ func (b *Bar) maybeRedraw() {
 	}
 	b.lastDraw = now
 	b.ensureVT()
+	// Re-read terminal width so the bar adapts to window resize mid-transfer.
+	b.refreshWidth()
 	line := renderBarLine(barState{
 		label:      b.label,
 		total:      b.total,
@@ -117,9 +145,11 @@ func (b *Bar) maybeRedraw() {
 		width:      b.width,
 		elapsed:    now.Sub(b.start),
 	})
-	b.lastLineLen = displayWidth(line) // display cols, not bytes — CJK is 2 cols each
-	// \r returns to column 0; pad with spaces to clear any prior longer line; no newline.
-	io.WriteString(b.w, "\r"+line)
+	// Pad to the previous line's width so a shorter redraw overwrites the
+	// stale tail (else \r + shorter line leaves the old line's end visible).
+	padded, curW := padToPrev(line, b.lastLineLen)
+	b.lastLineLen = curW
+	io.WriteString(b.w, "\r"+padded)
 }
 
 // ensureVT enables Windows console VT processing once (idempotent). On Unix no-op.
