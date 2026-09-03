@@ -91,11 +91,26 @@ func classifyShell(shellPath string, bashVer, zshVer string) string {
 // 关键约束 3：token 不在 RC 中硬编码。RC 设的初始 PS1 token 为空（`__<sid>___]# `），
 // Run 前通过 setup 命令 `PS1='$(echo _$?)__<sid>_<token>__]# '` 动态升级 PS1 为带 token
 // 版本。token 化确保命令输出含旧 token 的 sentinel 字面量不会误匹配当前 Run。
+//
+// locale 探测：C.UTF-8 需 glibc≥2.35 / musl / macOS 内建；旧 glibc（CentOS 7 / Debian 10）
+// 无内建 C.UTF-8，硬编码会静默回退到 C（ASCII，中文文件名可能显示 ?）。探测让选择显式，
+// 且在 en_US.UTF-8 可用时升级——优先 C.UTF-8（英文确定性 + UTF-8 透传 + 永远可用），
+// 回退 en_US.UTF-8（英文 + UTF-8，旧 glibc + locale-gen），最终 C（ASCII 兜底）。
+// 探测在 InjectRC（login）执行一次，之后整个 session 持续生效。
 func BuildRC(shell string, sid string) string {
 	common := `export TERM=dumb
 export NO_COLOR=1
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
+if command -v locale >/dev/null 2>&1; then
+	_avail=$(locale -a 2>/dev/null)
+	case "$_avail" in
+		*C.UTF-8*|*C.utf8*) export LANG=C.UTF-8; export LC_ALL=C.UTF-8 ;;
+		*en_US.UTF-8*|*en_US.utf8*) export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8 ;;
+		*) export LANG=C; export LC_ALL=C ;;
+	esac
+	unset _avail
+else
+	export LANG=C; export LC_ALL=C
+fi
 stty cols 120 rows 100 2>/dev/null
 `
 

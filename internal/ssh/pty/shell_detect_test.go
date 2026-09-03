@@ -197,6 +197,50 @@ func TestBuildRCUnknownShellFallsBackToPS1Only(t *testing.T) {
 	}
 }
 
+// TestBuildRCLocaleProbe 验证 common 块含 locale 探测：优先 C.UTF-8（glibc≥2.35 /
+// musl / macOS 内建），回退 en_US.UTF-8（旧 glibc 跑过 locale-gen），最终 C（ASCII 兜底）。
+//
+// C.UTF-8 需较新 libc；旧 glibc（CentOS 7 / Debian 10）无内建 C.UTF-8，硬编码会静默
+// 回退到 C（ASCII，中文文件名可能显示为 ?）。探测让 locale 选择显式，且在 en_US.UTF-8
+// 可用时升级——比硬编码 C.UTF-8 在旧系统上静默回退严格更优。
+//
+// 探测在 RC 执行期跑一次（InjectRC，login 时），之后整个 session 的 LANG/LC_ALL 持续
+// 生效；run_in_session 不重跑 RC。
+func TestBuildRCLocaleProbe(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "dash", "unknown-shell"} {
+		t.Run(shell, func(t *testing.T) {
+			rc := BuildRC(shell, "a3f2b1c9")
+			// 探测守卫：无 locale 二进制时直接落 C
+			if !strings.Contains(rc, "command -v locale >/dev/null 2>&1") {
+				t.Errorf("%s RC missing locale probe guard (command -v locale)", shell)
+			}
+			// 探测命令：locale -a
+			if !strings.Contains(rc, "locale -a 2>/dev/null") {
+				t.Errorf("%s RC missing 'locale -a' probe command", shell)
+			}
+			// 优先分支：C.UTF-8（含大小写变体 C.utf8）
+			if !strings.Contains(rc, "*C.UTF-8*|*C.utf8*") {
+				t.Errorf("%s RC missing C.UTF-8 preferred branch", shell)
+			}
+			// 回退分支：en_US.UTF-8（旧 glibc + locale-gen）
+			if !strings.Contains(rc, "*en_US.UTF-8*|*en_US.utf8*") {
+				t.Errorf("%s RC missing en_US.UTF-8 fallback branch", shell)
+			}
+			// 最终兜底分支：export LANG=C; export LC_ALL=C
+			// （带 "; " 分隔，与 "export LANG=C.UTF-8; ..." 区分，不会误匹配优先分支）
+			if !strings.Contains(rc, "export LANG=C; export LC_ALL=C") {
+				t.Errorf("%s RC missing C final fallback branch", shell)
+			}
+			// 探测必须在 PS1 之前：locale 先于 sentinel 设置
+			probeIdx := strings.Index(rc, "command -v locale")
+			ps1Idx := strings.Index(rc, "export PS1=")
+			if probeIdx < 0 || ps1Idx < 0 || probeIdx > ps1Idx {
+				t.Errorf("%s RC: locale probe must precede PS1 (probe=%d ps1=%d)", shell, probeIdx, ps1Idx)
+			}
+		})
+	}
+}
+
 // TestBuildRCSidEscaped 验证 sid 原样出现在 PS1 中。
 func TestBuildRCSidEscaped(t *testing.T) {
 	sid := "deadbeef"
