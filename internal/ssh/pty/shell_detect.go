@@ -95,6 +95,7 @@ func BuildRC(shell string, sid string) string {
 	common := `export TERM=dumb
 export NO_COLOR=1
 export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 stty cols 120 rows 100 2>/dev/null
 `
 

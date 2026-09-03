@@ -100,6 +100,7 @@ func TestBuildRCBash(t *testing.T) {
 		"export TERM=dumb",
 		"export NO_COLOR=1",
 		"export LANG=C.UTF-8",
+		"export LC_ALL=C.UTF-8",
 		"stty cols 120 rows 100",
 		"export PS1='$(echo _$?)__" + sid + "___]# '",
 		"set +o history",
@@ -137,6 +138,7 @@ func TestBuildRCZsh(t *testing.T) {
 		"setopt PROMPT_SUBST",
 		"unset HISTFILE",
 		"stty -echo",
+		"export LC_ALL=C.UTF-8",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(rc, s) {
@@ -165,6 +167,9 @@ func TestBuildRCDash(t *testing.T) {
 	rc := BuildRC("dash", sid)
 	if !strings.Contains(rc, "export PS1='__P_"+sid+"__> '") {
 		t.Errorf("dash RC missing PS1 sentinel")
+	}
+	if !strings.Contains(rc, "export LC_ALL=C.UTF-8") {
+		t.Errorf("dash RC missing export LC_ALL=C.UTF-8 (common block)")
 	}
 	if strings.Contains(rc, "PROMPT_COMMAND") {
 		t.Errorf("dash RC should not set PROMPT_COMMAND (not supported)")
