@@ -99,8 +99,7 @@ func TestBuildRCBash(t *testing.T) {
 	mustContain := []string{
 		"export TERM=dumb",
 		"export NO_COLOR=1",
-		"export LANG=C.UTF-8",
-		"export LC_ALL=C.UTF-8",
+		"command -v locale", // common 块含 locale 探测（具体值由探测决定，不硬编码）
 		"stty cols 120 rows 100",
 		"export PS1='$(echo _$?)__" + sid + "___]# '",
 		"set +o history",
@@ -138,7 +137,7 @@ func TestBuildRCZsh(t *testing.T) {
 		"setopt PROMPT_SUBST",
 		"unset HISTFILE",
 		"stty -echo",
-		"export LC_ALL=C.UTF-8",
+		"command -v locale", // common 块含 locale 探测
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(rc, s) {
@@ -168,8 +167,9 @@ func TestBuildRCDash(t *testing.T) {
 	if !strings.Contains(rc, "export PS1='__P_"+sid+"__> '") {
 		t.Errorf("dash RC missing PS1 sentinel")
 	}
-	if !strings.Contains(rc, "export LC_ALL=C.UTF-8") {
-		t.Errorf("dash RC missing export LC_ALL=C.UTF-8 (common block)")
+	// dash 走 common 块，含 locale 探测（不再硬编码具体 locale 值）
+	if !strings.Contains(rc, "command -v locale") {
+		t.Errorf("dash RC missing locale probe (common block)")
 	}
 	if strings.Contains(rc, "PROMPT_COMMAND") {
 		t.Errorf("dash RC should not set PROMPT_COMMAND (not supported)")
@@ -206,6 +206,11 @@ func TestBuildRCUnknownShellFallsBackToPS1Only(t *testing.T) {
 //
 // 探测在 RC 执行期跑一次（InjectRC，login 时），之后整个 session 的 LANG/LC_ALL 持续
 // 生效；run_in_session 不重跑 RC。
+//
+// 关键：必须逐行精确等值匹配（case 每行 == "C.UTF-8" 等），不能用整串 contains
+// （*C.utf8*）。contains 会误命中 es_EC.utf8 / fr_CA.utf8 等含 "C.utf8" 子串的非 C
+// locale，把它们当 C.UTF-8 选错，导致消息本地化、排序非 POSIX，破坏 agent 的英文
+// 确定性。根因：locale 命名无规范分隔符，*C.utf8* 的 contains 语义过宽。
 func TestBuildRCLocaleProbe(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "dash", "unknown-shell"} {
 		t.Run(shell, func(t *testing.T) {
@@ -218,18 +223,25 @@ func TestBuildRCLocaleProbe(t *testing.T) {
 			if !strings.Contains(rc, "locale -a 2>/dev/null") {
 				t.Errorf("%s RC missing 'locale -a' probe command", shell)
 			}
-			// 优先分支：C.UTF-8（含大小写变体 C.utf8）
-			if !strings.Contains(rc, "*C.UTF-8*|*C.utf8*") {
-				t.Errorf("%s RC missing C.UTF-8 preferred branch", shell)
+			// 逐行读取：while IFS= read -r（POSIX 逐行精确匹配的基础）
+			if !strings.Contains(rc, "while IFS= read -r") {
+				t.Errorf("%s RC missing 'while IFS= read -r' line iteration", shell)
 			}
-			// 回退分支：en_US.UTF-8（旧 glibc + locale-gen）
-			if !strings.Contains(rc, "*en_US.UTF-8*|*en_US.utf8*") {
-				t.Errorf("%s RC missing en_US.UTF-8 fallback branch", shell)
+			// 精确等值匹配 C.UTF-8（无 * 前缀，case 单行 == "C.UTF-8"）
+			// 正确形态：C.UTF-8|C.utf8) 出现在 case 分支（非 *C.UTF-8*|*C.utf8*）
+			if !strings.Contains(rc, "C.UTF-8|C.utf8)") {
+				t.Errorf("%s RC missing exact-match 'C.UTF-8|C.utf8)' branch", shell)
 			}
-			// 最终兜底分支：export LANG=C; export LC_ALL=C
-			// （带 "; " 分隔，与 "export LANG=C.UTF-8; ..." 区分，不会误匹配优先分支）
-			if !strings.Contains(rc, "export LANG=C; export LC_ALL=C") {
-				t.Errorf("%s RC missing C final fallback branch", shell)
+			// 精确等值匹配 en_US.UTF-8
+			if !strings.Contains(rc, "en_US.UTF-8|en_US.utf8)") {
+				t.Errorf("%s RC missing exact-match 'en_US.UTF-8|en_US.utf8)' branch", shell)
+			}
+			// 防回归：不得用 contains glob（*C.UTF-8* / *C.utf8* 会误配 es_EC.utf8）
+			if strings.Contains(rc, "*C.UTF-8*") || strings.Contains(rc, "*C.utf8*") {
+				t.Errorf("%s RC must NOT use contains glob *C.UTF-8*/*C.utf8* (mismatches es_EC.utf8)", shell)
+			}
+			if strings.Contains(rc, "*en_US.UTF-8*") || strings.Contains(rc, "*en_US.utf8*") {
+				t.Errorf("%s RC must NOT use contains glob *en_US.UTF-8*/*en_US.utf8*", shell)
 			}
 			// 探测必须在 PS1 之前：locale 先于 sentinel 设置
 			probeIdx := strings.Index(rc, "command -v locale")

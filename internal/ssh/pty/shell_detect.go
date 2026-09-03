@@ -97,17 +97,26 @@ func classifyShell(shellPath string, bashVer, zshVer string) string {
 // 且在 en_US.UTF-8 可用时升级——优先 C.UTF-8（英文确定性 + UTF-8 透传 + 永远可用），
 // 回退 en_US.UTF-8（英文 + UTF-8，旧 glibc + locale-gen），最终 C（ASCII 兜底）。
 // 探测在 InjectRC（login）执行一次，之后整个 session 持续生效。
+//
+// 必须逐行精确等值匹配（case 每行 == "C.UTF-8"），不能用整串 contains（*C.utf8*）：
+// contains 会误命中 es_EC.utf8 / fr_CA.utf8 等含 "C.utf8" 子串的非 C locale，把它们
+// 当 C.UTF-8 选错，导致消息本地化、排序非 POSIX。根因是 locale 命名无规范分隔符。
 func BuildRC(shell string, sid string) string {
 	common := `export TERM=dumb
 export NO_COLOR=1
 if command -v locale >/dev/null 2>&1; then
 	_avail=$(locale -a 2>/dev/null)
-	case "$_avail" in
-		*C.UTF-8*|*C.utf8*) export LANG=C.UTF-8; export LC_ALL=C.UTF-8 ;;
-		*en_US.UTF-8*|*en_US.utf8*) export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8 ;;
-		*) export LANG=C; export LC_ALL=C ;;
-	esac
-	unset _avail
+	_pick=C
+	while IFS= read -r _line; do
+		case "$_line" in
+			C.UTF-8|C.utf8) _pick=C.UTF-8; break ;;
+			en_US.UTF-8|en_US.utf8) [ "$_pick" = C ] && _pick=en_US.UTF-8 ;;
+		esac
+	done <<EOF
+$_avail
+EOF
+	export LANG=$_pick; export LC_ALL=$_pick
+	unset _pick _line _avail
 else
 	export LANG=C; export LC_ALL=C
 fi
