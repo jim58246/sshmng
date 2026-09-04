@@ -115,7 +115,7 @@ npx @modelcontextprotocol/inspector go run ./cmd/sshmng mcp
 
 Inspector 提供 GUI 直接调用工具、查看请求/响应。首次集成或排查 LoginFlow 时强烈建议先用 Inspector 验证一遍。
 
-sshmng 不通过 MCP `notifications/message` 推日志——所有日志走 `config.log_path` 指定的文件（未配置则不打日志）。要看 DEBUG 日志，把 `config.json` 的 `log_level` 设为 `"debug"` 后重启 Inspector 即可，日志写到 `<log_path>/sshmng.log`。
+sshmng 不通过 MCP `notifications/message` 推日志——所有日志走 `config.log_path` 指定的文件（未配置则不打日志）。要看 DEBUG 日志，把 `config.json` 的 `log_level` 设为 `"debug"` 后重启 Inspector 即可，日志写到 `<log_path>/<timestamp>-<pid>.log`。
 
 ### 日志配置
 
@@ -127,7 +127,7 @@ sshmng 不通过 MCP `notifications/message` 推日志——所有日志走 `con
 ```
 
 - `log_level`：`debug` / `info` / `warn` / `error`（支持缩写 `dbg`/`d`/`inf`/`i`/`w`/`err`/`e`，大小写不敏感）；空 = 默认 `info`；配错 Load 报错
-- `log_path`：日志目录；空 = 不打日志；非空 = `<log_path>/sshmng.log`，10MB 轮转、最多 5 份（`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`，0600 权限）
+- `log_path`：日志目录；空 = 不打日志；非空 = 每进程一个文件 `<log_path>/<timestamp>-<pid>.log`（如 `2026-09-04_11-17-37-27533.log`，0600 权限）。每个 sshmng 进程写各自文件（不会跨实例交错）；启动时清理超过 7 天的旧日志。
 - bootstrap 阶段错误（config 加载失败、known_hosts 权限错等）走 stderr，Inspector "Server" 面板可见
 - DEBUG 日志会**完整记录** LoginFlow 每步 send/read/match、run_in_session 的 cmd/output、sftp upload/download、PTY stdout 片段（不截断、不打码）。**分享日志时注意脱敏**——LoginFlow 的 `send` 字段、PTY 输出都可能含密码
 

@@ -115,7 +115,7 @@ npx @modelcontextprotocol/inspector go run ./cmd/sshmng mcp
 
 Inspector provides a GUI to invoke tools directly and inspect requests/responses. Strongly recommended for first-time integration or LoginFlow debugging.
 
-sshmng doesn't push logs via MCP `notifications/message` — all logs go to the file specified by `config.log_path` (or no logging if unconfigured). To see DEBUG logs, set `log_level` to `"debug"` in `config.json` and restart Inspector; logs write to `<log_path>/sshmng.log`.
+sshmng doesn't push logs via MCP `notifications/message` — all logs go to the file specified by `config.log_path` (or no logging if unconfigured). To see DEBUG logs, set `log_level` to `"debug"` in `config.json` and restart Inspector; logs write to `<log_path>/<timestamp>-<pid>.log`.
 
 ### Log Configuration
 
@@ -127,7 +127,7 @@ sshmng doesn't push logs via MCP `notifications/message` — all logs go to the 
 ```
 
 - `log_level`: `debug` / `info` / `warn` / `error` (abbreviations `dbg`/`d`/`inf`/`i`/`w`/`err`/`e`, case-insensitive); empty = default `info`; invalid value fails Load
-- `log_path`: log directory; empty = no logging; non-empty = `<log_path>/sshmng.log`, 10MB rotation, max 5 files (`sshmng.log` + `sshmng.1.log` ~ `sshmng.4.log`, 0600 perms)
+- `log_path`: log directory; empty = no logging; non-empty = one file per process `<log_path>/<timestamp>-<pid>.log` (e.g. `2026-09-04_11-17-37-27533.log`, 0600 perms). Each sshmng process writes its own file (no cross-instance interleaving); files older than 7 days are cleaned up on startup.
 - Bootstrap-stage errors (config load failure, known_hosts permission error, etc.) go to stderr, visible in Inspector's "Server" panel
 - DEBUG logs **fully record** every LoginFlow step's send/read/match, run_in_session's cmd/output, sftp upload/download, PTY stdout snippets (untruncated, unmasked). **Sanitize before sharing** — LoginFlow's `send` field and PTY output may contain passwords
 
