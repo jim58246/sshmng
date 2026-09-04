@@ -119,7 +119,7 @@ func setupSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *sl
 			ptyConn.Close()
 			return nil, fmt.Errorf("detect shell: %w", err)
 		}
-		if err := ptyConn.InjectRC(); err != nil {
+		if _, err := ptyConn.InjectRC(); err != nil {
 			ptyConn.Close()
 			return nil, fmt.Errorf("inject rc: %w", err)
 		}

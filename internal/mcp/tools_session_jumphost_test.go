@@ -624,16 +624,18 @@ func TestIntegrationPatternBLoginFlowTracePersisted(t *testing.T) {
 		t.Errorf("commands should be empty before run_in_session, got %d entries", len(cmds))
 	}
 
-	// login_flow 应含 4 条 entry：1 jumphost + 3 target
+	// login_flow 应含 5 条 entry：1 jumphost + 3 target + 1 RC 注入（RC 成功也记 trace，
+	// 供 get_trace 事后查 RC 阶段）。
 	flow, ok := r["login_flow"].([]any)
 	if !ok {
 		t.Fatalf("login_flow should be array, got %T", r["login_flow"])
 	}
-	if len(flow) != 4 {
-		t.Fatalf("login_flow should have 4 entries (1 jumphost + 3 target), got %d", len(flow))
+	if len(flow) != 5 {
+		t.Fatalf("login_flow should have 5 entries (1 jumphost + 3 target + 1 rc_inject), got %d", len(flow))
 	}
 
-	// 校验每条 entry 的 send 值，按顺序应为："" / "1\n" / "alice\n" / "wonderland\n"
+	// 校验前 4 条 entry 的 send 值，按顺序应为："" / "1\n" / "alice\n" / "wonderland\n"
+	// 第 5 条是 RC 注入阶段（send = BuildRC 生成的 RC 脚本，非 LoginFlow 的 send）。
 	expectedSends := []string{"", "1\n", "alice\n", "wonderland\n"}
 	for i, want := range expectedSends {
 		entry, ok := flow[i].(map[string]any)

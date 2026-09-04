@@ -84,8 +84,10 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 		ptyConn, loginTrace, err = s.setupPatternB(srv, dialer, sid, logger)
 	}
 	if err != nil {
-		// LoginFlow 失败时携带 login_trace 返给 Agent 诊断（设计文档 §3.x）。
-		// SSH auth / detectShell / RC 注入等其他失败仅返回 error 字符串。
+		// LoginFlow / RC 注入失败时携带 login_trace 返给 Agent 诊断（设计文档 §3.x）。
+		// 两者都返回 *pty.LoginFlowError（Stage 区分：direct/patternA/patternB 为
+		// LoginFlow 阶段，rc_inject 为 RC 注入阶段）。SSH auth / detectShell 失败
+		// 仅返回 error 字符串（无 trace）。
 		var lfErr *pty.LoginFlowError
 		if errors.As(err, &lfErr) && len(lfErr.Trace) > 0 {
 			last := lfErr.Trace[len(lfErr.Trace)-1]
@@ -152,10 +154,13 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 		ptyConn.Close()
 		return nil, trace, fmt.Errorf("detect shell: %w", err)
 	}
-	if err := ptyConn.InjectRC(); err != nil {
+	rcTrace, err := ptyConn.InjectRC()
+	if err != nil {
 		ptyConn.Close()
-		return nil, trace, fmt.Errorf("inject rc: %w", err)
+		trace = append(trace, rcTrace...)
+		return nil, trace, fmt.Errorf("direct: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
+	trace = append(trace, rcTrace...)
 	// 直连：SFTP 通道是到 target 的，探测启用。
 	ptyConn.TryEnableSftp()
 	logger.Debug("setup done",
@@ -218,10 +223,13 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid 
 		ptyConn.Close()
 		return nil, trace, fmt.Errorf("detect shell: %w", err)
 	}
-	if err := ptyConn.InjectRC(); err != nil {
+	rcTrace, err := ptyConn.InjectRC()
+	if err != nil {
 		ptyConn.Close()
-		return nil, trace, fmt.Errorf("inject rc: %w", err)
+		trace = append(trace, rcTrace...)
+		return nil, trace, fmt.Errorf("patternB: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
+	trace = append(trace, rcTrace...)
 	// Pattern B：SSH client 是到 jumphost 的，SFTP 通道只会到 jumphost 而非 target，
 	// 探测成功反而误导（用户以为能 upload 到 target，实际落到 jumphost）。
 	// 故不调用 TryEnableSftp，sftp_available 恒为 false。
@@ -306,10 +314,13 @@ func (s *Service) setupPatternA(srv *config.SSHServer, dialer *conn.Dialer, sid 
 		ptyConn.Close()
 		return nil, trace, fmt.Errorf("detect shell: %w", err)
 	}
-	if err := ptyConn.InjectRC(); err != nil {
+	rcTrace, err := ptyConn.InjectRC()
+	if err != nil {
 		ptyConn.Close()
-		return nil, trace, fmt.Errorf("inject rc: %w", err)
+		trace = append(trace, rcTrace...)
+		return nil, trace, fmt.Errorf("patternA: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
+	trace = append(trace, rcTrace...)
 
 	// Pattern A：SFTP 通道是到 target 的（与 setupDirect 一致），探测启用
 	ptyConn.TryEnableSftp()

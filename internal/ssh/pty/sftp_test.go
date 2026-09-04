@@ -30,7 +30,7 @@ func TestSftpEstablishedAtLogin(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestSftpUnavailableWhenSubsystemRejected(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestUploadNormalPath(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestUploadSftpUnavailable(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestUploadTimeout(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestPtyConnUploadSized(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestPtyConnUploadSizedBoundsToSize(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestDownloadNormalPath(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestDownloadSftpUnavailable(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestDownloadTimeout(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestPtyConnStat(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestPtyConnStatSftpUnavailable(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}

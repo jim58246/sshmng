@@ -42,7 +42,7 @@ func newAutoCapturePty(t *testing.T) (*PtyConn, func()) {
 	if err != nil {
 		t.Fatalf("RandomSID: %v", err)
 	}
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		client.Close()
 		t.Fatalf("NewPtyConn: %v", err)

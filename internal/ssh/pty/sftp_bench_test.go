@@ -35,7 +35,7 @@ func BenchmarkSftpUpload(b *testing.B) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		b.Fatalf("NewPtyConn: %v", err)
 	}
@@ -85,7 +85,7 @@ func BenchmarkSftpUploadBytesReader(b *testing.B) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		b.Fatalf("NewPtyConn: %v", err)
 	}
@@ -117,7 +117,7 @@ func BenchmarkSftpDownload(b *testing.B) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		b.Fatalf("NewPtyConn: %v", err)
 	}
@@ -165,7 +165,7 @@ func BenchmarkSftpUploadSizedCounting(b *testing.B) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		b.Fatalf("NewPtyConn: %v", err)
 	}

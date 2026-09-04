@@ -26,7 +26,7 @@ func TestUploadAtomicOnInterruptedReader(t *testing.T) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestUploadAtomicSuccessRenames(t *testing.T) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDownloadToFileAtomicOnTimeout(t *testing.T) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestDownloadToFileAtomicSuccess(t *testing.T) {
 	}
 	defer client.Close()
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}

@@ -119,34 +119,40 @@ type PtyConn struct {
 // logger 用于 DEBUG 级别的 PTY 交互日志（Run / SendInput / detectShell / injectRC /
 // LoginFlow 每步）；nil 退化为 discard handler。
 //
-// LoginFlow 失败时返回 *LoginFlowError（携带 trace）；其他失败（detectShell / RC
-// 注入）返回普通 error。调用方可用 errors.As 提取 trace 返给 Agent 诊断。
-func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions, logger *slog.Logger) (*PtyConn, error) {
+// LoginFlow 失败时返回 *LoginFlowError（携带 trace）；RC 注入失败也返回
+// *LoginFlowError（Stage="rc_inject"）；detectShell 失败返回普通 error。
+// 调用方可用 errors.As 提取 trace 返给 Agent 诊断。
+// 返回的 trace 是 LoginFlow + RC 注入两阶段的合并 trace（供 get_trace）。
+func NewPtyConn(client *ssh.Client, sid string, opts *PtyConnOptions, logger *slog.Logger) (*PtyConn, []loginflow.TraceEntry, error) {
 	p, err := OpenPtyConnWithTimeout(client, sid, logger, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var trace []loginflow.TraceEntry
 	if opts != nil && len(opts.LoginFlow) > 0 {
-		trace, err := p.RunLoginFlow(opts.LoginFlow, opts.LoginEntry, LoginFlowOptions{
+		trace, err = p.RunLoginFlow(opts.LoginFlow, opts.LoginEntry, LoginFlowOptions{
 			MaxSteps:        opts.MaxSteps,
 			GlobalTimeoutMs: opts.GlobalTimeoutMs,
 		})
 		if err != nil {
 			p.Close()
-			return nil, &LoginFlowError{Stage: "direct", Trace: trace, Err: err}
+			return nil, trace, &LoginFlowError{Stage: "direct", Trace: trace, Err: err}
 		}
 	}
 	if err := p.DetectShell(); err != nil {
 		p.Close()
-		return nil, fmt.Errorf("detect shell: %w", err)
+		return nil, trace, fmt.Errorf("detect shell: %w", err)
 	}
-	if err := p.InjectRC(); err != nil {
+	rcTrace, err := p.InjectRC()
+	if err != nil {
 		p.Close()
-		return nil, fmt.Errorf("inject rc: %w", err)
+		trace = append(trace, rcTrace...)
+		return nil, trace, &LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err}
 	}
+	trace = append(trace, rcTrace...)
 	// 直连场景：SFTP 通道是到 target 的，探测启用。
 	p.TryEnableSftp()
-	return p, nil
+	return p, trace, nil
 }
 
 // OpenPtyConn 在已建立的 SSH 连接上分配 PTY、启动 shell。
@@ -349,7 +355,9 @@ func (p *PtyConn) RunLoginFlow(flow map[string]config.LoginAction, entry string,
 
 // InjectRC 注入 RC 脚本并等待首个 PS1 sentinel 出现。
 // 在所有 LoginFlow（如有）执行完后调用。
-func (p *PtyConn) InjectRC() error {
+// 返回 RC 阶段的 trace（一条 TraceEntry，含 Send=RC 脚本 / Output=PTY 累积输出），
+// 供 setup* 并入 login_flow trace，RC 失败时经 *LoginFlowError 返给 Agent 诊断。
+func (p *PtyConn) InjectRC() ([]loginflow.TraceEntry, error) {
 	return p.injectRC()
 }
 
@@ -434,26 +442,41 @@ func (p *PtyConn) detectShell() (string, error) {
 // `export PS1=...` 的退出码 0）。用 regex 匹配（因 sentinel 含动态 exit code）。
 //
 // dash/ash：等字面量 `__P_<sid>__> `（无 $(echo _$?) 扩展，无 exit code）。
-func (p *PtyConn) injectRC() error {
+//
+// 返回 RC 阶段的 trace（一条 TraceEntry）。超时时 Output 含 PTY 累积输出（如 readline
+// 补全提示 "Display all N possibilities"），供 Agent 直接看到卡住原因——之前的 bug：
+// readUntilRegexTimeout 返回的累积输出被 _ 丢弃，超时 error 不带它，定位困难。
+func (p *PtyConn) injectRC() ([]loginflow.TraceEntry, error) {
 	rc := BuildRC(p.shell, p.sid)
+	stepStart := time.Now()
 	p.logger.Debug("inject rc send", "shell", p.shell, "rc", rc)
 	if _, err := p.stdin.Write([]byte(rc)); err != nil {
-		return fmt.Errorf("write rc: %w", err)
+		return nil, fmt.Errorf("write rc: %w", err)
 	}
+	var output string
+	var timedOut bool
+	expect := "initial PS1 sentinel"
 	if p.shell == "bash" || p.shell == "zsh" {
 		re := initialPS1Re(p.sid)
-		_, timedOut := p.readUntilRegexTimeout(re, rcInjectTimeout)
-		if timedOut {
-			return fmt.Errorf("timeout waiting for initial PS1 sentinel after %s", rcInjectTimeout)
-		}
+		output, timedOut = p.readUntilRegexTimeout(re, rcInjectTimeout)
 	} else {
 		ps1Sentinel := fmt.Sprintf("__P_%s__> ", p.sid)
-		if _, err := p.readUntilPattern(ps1Sentinel, rcInjectTimeout); err != nil {
-			return err
-		}
+		expect = ps1Sentinel
+		out, to := p.readUntilPatternTimeout(ps1Sentinel, rcInjectTimeout)
+		output, timedOut = out, to
+	}
+	trace := []loginflow.TraceEntry{{
+		Time:      stepStart.Format("2006-01-02 15:04:05.000"),
+		ElapsedMs: int(time.Since(stepStart).Milliseconds()),
+		Send:      rc,
+		Expect:    expect,
+		Output:    output,
+	}}
+	if timedOut {
+		return trace, fmt.Errorf("inject rc: timeout waiting for %s after %s; pty output: %q", expect, rcInjectTimeout, output)
 	}
 	p.logger.Debug("inject rc done", "shell", p.shell)
-	return nil
+	return trace, nil
 }
 
 // initialPS1Re 返回匹配初始 PS1 sentinel 的 regex（bash/zsh）。

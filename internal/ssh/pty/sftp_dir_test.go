@@ -33,7 +33,7 @@ func TestUploadDirBasic(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestUploadDirEmptyLocalDir(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestUploadDirLocalNotExist(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestUploadDirConflictSkip(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestUploadDirConflictRename(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestUploadDirConcurrency(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestDownloadDirBasic(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestDownloadDirConflictSkip(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestDownloadDirConflictRename(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestDownloadDirConcurrency(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	p, err := NewPtyConn(client, sid, nil, nil)
+	p, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}

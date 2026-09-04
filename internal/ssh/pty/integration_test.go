@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -47,6 +48,7 @@ type fakeShellServer struct {
 	echoPty         bool
 	alwaysEcho      bool
 	realisticPrompt bool
+	rcStall         bool // RC 阶段不 emit sentinel，改写补全提示，模拟 readline Tab 补全卡住
 	wg              sync.WaitGroup
 }
 
@@ -88,6 +90,16 @@ func newFakeShellServerWithAlwaysEcho(tb testing.TB) *fakeShellServer {
 func newFakeShellServerWithRealisticPrompt(tb testing.TB) *fakeShellServer {
 	s := newFakeShellServerOpt(tb, false)
 	s.realisticPrompt = true
+	return s
+}
+
+// newFakeShellServerWithRcStall 创建 RC 阶段卡住的 fake server。
+// 收到 export PS1= 行后不 emit sentinel，改写 "Display all N possibilities (y or n)?"
+// 模拟交互式 bash 的 readline 把 Tab 当补全键触发卡住。用于验证 InjectRC 超时时
+// 返回的 trace 含 PTY 累积输出（直接证据），供 Agent 诊断。
+func newFakeShellServerWithRcStall(tb testing.TB) *fakeShellServer {
+	s := newFakeShellServerOpt(tb, false)
+	s.rcStall = true
 	return s
 }
 
@@ -181,7 +193,7 @@ func (s *fakeShellServer) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request
 			req.Reply(true, nil)
 		case "shell":
 			req.Reply(true, nil)
-			runFakeShell(ch, ptyRequested, echoEnabled, s.realisticPrompt)
+			runFakeShell(ch, ptyRequested, echoEnabled, s.realisticPrompt, s.rcStall)
 			return
 		case "subsystem":
 			if !s.enableSftp {
@@ -282,7 +294,7 @@ func runSftpServer(ch ssh.Channel) {
 //
 // realisticPrompt 现在是 no-op：新 BuildRC 把 export PS1 放最后，无后续 RC 行触发
 // 额外 prompt。参数保留以避免破坏测试调用，将来可移除。
-func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, _ bool) {
+func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, _ bool, rcStall bool) {
 	reader := bufio.NewReader(ch)
 	var sid string
 	var tok string
@@ -318,8 +330,14 @@ func runFakeShell(ch ssh.Channel, _ bool, echoEnabled bool, _ bool) {
 					sid = m[1]
 				}
 				rcDone = true
-				// emit 初始 PS1 sentinel：`_0__<sid>___]# `（export PS1=... 命令退出 0）
-				fmt.Fprintf(ch, "_0__%s___]# ", sid)
+				if rcStall {
+					// 模拟交互式 bash 的 readline 把 Tab 当补全键：不 emit sentinel，
+					// 改写补全提示并阻塞（不继续），InjectRC 会超时。trace 应含此输出。
+					fmt.Fprintf(ch, "Display all 1911 possibilities? (y or n)")
+				} else {
+					// emit 初始 PS1 sentinel：`_0__<sid>___]# `（export PS1=... 命令退出 0）
+					fmt.Fprintf(ch, "_0__%s___]# ", sid)
+				}
 			}
 			// 其他 RC 行：忽略不执行
 			continue
@@ -397,7 +415,7 @@ func TestIntegrationLoginAndRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RandomSID: %v", err)
 	}
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -436,7 +454,7 @@ func TestIntegrationRunFailingCommand(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -462,7 +480,7 @@ func TestIntegrationRunTimeout(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -488,7 +506,7 @@ func TestIntegrationMultipleCommands(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -522,7 +540,7 @@ func TestIntegrationOutputTruncation(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -564,7 +582,7 @@ func TestIntegrationPtyEchoDoesNotBreakShellDetect(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v (PTY ECHO should be disabled so detectShell waits for real execution result, not echoed command)", err)
 	}
@@ -613,7 +631,7 @@ func TestIntegrationDetectShellWorksWithEcho(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v (detectShell should work even with echo via variable-based end marker)", err)
 	}
@@ -658,7 +676,7 @@ func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	sid, _ := conn.RandomSID()
-	ptyConn, err := NewPtyConn(client, sid, nil, nil)
+	ptyConn, _, err := NewPtyConn(client, sid, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPtyConn: %v", err)
 	}
@@ -688,3 +706,102 @@ func TestIntegrationRealisticBashPromptsDuringRC(t *testing.T) {
 
 // 确保 io 接口被引用（避免未使用 import 误报）
 var _ = io.EOF
+
+// TestIntegrationInjectRCTimeoutReturnsTrace 验证 RC 注入超时时 InjectRC 返回的 trace
+// 含 PTY 累积输出（直接证据），而非丢弃。
+//
+// 复现 Tab 缩进 bug 的可观测性修复：readUntilRegexTimeout 返回的累积输出（含
+// "Display all N possibilities" 补全提示）曾被 _ 丢弃，超时 error 不带它，定位困难。
+// 修复后 InjectRC 超时返回 trace.Output 含该输出，Agent/日志可直接看到卡住原因。
+func TestIntegrationInjectRCTimeoutReturnsTrace(t *testing.T) {
+	srv := newFakeShellServerWithRcStall(t)
+	d := newDialerWithTempKnownHosts(t)
+
+	client, err := d.Dial(conn.DialOptions{
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	sid, err := conn.RandomSID()
+	if err != nil {
+		t.Fatalf("RandomSID: %v", err)
+	}
+
+	// NewPtyConn 内部 InjectRC 会超时（fake shell rcStall 不 emit sentinel）。
+	// 应返回 *LoginFlowError{Stage:"rc_inject"}，trace 含 RC 阶段的 TraceEntry。
+	_, trace, err := NewPtyConn(client, sid, nil, nil)
+	if err == nil {
+		t.Fatal("expected inject rc timeout error, got nil")
+	}
+	// error message 应含 PTY 输出（Gap 3 修复）
+	if !strings.Contains(err.Error(), "Display all 1911 possibilities") {
+		t.Errorf("error should contain PTY output as diagnostic, got: %q", err.Error())
+	}
+	// 应是 *LoginFlowError，Stage="rc_inject"
+	var lfErr *LoginFlowError
+	if !errors.As(err, &lfErr) {
+		t.Fatalf("error should be *LoginFlowError, got %T", err)
+	}
+	if lfErr.Stage != "rc_inject" {
+		t.Errorf("Stage = %q, want rc_inject", lfErr.Stage)
+	}
+	// trace 应非空，且最后一条是 RC 阶段（Send=RC 脚本，Output 含补全提示）
+	if len(trace) == 0 {
+		t.Fatal("trace should have RC inject entry, got empty")
+	}
+	rcEntry := trace[len(trace)-1]
+	if !strings.Contains(rcEntry.Send, "export TERM=dumb") {
+		t.Errorf("RC trace entry Send should be the RC script, got: %q", rcEntry.Send)
+	}
+	if !strings.Contains(rcEntry.Output, "Display all 1911 possibilities") {
+		t.Errorf("RC trace entry Output should contain PTY output (the completion prompt), got: %q", rcEntry.Output)
+	}
+}
+
+// TestIntegrationInjectRCSuccessReturnsTrace 验证 RC 注入成功时 InjectRC 也返回
+// trace（一条 TraceEntry，Send=RC 脚本），供 get_trace 事后查 RC 阶段。
+func TestIntegrationInjectRCSuccessReturnsTrace(t *testing.T) {
+	srv := newFakeShellServer(t)
+	d := newDialerWithTempKnownHosts(t)
+
+	client, err := d.Dial(conn.DialOptions{
+		Addr:          srv.Addr(),
+		User:          "alice",
+		Auth:          config.SSHAuth{Password: "wonderland"},
+		HostKeyVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	sid, err := conn.RandomSID()
+	if err != nil {
+		t.Fatalf("RandomSID: %v", err)
+	}
+
+	ptyConn, trace, err := NewPtyConn(client, sid, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPtyConn: %v", err)
+	}
+	defer ptyConn.Close()
+
+	// 成功路径：trace 最后一条应是 RC 注入阶段
+	if len(trace) == 0 {
+		t.Fatal("trace should have RC inject entry, got empty")
+	}
+	rcEntry := trace[len(trace)-1]
+	if !strings.Contains(rcEntry.Send, "export TERM=dumb") {
+		t.Errorf("RC trace entry Send should be the RC script, got: %q", rcEntry.Send)
+	}
+	// 成功时 Output 应含 sentinel（PTY 收到了 _0__<sid>___]# ）
+	if !strings.Contains(rcEntry.Output, sid) {
+		t.Errorf("RC trace entry Output should contain the sentinel with sid, got: %q", rcEntry.Output)
+	}
+}

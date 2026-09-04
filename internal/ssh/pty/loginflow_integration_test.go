@@ -265,7 +265,7 @@ func TestIntegrationLoginFlowSuccess(t *testing.T) {
 		},
 	}
 
-	ptyConn, err := NewPtyConn(client, sid, &PtyConnOptions{
+	ptyConn, _, err := NewPtyConn(client, sid, &PtyConnOptions{
 		LoginFlow:  flow,
 		LoginEntry: "entry",
 	}, nil)
@@ -316,7 +316,7 @@ func TestIntegrationLoginFlowFailureReturnsTrace(t *testing.T) {
 		},
 	}
 
-	_, err = NewPtyConn(client, sid, &PtyConnOptions{
+	_, _, err = NewPtyConn(client, sid, &PtyConnOptions{
 		LoginFlow:  flow,
 		LoginEntry: "entry",
 	}, nil)

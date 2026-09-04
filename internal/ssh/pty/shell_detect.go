@@ -102,6 +102,12 @@ func classifyShell(shellPath string, bashVer, zshVer string) string {
 // contains 会误命中 es_EC.utf8 / fr_CA.utf8 等含 "C.utf8" 子串的非 C locale，把它们
 // 当 C.UTF-8 选错，导致消息本地化、排序非 POSIX。根因是 locale 命名无规范分隔符。
 func BuildRC(shell string, sid string) string {
+	// common 是注入 PTY stdin 的 shell 脚本，由交互式 shell 逐行执行。
+	// !! 缩进必须用空格，绝不能用 Tab。交互式 bash 的 readline 把 Tab 当补全请求键，
+	// 触发 "Display all N possibilities (y or n)?" 并阻塞等用户确认——sshmng 非交互
+	// 写入无人应答，injectRC 等 sentinel 超时、login 失败。此 bug 曾由 Tab 缩进的
+	// locale 探测块引入，定位困难（日志/trace 均无 RC 阶段记录）。TestBuildRCLocaleProbe
+	// 有 "RC must NOT contain Tab" 断言防回归。编辑本块时保持空格缩进。
 	common := `export TERM=dumb
 export NO_COLOR=1
 if command -v locale >/dev/null 2>&1; then
