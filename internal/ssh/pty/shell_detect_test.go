@@ -249,6 +249,12 @@ func TestBuildRCLocaleProbe(t *testing.T) {
 			if probeIdx < 0 || ps1Idx < 0 || probeIdx > ps1Idx {
 				t.Errorf("%s RC: locale probe must precede PS1 (probe=%d ps1=%d)", shell, probeIdx, ps1Idx)
 			}
+			// 防回归：RC 脚本不得含 Tab 字符。交互式 bash 的 readline 把 Tab 当
+			// 补全请求键，触发 "Display all N possibilities" 提示并阻塞等用户确认，
+			// 导致 injectRC 等 sentinel 超时、login 失败。RC 缩进必须用空格。
+			if strings.ContainsRune(rc, '\t') {
+				t.Errorf("%s RC must NOT contain Tab characters (triggers readline completion in interactive bash, hangs login)", shell)
+			}
 		})
 	}
 }

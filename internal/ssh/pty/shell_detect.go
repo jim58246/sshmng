@@ -105,20 +105,20 @@ func BuildRC(shell string, sid string) string {
 	common := `export TERM=dumb
 export NO_COLOR=1
 if command -v locale >/dev/null 2>&1; then
-	_avail=$(locale -a 2>/dev/null)
-	_pick=C
-	while IFS= read -r _line; do
-		case "$_line" in
-			C.UTF-8|C.utf8) _pick=C.UTF-8; break ;;
-			en_US.UTF-8|en_US.utf8) [ "$_pick" = C ] && _pick=en_US.UTF-8 ;;
-		esac
-	done <<EOF
+  _avail=$(locale -a 2>/dev/null)
+  _pick=C
+  while IFS= read -r _line; do
+    case "$_line" in
+      C.UTF-8|C.utf8) _pick=C.UTF-8; break ;;
+      en_US.UTF-8|en_US.utf8) [ "$_pick" = C ] && _pick=en_US.UTF-8 ;;
+    esac
+  done <<EOF
 $_avail
 EOF
-	export LANG=$_pick; export LC_ALL=$_pick
-	unset _pick _line _avail
+  export LANG=$_pick; export LC_ALL=$_pick
+  unset _pick _line _avail
 else
-	export LANG=C; export LC_ALL=C
+  export LANG=C; export LC_ALL=C
 fi
 stty cols 120 rows 100 2>/dev/null
 `
