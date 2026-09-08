@@ -66,6 +66,11 @@ Usage:
   sshmng jumphost <list|get> [...]  List or view jumphosts
   sshmng proxy <list|get> [...]   List or view proxies
   sshmng ssh <name> [command]   Interactive SSH login; with command, non-interactive
+                                  <name> resolves to a server, or a jumphost
+                                  if no server matches (direct jumphost login,
+                                  including bastions). Non-interactive command
+                                  against a bastion (ssh_j=false) is rejected —
+                                  use interactive mode for bastions
   sshmng file <upload|download|upload-dir|download-dir|relay> [...]  File transfer
   sshmng help | -h | --help       Print this help
 
@@ -88,6 +93,10 @@ Subcommands:
   ssh       Connect to an SSH server by name. Optional second positional arg
             is a command to execute non-interactively (OpenSSH convention).
             Supports direct, Pattern A (ssh -J), and Pattern B (bastion).
+            The name also resolves to a jumphost if no server matches —
+            'sshmng ssh <jumphost>' logs in directly (interactive bastion
+            menu included). Non-interactive commands need a shell landing,
+            so bastions (ssh_j=false) reject commands; use interactive mode.
   file      Transfer files over sftp: upload, download, upload-dir,
             download-dir, and relay (1:N fanout). Mirrors the MCP transfer
             tools. Pattern B (bastion) is unsupported — sftp lands on the

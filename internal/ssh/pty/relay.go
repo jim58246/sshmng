@@ -32,7 +32,13 @@ func (p *PtyConn) Relay(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	// Enable remote echo so the user sees what they type.
+	// Enable remote echo so the user sees what they type. The PTY is opened with
+	// ECHO=0 (openPtyConnSize) so sshmng-driven writes aren't echoed during
+	// LoginFlow/detectShell; interactive Relay needs echo back on. "stty echo"
+	// sets the tty driver's echo flag regardless of the program attached to the
+	// PTY (shell or bastion menu program). On a bastion menu the line is read as
+	// an unrecognized selection (usually re-prompts with "invalid option") —
+	// harmless noise — but echo is now on so the user sees subsequent input.
 	p.stdin.Write([]byte("stty echo\n"))
 	time.Sleep(50 * time.Millisecond)
 

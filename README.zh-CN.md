@@ -75,7 +75,7 @@ SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
 ./sshmng server get <name>                # Show SSH server details (full auth)
 ./sshmng jumphost list|get ...            # Same for jumphosts
 ./sshmng proxy list|get ...               # Same for proxies
-./sshmng ssh <name> [command]             # Interactive SSH login; with command, non-interactive
+./sshmng ssh <name> [command]             # 交互式登录；<name> 也可解析到 jumphost（堡垒机）。非交互命令需要 shell 落点——堡垒机（ssh_j=false）拒绝命令
 ./sshmng file upload <name> <local> <remote>   # File transfer via sftp (also: download, upload-dir, download-dir, relay)
 ./sshmng file relay <src-name> <src-path> <dst-path> --to <dst1,dst2>  # 1:N fanout to multiple servers
 ```

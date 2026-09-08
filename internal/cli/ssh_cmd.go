@@ -25,8 +25,16 @@ import (
 //   - 1 arg: interactive login (Relay)
 //   - 2 args: non-interactive — execute command, print output, exit
 //
+// <name> resolves to an SSH server, or — if no server matches — a jumphost
+// (direct jumphost login, including bastions). Server names take precedence.
+//
 // Matches OpenSSH `ssh destination [command]` convention. Commands starting
 // with `-` require `--` terminator (POSIX): `sshmng ssh server -- -l`.
+//
+// Non-interactive command against a bastion (ssh_j=false jumphost) is rejected:
+// the login_flow lands on an interactive menu with no shell command boundary.
+// Use interactive mode for bastions. ssh_j=true jumphosts land on a shell and
+// support non-interactive commands normally.
 func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 	fs := pflag.NewFlagSet("ssh", pflag.ContinueOnError)
 	fs.SetOutput(out)
@@ -54,7 +62,7 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 		return 1
 	}
 
-	srv, err := resolveSSHServer(cfg, name, command == "")
+	srv, jump, err := resolveSSHTarget(cfg, name, command == "")
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
@@ -67,7 +75,20 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 
 	sid, _ := conn.RandomSID()
 
-	ptyConn, err := setupSSH(srv, dialer, sid, logger, command != "", false)
+	var ptyConn *pty.PtyConn
+	if srv != nil {
+		ptyConn, err = setupSSH(srv, dialer, sid, logger, command != "", false)
+	} else {
+		// Direct jumphost login (sshmng ssh <jumphost>). Non-interactive command
+		// execution only works when the landing is a shell: a bastion's main menu
+		// (ssh_j=false) has no shell command boundary, so reject it — interactive
+		// mode is the supported path for bastions.
+		if command != "" && !jump.SSHJ {
+			fmt.Fprintf(out, "Error: non-interactive command not supported for bastion %q (ssh_j=false lands on an interactive menu, not a shell); use interactive mode: sshmng ssh %s\n", jump.Name, jump.Name)
+			return 1
+		}
+		ptyConn, err = setupJumphostSSH(jump, dialer, sid, logger, command != "")
+	}
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
@@ -208,7 +229,31 @@ func setupPatternASSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, lo
 }
 
 func setupPatternBSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, error) {
-	jump := srv.Via
+	// First half: dial the bastion jumphost and run its login_flow to reach the
+	// main menu. Reuses dialJumphost (shared with direct bastion login). Note:
+	// dialJumphost does NOT set menuLanding — Pattern B continues to the target
+	// shell, whose Relay landing is a shell (stty echo wanted), not a menu.
+	ptyConn, err := dialJumphost(srv.Via, dialer, sid, logger)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, pty.LoginFlowOptions{
+		MaxSteps:        srv.MaxSteps,
+		GlobalTimeoutMs: srv.GlobalTimeoutMs,
+	}); err != nil {
+		ptyConn.Close()
+		return nil, fmt.Errorf("target login flow: %w", err)
+	}
+	return ptyConn, nil
+}
+
+// dialJumphost dials a jumphost, opens a PTY, and runs its login_flow.
+// Shared by setupPatternBSSH (bastion → target) and setupJumphostSSH (direct
+// jumphost login). Caller owns closing the returned PtyConn on error.
+//
+// Does NOT set menuLanding — that's setupJumphostSSH's call (only the direct
+// bastion-login path lands on a menu; Pattern B lands on the target shell).
+func dialJumphost(jump *config.Jumphost, dialer *conn.Dialer, sid string, logger *slog.Logger) (*pty.PtyConn, error) {
 	client, err := dialer.Dial(conn.DialOptions{
 		Addr:          jump.Addr,
 		User:          jump.User,
@@ -232,12 +277,36 @@ func setupPatternBSSH(srv *config.SSHServer, dialer *conn.Dialer, sid string, lo
 		ptyConn.Close()
 		return nil, fmt.Errorf("jumphost login flow: %w", err)
 	}
-	if _, err := ptyConn.RunLoginFlow(srv.LoginFlow, srv.LoginEntry, pty.LoginFlowOptions{
-		MaxSteps:        srv.MaxSteps,
-		GlobalTimeoutMs: srv.GlobalTimeoutMs,
-	}); err != nil {
-		ptyConn.Close()
-		return nil, fmt.Errorf("target login flow: %w", err)
+	return ptyConn, nil
+}
+
+// setupJumphostSSH establishes a direct SSH connection to a jumphost (including
+// a bastion), for 'sshmng ssh <jumphost>'. Mirrors the first half of
+// setupPatternBSSH via dialJumphost:
+//
+//   - ssh_j=true (transparent): login_flow is empty (validated), lands on the
+//     jumphost's shell. Relay's "stty echo" re-enables echo normally.
+//   - ssh_j=false (bastion): login_flow lands on the bastion's main menu.
+//     "stty echo" still runs (sets the tty driver echo flag) and is read by the
+//     menu as an unrecognized selection — harmless, echo is now on.
+//
+// needShell (non-interactive 'ssh <jumphost> <command>') runs DetectShell +
+// InjectRC so Run() works. Only valid when the landing is a shell; the caller
+// rejects non-interactive commands against bastions (ssh_j=false) beforehand.
+func setupJumphostSSH(jump *config.Jumphost, dialer *conn.Dialer, sid string, logger *slog.Logger, needShell bool) (*pty.PtyConn, error) {
+	ptyConn, err := dialJumphost(jump, dialer, sid, logger)
+	if err != nil {
+		return nil, err
+	}
+	if needShell {
+		if err := ptyConn.DetectShell(); err != nil {
+			ptyConn.Close()
+			return nil, fmt.Errorf("detect shell: %w", err)
+		}
+		if _, err := ptyConn.InjectRC(); err != nil {
+			ptyConn.Close()
+			return nil, fmt.Errorf("inject rc: %w", err)
+		}
 	}
 	return ptyConn, nil
 }
@@ -290,6 +359,77 @@ func resolveSSHServer(cfg *config.Config, name string, allowPrompt bool) (*confi
 		}
 		return promptServerChoice(matches)
 	}
+}
+
+// resolveJumphost mirrors resolveSSHServer for jumphosts: exact name first,
+// then fuzzy substring match on name/addr/tags, then a numbered prompt.
+func resolveJumphost(cfg *config.Config, name string, allowPrompt bool) (*config.Jumphost, error) {
+	if j, err := cfg.GetJumphost(name); err == nil {
+		return j, nil
+	}
+
+	matches := cfg.ListJumphosts(name)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no jumphost matches %q", name)
+	case 1:
+		fmt.Fprintf(os.Stderr, "matched: %s\n", matches[0].Name)
+		return matches[0], nil
+	default:
+		if !allowPrompt {
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.Name
+			}
+			return nil, fmt.Errorf("multiple jumphosts match %q: %s; specify exact name", name, strings.Join(names, ", "))
+		}
+		return promptJumphostChoice(matches)
+	}
+}
+
+// resolveSSHTarget resolves a name to an SSH server or (if no server matches)
+// a jumphost. Server names take precedence over jumphost names on collision
+// (exact server match is tried first, before any fuzzy match).
+//
+// Used by 'sshmng ssh', which supports direct jumphost login. The 'file'
+// command uses resolveSSHServer directly — file transfer to a bastion is
+// unsupported (Pattern B never enables sftp).
+//
+// Returns exactly one of srv/jump non-nil on success (the other is nil).
+func resolveSSHTarget(cfg *config.Config, name string, allowPrompt bool) (*config.SSHServer, *config.Jumphost, error) {
+	if srv, err := resolveSSHServer(cfg, name, allowPrompt); err == nil {
+		return srv, nil, nil
+	}
+	jump, err := resolveJumphost(cfg, name, allowPrompt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("no server or jumphost matches %q", name)
+	}
+	return nil, jump, nil
+}
+
+// promptJumphostChoice mirrors promptServerChoice for jumphosts.
+func promptJumphostChoice(matches []*config.Jumphost) (*config.Jumphost, error) {
+	fmt.Fprintln(os.Stderr, "Multiple jumphosts match:")
+	for i, m := range matches {
+		tags := strings.Join(m.Tags, ",")
+		fmt.Fprintf(os.Stderr, "  [%d] %-20s %-25s %s\n", i+1, m.Name, m.Addr, tags)
+	}
+	fmt.Fprintf(os.Stderr, "Select [1-%d]: ", len(matches))
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("read selection: %w", err)
+		}
+		return nil, fmt.Errorf("no selection (EOF)")
+	}
+	input := strings.TrimSpace(scanner.Text())
+
+	n, err := strconv.Atoi(input)
+	if err != nil || n < 1 || n > len(matches) {
+		return nil, fmt.Errorf("invalid selection %q (expected 1-%d)", input, len(matches))
+	}
+	return matches[n-1], nil
 }
 
 // promptServerChoice prints a numbered list of servers to stderr and reads
