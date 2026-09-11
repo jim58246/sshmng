@@ -105,6 +105,10 @@ type PtyConn struct {
 	// 测试可覆盖以加速。
 	setTokenTimeout time.Duration
 
+	// rawQuietGap 是 ReadRaw 的静默吸收窗口：相邻字节间隔小于该值时继续吸收。
+	// 默认 defaultRawQuietGap（400ms），测试可覆盖。
+	rawQuietGap time.Duration
+
 	mu sync.Mutex
 }
 
@@ -504,6 +508,12 @@ func (p *PtyConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, st
 	if p.closed {
 		p.mu.Unlock()
 		return "", "", 0, false, false, false, 0, true, errors.New("connection closed")
+	}
+	raw := p.shell == "raw"
+	p.mu.Unlock()
+	if raw {
+		// raw 设备（无 unix shell）没有哨兵机制可用；connUnusable=true 让 Session 层 Close。
+		return "", "", 0, false, false, false, 0, true, errors.New("raw device: Run not supported, use SendRaw/ReadRaw")
 	}
 	p.mu.Unlock()
 

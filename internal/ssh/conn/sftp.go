@@ -1,6 +1,7 @@
 package conn
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,6 +18,10 @@ const DefaultTransferTimeout = 300 * time.Second
 
 // ErrSftpUnavailable 是 sftp 通道未建立时 Upload/Download 返回的错误。
 var ErrSftpUnavailable = fmt.Errorf("sftp not available for this session")
+
+// ErrConnLost 表示 PTY 输出通道已关闭（SSH channel EOF / 连接断开）。
+// Session 层收到后应 Close session。放 conn 包供 pty 与 session 两层共同引用。
+var ErrConnLost = errors.New("connection lost")
 
 // SftpMaxPacket 是 sftp 单个 SSH_FXP_WRITE/READ 包的最大 payload 字节数。
 // 默认 32KB 偏小（跨地域 RTT 高时 ack 次数多），调到 64KB 减半 ack 次数。
