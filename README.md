@@ -75,7 +75,7 @@ SSHMNG_HOME=/custom/dir ./sshmng mcp         # MCP server with custom home
 ./sshmng server get <name>                # Show SSH server details (full auth)
 ./sshmng jumphost list|get ...            # Same for jumphosts
 ./sshmng proxy list|get ...               # Same for proxies
-./sshmng ssh <name> [command]             # Interactive login; <name> also resolves to a jumphost (bastion). Non-interactive command needs a shell — bastions (ssh_j=false) reject it
+./sshmng ssh <name> [command]             # Interactive login; <name> also resolves to a jumphost (bastion). Non-interactive command needs a shell — bastions (ssh_j=false) and raw devices (raw=true) reject it
 ./sshmng file upload <name> <local> <remote>   # File transfer via sftp (also: download, upload-dir, download-dir, relay)
 ./sshmng file relay <src-name> <src-path> <dst-path> --to <dst1,dst2>  # 1:N fanout to multiple servers
 ```

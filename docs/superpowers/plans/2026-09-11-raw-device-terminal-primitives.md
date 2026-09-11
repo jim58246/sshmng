@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: `SSHServer.Raw bool`(无 json tag,经 serverJSON 中转);JSON 键 `raw`(omitempty)。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `internal/config/types_test.go` 追加:
 
@@ -70,12 +70,12 @@ func TestSSHServerRawFieldRoundtrip(t *testing.T) {
 
 (若文件未 import `strings`/`encoding/json` 则补;文件里其他测试大概率已 import。)
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/config/ -run TestSSHServerRawFieldRoundtrip -v`
 Expected: FAIL(编译错误 `s.Raw unknown field`)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `internal/config/types.go`:
 
@@ -93,12 +93,12 @@ Expected: FAIL(编译错误 `s.Raw unknown field`)
 
 3. `MarshalJSON`(:199)的 `sj := serverJSON{...}` 字面量中加 `Raw: s.Raw,`;`UnmarshalJSON`(:221)中加 `s.Raw = sj.Raw`。
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/config/ -v`
 Expected: 全部 PASS(含既有测试,raw 零值不影响现有序列化)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/types.go internal/config/types_test.go
@@ -126,7 +126,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
   - `(*PtyConn).ReadRaw(wait time.Duration, maxBytes int) (chunk []byte, more bool, err error)`;通道耗尽且已关闭时返回 `conn.ErrConnLost`
   - PtyConn 新字段 `rawQuietGap time.Duration`(测试可覆盖,0=默认 400ms)
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `internal/ssh/pty/raw_test.go`(package pty,白盒):
 
@@ -409,12 +409,12 @@ func TestReadRawConnLost(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/ssh/pty/ -run 'TestMarkRaw|TestSendRaw|TestReadRaw' -v`
 Expected: FAIL(编译错误:raw.go 不存在、conn.ErrConnLost 未定义)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `internal/ssh/conn/`(ErrSftpUnavailable 同文件)加:
 
@@ -585,12 +585,12 @@ func (p *PtyConn) finalizeRaw(buf []byte, maxBytes int) ([]byte, bool) {
 }
 ```
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/ssh/pty/ -v`
 Expected: 全部 PASS(含既有 integration 测试,哨兵逻辑零改动)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ssh/conn/ internal/ssh/pty/raw.go internal/ssh/pty/raw_test.go internal/ssh/pty/pty.go
@@ -617,7 +617,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
   - `(*Session).ReadInSession(waitMs, maxBytes int) (output string, more bool, idleMs int64, err error)`
   - `SessionStat` 新字段 `Mode string json:"mode"`、`Tags []string json:"tags,omitempty"`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `internal/ssh/session/raw_test.go`(package session,白盒):
 
@@ -839,12 +839,12 @@ func TestSetTagsSetRawAndStat(t *testing.T) {
 
 (若 `NewManager` 构造器名字不同,以 session.go 实际为准——`grep -n "func NewManager" internal/ssh/session/session.go`。)
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/ssh/session/ -run 'TestSendIn|TestReadIn|TestRawSession|TestSetTags' -v`
 Expected: FAIL(编译错误:raw.go 不存在、SessionStat 无 Mode/Tags 字段)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `internal/ssh/session/raw.go` 新建:
 
@@ -1029,12 +1029,12 @@ func (s *Session) modeString() string {
 			Tags:         s.tags,
 ```
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/ssh/session/ -v`
 Expected: 全部 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ssh/session/raw.go internal/ssh/session/raw_test.go internal/ssh/session/session.go
@@ -1060,7 +1060,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
   - `SendInSessionArgs{SID, Input string}`;`ReadInSessionArgs{SID string; WaitMs, MaxBytes int}`
   - login 返回 map 增加 `"mode"` 与 `"tags"`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `internal/mcp/tools_raw_test.go`(package mcp):
 
@@ -1228,12 +1228,12 @@ func TestReadInSessionHandler(t *testing.T) {
 	}
 ```
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/mcp/ -run 'TestSendInSession|TestReadInSession|TestIntegrationLoginRunClose' -v`
 Expected: FAIL(SendInSessionArgs 未定义、mode 键不存在)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `internal/mcp/tools_raw.go` 新建:
 
@@ -1404,12 +1404,12 @@ Returns {sid, server_name, sftp_available, mode, tags}. mode: 'shell' = unix she
 
 `setupPatternA`(:312-323)同样结构,把 DetectShell+InjectRC 包进 `if srv.Raw { ptyConn.MarkRaw() } else { ...原逻辑... }`(错误前缀保持 `patternA:` 不变)。`setupPatternB` 的 target 段做同样处理(grep `DetectShell()` 定位,错误前缀随原函数)。
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/mcp/ -v`
 Expected: 全部 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/mcp/tools_raw.go internal/mcp/tools_raw_test.go internal/mcp/server.go internal/mcp/tools_session.go internal/mcp/tools_session_test.go
@@ -1430,7 +1430,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: Task 4 的工具名。
 - Produces: instructions 含 raw/send/read 使用模式说明。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `TestNewServerSetsInstructions` 中追加断言(照现有断言风格):
 
@@ -1442,12 +1442,12 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 	}
 ```
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/mcp/ -run TestNewServerSetsInstructions -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `serverInstructions` 在 `== Session semantics ==` 小节后插入新小节(注意 const 拼接的反引号转义,文内代码片段用 `+ "`...`" +` 拼接,与现有 :54 行同模式):
 
@@ -1461,12 +1461,12 @@ Expected: FAIL
 - The primitives also work on shell sessions for persistent programs (tail -f, top, vim); state is rejected while run_in_session is running (session busy).
 ```
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/mcp/ -run TestNewServerSetsInstructions -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/mcp/server.go internal/mcp/server_test.go
@@ -1487,7 +1487,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: Task 1 的 `srv.Raw`。
 - Produces: `sshmng ssh <raw-server> <cmd>` 以 exit 1 报错,不发起 SSH 拨号。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `internal/cli/ssh_cmd_test.go` 追加(参照该文件现有 runSSHCmd 测试的 config 构造方式;若现有测试用临时 config 文件,同法):
 
@@ -1512,12 +1512,12 @@ func TestSSHCmdRawNonInteractiveRejected(t *testing.T) {
 
 (命令行参数形式以现有测试为准:`--config` 在 name 之前;若现有测试把 `--config` 放最后,保持一致。)
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 Run: `go test ./internal/cli/ -run TestSSHCmdRawNonInteractiveRejected -v`
 Expected: FAIL(现在会先拨号 → 连接失败,错误信息不同)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `runSSHCmd`(:65 `resolveSSHTarget` 之后、`setupSSH` 之前)插入:
 
@@ -1528,12 +1528,12 @@ Expected: FAIL(现在会先拨号 → 连接失败,错误信息不同)
 	}
 ```
 
-- [ ] **Step 4: 跑绿**
+- [x] **Step 4: 跑绿**
 
 Run: `go test ./internal/cli/ -v`
 Expected: 全部 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/cli/ssh_cmd.go internal/cli/ssh_cmd_test.go
@@ -1553,7 +1553,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: Task 1-4 全部产出。
 - Produces: `fakeSwitchServer`(测试 fixture)+ 全链路守护测试(含"raw login 不得触发 DetectShell"的守护断言)。
 
-- [ ] **Step 1: 写 fixture + 测试(此任务整体是测试,先写全再跑)**
+- [x] **Step 1: 写 fixture + 测试(此任务整体是测试,先写全再跑)**
 
 `internal/mcp/tools_session_raw_test.go`(package mcp)。fixture 骨架照抄 `fakeShellServerForMCP`(tools_session_test.go)的 serve/handle/handleSession,`shell` 请求后进入 `runFakeSwitchCLI`;**不做 sftp subsystem**(Reply false)。核心 CLI 循环:
 
@@ -1820,17 +1820,17 @@ func TestIntegrationRawSwitchFullChain(t *testing.T) {
 
 (`GetTraceArgs` 字段名以 tools_session.go 实际为准:应为 `SID`/`LastN`/`TruncOutput`。host key 走 known_hosts TOFU,与现有 integration 测试一致,无需显式关闭。)
 
-- [ ] **Step 2: 跑**
+- [x] **Step 2: 跑**
 
 Run: `go test ./internal/mcp/ -run TestIntegrationRawSwitchFullChain -v`
 Expected: PASS(fixture 与测试同任务交付;若失败按输出修 fixture 时序,如提示符先于首条命令送达)
 
-- [ ] **Step 3: 全量回归**
+- [x] **Step 3: 全量回归**
 
 Run: `go test ./internal/... -v`
 Expected: 全部 PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/mcp/tools_session_raw_test.go
@@ -1850,12 +1850,12 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: Task 1-7 的最终行为与限额数值。
 - Produces: 与代码同步的双语文档。
 
-- [ ] **Step 1: 盘点硬编码数字与工具数**
+- [x] **Step 1: 盘点硬编码数字与工具数**
 
 Run: `grep -rn "19 个工具\|19 tools\|19 MCP" README.md README.zh-CN.md docs/ | grep -v superpowers`
 把所有 "19" 工具计数改为 "21"。
 
-- [ ] **Step 2: 英文文档更新**
+- [x] **Step 2: 英文文档更新**
 
 1. `docs/configuration.md` SSHServer 字段表加一行(位置随 `tags`):
 
@@ -1867,11 +1867,11 @@ Run: `grep -rn "19 个工具\|19 tools\|19 MCP" README.md README.zh-CN.md docs/ 
 
 3. `README.md` MCP 工具概览表加 `send_in_session`/`read_in_session` 两行;若有 raw 概念提及处,补一句 raw 设备用法。
 
-- [ ] **Step 3: 中文镜像**
+- [x] **Step 3: 中文镜像**
 
 `README.zh-CN.md`、`docs/zh-CN/agents.md`、`docs/zh-CN/configuration.md` 逐段镜像英文改动(术语:终端原语 / 静默吸收 / 分页自适应)。
 
-- [ ] **Step 4: 双向一致性自查**
+- [x] **Step 4: 双向一致性自查**
 
 Run:
 ```bash
@@ -1880,7 +1880,7 @@ grep -c '"raw"' docs/configuration.md docs/zh-CN/configuration.md
 ```
 Expected: 4 个文件都 >0;中英文数值(5000/60000/131072/1048576/65536/400ms)一致。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md README.zh-CN.md docs/agents.md docs/zh-CN/agents.md docs/configuration.md docs/zh-CN/configuration.md
@@ -1896,12 +1896,12 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 **Files:**
 - 无新改动(验证任务;发现问题则最小修复后重跑)
 
-- [ ] **Step 1: 全量构建 + vet + 测试**
+- [x] **Step 1: 全量构建 + vet + 测试**
 
 Run: `go build ./... && go vet ./... && go test ./...`
 Expected: 全部通过
 
-- [ ] **Step 2: pre-release checklist 预检(CLAUDE.md)**
+- [x] **Step 2: pre-release checklist 预检(CLAUDE.md)**
 
 Run:
 ```bash
@@ -1911,12 +1911,12 @@ grep -rn "[0-9]\+\.[0-9]\+\.[0-9]\+" README.md docs/ README.zh-CN.md docs/zh-CN/
 ```
 Expected: 工具签名/字段/示例双语文档齐全;版本号 grep 无新引入的硬编码版本。
 
-- [ ] **Step 3: 工具计数核对**
+- [x] **Step 3: 工具计数核对**
 
 Run: `go test ./internal/mcp/ -run TestNewServerSetsInstructions -v && grep -c "mcp.AddTool" internal/mcp/server.go`
 Expected: PASS;AddTool 计数 = 21。
 
-- [ ] **Step 4: 收尾 commit(如有修复)**
+- [x] **Step 4: 收尾 commit(如有修复)**
 
 ```bash
 git status --short
