@@ -337,3 +337,40 @@ func TestSSHServerHostKeyVerifyJSONRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+func TestSSHServerRawFieldRoundtrip(t *testing.T) {
+	// raw:true 序列化后包含 "raw":true,反序列化还原
+	s := &SSHServer{Name: "sw1", Addr: "10.0.0.1:22", User: "admin", Raw: true}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if m["raw"] != true {
+		t.Errorf("raw = %v, want true; json: %s", m["raw"], data)
+	}
+	var back SSHServer
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !back.Raw {
+		t.Error("Raw should be true after roundtrip")
+	}
+
+	// raw:false(零值)不出现 "raw" 键(omitempty)
+	s2 := &SSHServer{Name: "srv1", Addr: "10.0.0.2:22", User: "u"}
+	data2, err := json.Marshal(s2)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m2 map[string]any
+	if err := json.Unmarshal(data2, &m2); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, ok := m2["raw"]; ok {
+		t.Errorf("raw:false should be omitted, got: %s", data2)
+	}
+}

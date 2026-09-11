@@ -100,7 +100,10 @@ type SSHServer struct {
 	HostKeyVerify *bool     `json:"host_key_verify,omitempty"`
 	Via           *Jumphost `json:"-"` // 可空，空表示直连
 	Proxy         *Proxy    `json:"-"` // 可空，空表示不走传输代理
-	Tags          []string  `json:"tags,omitempty"`
+	// Raw 表示该设备无 unix shell（交换机等网络设备 CLI）：login 跳过 DetectShell/InjectRC，
+	// run_in_session 被拒，交互走 send_in_session/read_in_session 终端原语。见 spec 2026-09-11。
+	Raw  bool
+	Tags []string `json:"tags,omitempty"`
 
 	viaName   string
 	proxyName string
@@ -191,6 +194,7 @@ type serverJSON struct {
 	MaxSteps        int                    `json:"max_steps,omitempty"`
 	GlobalTimeoutMs int                    `json:"global_timeout_ms,omitempty"`
 	HostKeyVerify   *bool                  `json:"host_key_verify,omitempty"`
+	Raw             bool                   `json:"raw,omitempty"`
 	Via             string                 `json:"via,omitempty"`
 	Proxy           string                 `json:"proxy,omitempty"`
 	Tags            []string               `json:"tags,omitempty"`
@@ -207,6 +211,7 @@ func (s SSHServer) MarshalJSON() ([]byte, error) {
 		MaxSteps:        s.MaxSteps,
 		GlobalTimeoutMs: s.GlobalTimeoutMs,
 		HostKeyVerify:   s.HostKeyVerify,
+		Raw:             s.Raw,
 		Tags:            s.Tags,
 	}
 	if s.Via != nil {
@@ -232,6 +237,7 @@ func (s *SSHServer) UnmarshalJSON(data []byte) error {
 	s.MaxSteps = sj.MaxSteps
 	s.GlobalTimeoutMs = sj.GlobalTimeoutMs
 	s.HostKeyVerify = sj.HostKeyVerify
+	s.Raw = sj.Raw
 	s.Tags = sj.Tags
 	s.viaName = sj.Via
 	s.proxyName = sj.Proxy
