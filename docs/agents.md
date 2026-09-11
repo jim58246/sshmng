@@ -187,7 +187,7 @@ Checks: home directory permissions, `config.json` loadability, each Agent config
 ```
 1. Agent receives "check disk usage on prod-web-01"
 2. list_ssh_servers(query="prod-web-01") → 1 candidate, use the name directly
-3. login(name="prod-web-01") → {sid: "abc123", sftp_available: true}
+3. login(name="prod-web-01") → {sid: "abc123", sftp_available: true, mode: "shell", tags: [...]}
 4. run_in_session(sid="abc123", cmd="df -h") → output contains disk info
 5. close_session(sid="abc123")
 ```
@@ -200,3 +200,19 @@ Checks: home directory permissions, `config.json` loadability, each Agent config
 3. update_ssh_server(name="bastion-01", patch={login_flow:{...}}) fixes the pattern
 4. login(name="bastion-01") → success
 ```
+
+**Raw device (switch, `raw: true`) — terminal primitives instead of `run_in_session`**:
+
+```
+1. login(name="sw-core-01") → {sid: "def456", mode: "raw", tags: ["huawei", "CE12800"]}
+2. send_in_session(sid, input="display version\r")       — Enter (\r) is the caller's job
+3. read_in_session(sid, wait_ms=5000) → {output, more, idle_ms}
+   - more=true → keep reading to drain the queue (nothing is lost)
+   - large idle_ms + self-consistent content → command done
+   - pager prompt (e.g. "---- More ----") → send " " to page on, "q" to abort,
+     or a disable-paging command per device convention (tags hint the vendor;
+     the server ships no vendor recipes)
+4. close_session(sid) — send/read history is visible in get_trace
+```
+
+Notes: `run_in_session` is rejected on raw sessions ("raw device: use send_in_session/read_in_session"). The primitives also work on `mode: "shell"` sessions for persistent programs (`tail -f`, `top`, `vim`), but are rejected while a command is running (session busy). Limits enforced server-side: send input ≤ 64KB; read `wait_ms` default 5000 / max 60000; `max_bytes` default 128KB / max 1MB.

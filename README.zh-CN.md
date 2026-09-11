@@ -108,17 +108,19 @@ go build -o sshmng ./cmd/sshmng
 
 ## MCP 工具一览
 
-共 19 个工具：
+共 21 个工具：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
 | 配置查询 | `list_ssh_servers` / `list_jumphosts` / `list_proxies` | 按 query 多关键字 AND 匹配 name/addr/tags（空格分词、大小写不敏感、脱敏 auth） |
 | 配置查询 | `get_ssh_server` / `get_jumphost` / `get_proxy` | 按 name 取单条（完整 auth） |
 | 配置更新 | `update_ssh_server` / `update_jumphost` / `update_proxy` | RFC 7396 JSON Merge Patch；null 删除，object 合并/创建 |
-| 会话管理 | `login(name)` → `{sid, sftp_available}` | 拨号 + LoginFlow + RC 注入 + sftp 通道建立 |
-| 会话管理 | `run_in_session(sid, cmd, timeout_ms?, max_output_bytes?)` | 跑命令，返回 output/exit_code/timed_out/truncated/total_bytes |
+| 会话管理 | `login(name)` → `{sid, sftp_available, mode, tags}` | 拨号 + LoginFlow + RC 注入 + sftp 通道建立。`mode`：`shell` = unix shell（用 `run_in_session`）；`raw` = 无 unix shell（如交换机，用 `send_in_session`/`read_in_session`）。`tags` 透传服务器配置的标签（人→AI 提示） |
+| 会话管理 | `run_in_session(sid, cmd, timeout_ms?, max_output_bytes?)` | 跑命令，返回 output/exit_code/timed_out/truncated/total_bytes。raw 会话上被拒 |
+| 会话管理 | `send_in_session(sid, input)` | 终端原语：把原始输入写入 PTY（回车 `\r`、Ctrl-C `\u0003`、翻页键由调用方自带）。仅 idle 会话可用；对所有会话开放 |
+| 会话管理 | `read_in_session(sid, wait_ms?, max_bytes?)` | 终端原语：读取自上次 read 之后的新输出（静默吸收，未读输出留队不丢）。返回 output/more/idle_ms |
 | 会话管理 | `close_session(sid)` | 强制关闭，trace 保留 10 分钟 |
-| 会话管理 | `stat()` | 列出所有活跃 session 摘要（含 sftp_available） |
+| 会话管理 | `stat()` | 列出所有活跃 session 摘要（含 sftp_available、mode、tags） |
 | 诊断 | `get_trace(sid, last_n?, trunc_output?)` | 取命令历史（含 ctrl_c_sent、原始输出） |
 | 文件传输 | `upload(sid, src, dst, timeout_ms?)` | 本地 → 远端，走 sftp |
 | 文件传输 | `download(sid, src, dst, timeout_ms?)` | 远端 → 本地，走 sftp |
@@ -126,7 +128,7 @@ go build -o sshmng ./cmd/sshmng
 | 文件传输 | `download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | 远端目录树 → 本地，递归 sftp，并发默认 4，冲突策略 overwrite/skip/rename |
 | 文件传输 | `relay_transfer(src_sid, src_path, dst_sids[], dst_path, timeout_ms?)` | 经 sshmng 中转流式传输远端文件到一个或多个 session（不落盘、1:N 扇出、源只读一次）；需源与所有目标 sftp 可用；部分失败返回 ok:false（看 ok 字段而非 IsError） |
 
-> 不提供 `send_input` / `send_special`：MCP 客户端串行化工具调用，`run_in_session` 执行中调不到这两个工具；命令结束（正常退出或超时 Ctrl-C 后）session 已回 idle 或 closed，再调也报错。交互式命令（sudo/read/cat>file）靠 `run_in_session` 自身超时 + `get_trace` 看 raw_output 诊断，不靠 send_input 喂入。
+> raw 设备（交换机等，配置 `raw: true`）没有 unix shell：login 跳过 shell 探测 / RC 注入，`run_in_session` 被拒。用终端原语 `send_in_session` + `read_in_session` 驱动：发命令（自带 `\r`）、读输出、结合内容与 `idle_ms` 判断完成、按设备惯例处理分页提示（`---- More ----`）——服务端不写厂商配方。同一组原语也适用于 unix 会话的持续型程序（`tail -f`、`top`、`vim`）。MCP 客户端串行化工具调用，原语仅在会话 idle 时可调（`run_in_session` 执行期间会被拒）。
 
 ## 安全注意事项
 

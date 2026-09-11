@@ -176,6 +176,7 @@ SSH 跳板。`ssh_j` 字段区分两种形态，决定 LoginFlow / Auth 的必�
 | `max_steps` | int | 否 | `50` | LoginFlow 最大步数 |
 | `global_timeout_ms` | int | 否 | `60000` | LoginFlow 整体超时 |
 | `host_key_verify` | *bool | 否 | `true`（nil） | 是否启用 TOFU host key 校验；设 `false` 完全跳过（不读不写 known_hosts）。仅直连和 Pattern A 生效；Pattern B（`via.ssh_j=false`）下 target 登录走 PTY 非 SSH dial，此字段不参与，只看 jumphost 的开关 |
+| `raw` | bool | 否 | `false` | 无 unix shell 的设备（交换机等网络设备 CLI）：login 跳过 shell 探测与 RC 注入；`run_in_session` 被拒，改用 `send_in_session`/`read_in_session` |
 | `via` | string | 否 | — | 经由的 jumphost name；空 = 直连 |
 | `proxy` | string | 否 | — | 传输代理的 name |
 | `tags` | []string | 否 | — | 任意标签，`list_ssh_servers` 的 query 子串会匹配 |

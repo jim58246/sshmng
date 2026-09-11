@@ -176,6 +176,7 @@ Target host. Whether `via` points to a `ssh_j=false` jumphost determines Pattern
 | `max_steps` | int | no | `50` | LoginFlow max steps |
 | `global_timeout_ms` | int | no | `60000` | LoginFlow overall timeout |
 | `host_key_verify` | *bool | no | `true` (nil) | Whether to enable TOFU host key verification; set `false` to skip entirely (no known_hosts read/write). Only effective for direct connection and Pattern A; under Pattern B (`via.ssh_j=false`), target login goes through PTY not SSH dial, so this field is inert — only the jumphost's flag matters |
+| `raw` | bool | no | `false` | No unix shell (network switch, etc.): login skips shell detection and RC injection; `run_in_session` is rejected, use `send_in_session`/`read_in_session` instead |
 | `via` | string | no | — | Jumphost name to go through; empty = direct connection |
 | `proxy` | string | no | — | Transport proxy name |
 | `tags` | []string | no | — | Arbitrary tags; `list_ssh_servers` query substring-matches |

@@ -187,7 +187,7 @@ sshmng doctor
 ```
 1. Agent 收到"看一下 prod-web-01 的磁盘占用"
 2. list_ssh_servers(query="prod-web-01") → 1 个候选，直接用 name
-3. login(name="prod-web-01") → {sid: "abc123", sftp_available: true}
+3. login(name="prod-web-01") → {sid: "abc123", sftp_available: true, mode: "shell", tags: [...]}
 4. run_in_session(sid="abc123", cmd="df -h") → output 含磁盘信息
 5. close_session(sid="abc123")
 ```
@@ -200,3 +200,18 @@ sshmng doctor
 3. update_ssh_server(name="bastion-01", patch={login_flow:{...}}) 修正 pattern
 4. login(name="bastion-01") → 成功
 ```
+
+**raw 设备（交换机，配置 `raw: true`）——用终端原语替代 `run_in_session`**：
+
+```
+1. login(name="sw-core-01") → {sid: "def456", mode: "raw", tags: ["huawei", "CE12800"]}
+2. send_in_session(sid, input="display version\r")       —— 回车（\r）由调用方自带
+3. read_in_session(sid, wait_ms=5000) → {output, more, idle_ms}
+   - more=true → 继续 read 排空队列（数据不丢）
+   - idle_ms 大 + 内容自洽 → 命令完成
+   - 分页提示（如 "---- More ----"）→ 发 " " 翻页、"q" 中止，或按设备惯例发禁用分页
+     命令（tags 提示厂商；服务端不写厂商配方）
+4. close_session(sid) —— send/read 历史可在 get_trace 查看
+```
+
+说明：raw 会话上 `run_in_session` 被拒（"raw device: use send_in_session/read_in_session"）。原语也适用于 `mode: "shell"` 会话的持续型程序（`tail -f`、`top`、`vim`），但 `run_in_session` 执行期间被拒（session busy）。服务端强制限额：send 输入 ≤ 64KB；read `wait_ms` 默认 5000 / 上限 60000；`max_bytes` 默认 128KB / 上限 1MB。
