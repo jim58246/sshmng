@@ -61,10 +61,12 @@ type SessionStat struct {
 	SID          string    `json:"sid"`
 	ServerName   string    `json:"name"`
 	State        string    `json:"state"`
+	Mode         string    `json:"mode"` // raw = 无 unix shell；shell = unix shell
 	SftpAvail    bool      `json:"sftp_available"`
 	LastActivity time.Time `json:"last_activity"`
 	CommandsRun  int       `json:"commands_run"`
 	UptimeS      int       `json:"uptime_s"`
+	Tags         []string  `json:"tags,omitempty"` // 登录时刻的服务器 tags 快照
 }
 
 // Session 是单个 SSH 连接的状态机。
@@ -84,6 +86,9 @@ type Session struct {
 	traces         []CommandTrace
 	loginFlowTrace []loginflow.TraceEntry // login 阶段 LoginFlow 每步 trace；成功时由 Login handler 注入
 	currentTrace   *CommandTrace          // Running 期间非 nil，记录当前命令 trace
+	tags           []string               // 登录时刻服务器 tags 快照（SetTags）
+	raw            bool                   // raw 设备（无 unix shell）（SetRaw）
+	lastOutputAt   time.Time              // 最近一次收到 PTY 输出的时刻（ReadInSession 的 idle_ms 信号源）
 	mu             sync.Mutex
 }
 
@@ -122,14 +127,16 @@ func (m *Manager) newSessionWithConn(sid, serverName string, conn Conn, idleTime
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	now := time.Now()
 	s := &Session{
 		sid:          sid,
 		serverName:   serverName,
 		state:        StateIdle,
 		conn:         conn,
 		sftpAvail:    conn.SftpAvailable(),
-		createdAt:    time.Now(),
-		lastActivity: time.Now(),
+		createdAt:    now,
+		lastActivity: now,
+		lastOutputAt: now, // idle_ms 初值 = 创建时刻
 		idleTimeout:  idleTimeout,
 		logger:       logger,
 		manager:      m,
@@ -179,10 +186,12 @@ func (m *Manager) Stat() []SessionStat {
 			SID:          s.sid,
 			ServerName:   s.serverName,
 			State:        s.state.String(),
+			Mode:         s.modeString(),
 			SftpAvail:    s.sftpAvail,
 			LastActivity: s.lastActivity,
 			CommandsRun:  s.commandsRun,
 			UptimeS:      int(time.Since(s.createdAt).Seconds()),
+			Tags:         s.tags,
 		})
 		s.mu.Unlock()
 	}
@@ -216,6 +225,11 @@ func (s *Session) RunInSession(cmd string, timeoutMs int, maxOutputBytes int) (s
 	if s.state == StateRunning {
 		s.mu.Unlock()
 		return "", 0, false, false, 0, errors.New("session busy")
+	}
+	if s.raw {
+		// raw 设备（无 unix shell）没有哨兵机制，Run 无法工作；指引到终端原语。
+		s.mu.Unlock()
+		return "", 0, false, false, 0, errors.New("raw device: no unix shell, use send_in_session/read_in_session")
 	}
 	s.state = StateRunning
 	s.stopIdleTimer()
