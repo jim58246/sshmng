@@ -57,6 +57,14 @@ const serverInstructions = `SSH session manager: servers, jumphosts, proxies, se
 == Session lifecycle ==
 - States: idle / running / closed. run_in_session requires idle; use stat. idle timeout resets on activity. After close_session: trace 10min for get_trace.
 
+== Raw devices & terminal primitives ==
+- login returns mode. mode: 'raw' = no unix shell (network switches etc.) — run_in_session is REJECTED, use send_in_session/read_in_session for everything. mode: 'shell' = unix shell, prefer run_in_session.
+- send_in_session(sid, input) types input verbatim into the PTY (Enter='\r', Ctrl-C=''). read_in_session(sid, wait_ms, max_bytes) returns new output {output, more, idle_ms}.
+- Typical loop: send("show version\r") → read(wait_ms=5000) → judge from content + idle_ms → next command. more=true → keep reading to drain the queue.
+- Pager prompts (e.g. '---- More ----') pause output: send ' ' to page on, 'q' to abort, or disable paging per device convention — tags and output tell you the vendor; the server ships no vendor recipes.
+- Do NOT poll read_in_session with small wait_ms; use 3-10s. Large idle_ms + complete content = done, no confirm read.
+- The primitives also work on shell sessions for persistent programs (tail -f, top, vim); calls are rejected while run_in_session is running (session busy).
+
 == Failure recovery ==
 - loginflow error → login_trace in response.
 - run_in_session timeout → auto Ctrl-C + 3s drain. Drain fail: closed, re-login.

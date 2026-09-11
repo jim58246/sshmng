@@ -85,6 +85,12 @@ func TestNewServerSetsInstructions(t *testing.T) {
 		"loginflow error", // 失败恢复路径
 		"raw_output",      // 诊断字段
 		"NOPASSWD",        // 安全建议
+		// raw 设备与终端原语(spec 2026-09-11)
+		"send_in_session",
+		"read_in_session",
+		"mode: 'raw'",
+		"idle_ms",
+		"---- More ----",
 	}
 	for _, kw := range wantKeywords {
 		if !strings.Contains(got, kw) {
