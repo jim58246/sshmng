@@ -108,12 +108,24 @@ func (s *Service) Login(ctx context.Context, req *mcp.CallToolRequest, args Logi
 	if len(loginTrace) > 0 {
 		sess.SetLoginFlowTrace(loginTrace)
 	}
+	sess.SetRaw(srv.Raw)
+	sess.SetTags(srv.Tags)
 	logger.Info("session created", "server", srv.Name, "via", viaDesc(srv), "idle_timeout", idleTimeout.String(), "sftp_available", sess.SftpAvailable())
 
+	mode := "shell"
+	if srv.Raw {
+		mode = "raw"
+	}
+	tags := srv.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	return textResult(map[string]any{
 		"sid":            sid,
 		"server_name":    srv.Name,
 		"sftp_available": sess.SftpAvailable(),
+		"mode":           mode,
+		"tags":           tags,
 	})
 }
 
@@ -150,17 +162,22 @@ func (s *Service) setupDirect(srv *config.SSHServer, dialer *conn.Dialer, sid st
 		}
 		logger.Debug("loginflow phase done", "phase", "direct", "steps", len(trace))
 	}
-	if err := ptyConn.DetectShell(); err != nil {
-		ptyConn.Close()
-		return nil, trace, fmt.Errorf("detect shell: %w", err)
-	}
-	rcTrace, err := ptyConn.InjectRC()
-	if err != nil {
-		ptyConn.Close()
+	if srv.Raw {
+		// raw 设备（交换机等）：无 unix shell，跳过探测与 RC 注入，标记 raw 模式。
+		ptyConn.MarkRaw()
+	} else {
+		if err := ptyConn.DetectShell(); err != nil {
+			ptyConn.Close()
+			return nil, trace, fmt.Errorf("detect shell: %w", err)
+		}
+		rcTrace, err := ptyConn.InjectRC()
+		if err != nil {
+			ptyConn.Close()
+			trace = append(trace, rcTrace...)
+			return nil, trace, fmt.Errorf("direct: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
+		}
 		trace = append(trace, rcTrace...)
-		return nil, trace, fmt.Errorf("direct: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
-	trace = append(trace, rcTrace...)
 	// 直连：SFTP 通道是到 target 的，探测启用。
 	ptyConn.TryEnableSftp()
 	logger.Debug("setup done",
@@ -219,17 +236,22 @@ func (s *Service) setupPatternB(srv *config.SSHServer, dialer *conn.Dialer, sid 
 		trace = append(trace, t...)
 		logger.Debug("loginflow phase done", "phase", "target", "steps", len(t))
 	}
-	if err := ptyConn.DetectShell(); err != nil {
-		ptyConn.Close()
-		return nil, trace, fmt.Errorf("detect shell: %w", err)
-	}
-	rcTrace, err := ptyConn.InjectRC()
-	if err != nil {
-		ptyConn.Close()
+	if srv.Raw {
+		// raw 设备（交换机等）：无 unix shell，跳过探测与 RC 注入，标记 raw 模式。
+		ptyConn.MarkRaw()
+	} else {
+		if err := ptyConn.DetectShell(); err != nil {
+			ptyConn.Close()
+			return nil, trace, fmt.Errorf("detect shell: %w", err)
+		}
+		rcTrace, err := ptyConn.InjectRC()
+		if err != nil {
+			ptyConn.Close()
+			trace = append(trace, rcTrace...)
+			return nil, trace, fmt.Errorf("patternB: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
+		}
 		trace = append(trace, rcTrace...)
-		return nil, trace, fmt.Errorf("patternB: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
-	trace = append(trace, rcTrace...)
 	// Pattern B：SSH client 是到 jumphost 的，SFTP 通道只会到 jumphost 而非 target，
 	// 探测成功反而误导（用户以为能 upload 到 target，实际落到 jumphost）。
 	// 故不调用 TryEnableSftp，sftp_available 恒为 false。
@@ -309,18 +331,22 @@ func (s *Service) setupPatternA(srv *config.SSHServer, dialer *conn.Dialer, sid 
 		logger.Debug("loginflow phase done", "phase", "patternA", "steps", len(trace))
 	}
 
-	// DetectShell + InjectRC（与 setupDirect 完全一致）
-	if err := ptyConn.DetectShell(); err != nil {
-		ptyConn.Close()
-		return nil, trace, fmt.Errorf("detect shell: %w", err)
-	}
-	rcTrace, err := ptyConn.InjectRC()
-	if err != nil {
-		ptyConn.Close()
+	// DetectShell + InjectRC（与 setupDirect 完全一致）；raw 设备跳过
+	if srv.Raw {
+		ptyConn.MarkRaw()
+	} else {
+		if err := ptyConn.DetectShell(); err != nil {
+			ptyConn.Close()
+			return nil, trace, fmt.Errorf("detect shell: %w", err)
+		}
+		rcTrace, err := ptyConn.InjectRC()
+		if err != nil {
+			ptyConn.Close()
+			trace = append(trace, rcTrace...)
+			return nil, trace, fmt.Errorf("patternA: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
+		}
 		trace = append(trace, rcTrace...)
-		return nil, trace, fmt.Errorf("patternA: %w", &pty.LoginFlowError{Stage: "rc_inject", Trace: trace, Err: err})
 	}
-	trace = append(trace, rcTrace...)
 
 	// Pattern A：SFTP 通道是到 target 的（与 setupDirect 一致），探测启用
 	ptyConn.TryEnableSftp()

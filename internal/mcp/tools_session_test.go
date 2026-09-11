@@ -382,6 +382,12 @@ func TestIntegrationLoginRunClose(t *testing.T) {
 	if loginResult["server_name"] != "test" {
 		t.Errorf("server_name = %v, want test", loginResult["server_name"])
 	}
+	if loginResult["mode"] != "shell" {
+		t.Errorf("mode = %v, want shell", loginResult["mode"])
+	}
+	if _, ok := loginResult["tags"]; !ok {
+		t.Errorf("login result should contain tags key")
+	}
 
 	// 2. Stat 应返回 1 个 session
 	statRes, _, _ := svc.Stat(context.Background(), &mcp.CallToolRequest{}, StatArgs{})

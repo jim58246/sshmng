@@ -171,7 +171,7 @@ func NewServer(svc *Service) *mcp.Server {
 	// Session tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "login",
-		Description: "Establish an interactive SSH session to a server. Use list_ssh_servers first to resolve the name (query: space-separated keywords, AND, substring on name/addr/tags). Returns {sid, server_name, sftp_available}. Direct (no via) or Pattern A (via jumphost with ssh_j=true): SSH dials target directly or through jumphost's direct-tcpip channel; sftp available. Pattern B (via jumphost with ssh_j=false): runs jumphost LoginFlow then target LoginFlow on the same PTY; sftp unavailable. On LoginFlow failure, error contains 'loginflow' and response carries login_trace for diagnosis.",
+		Description: "Establish an interactive SSH session to a server. Use list_ssh_servers first to resolve the name (query: space-separated keywords, AND, substring on name/addr/tags). Returns {sid, server_name, sftp_available, mode, tags}. mode: 'shell' = unix shell (use run_in_session); 'raw' = no unix shell, e.g. network switch (run_in_session is rejected; use send_in_session/read_in_session). tags mirror the server's configured tags (human→AI hints, e.g. vendor/model). Direct (no via) or Pattern A (via jumphost with ssh_j=true): SSH dials target directly or through jumphost's direct-tcpip channel; sftp available. Pattern B (via jumphost with ssh_j=false): runs jumphost LoginFlow then target LoginFlow on the same PTY; sftp unavailable. On LoginFlow failure, error contains 'loginflow' and response carries login_trace for diagnosis.",
 	}, svc.Login)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_in_session",
@@ -183,12 +183,22 @@ func NewServer(svc *Service) *mcp.Server {
 	}, svc.CloseSession)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "stat",
-		Description: "List all active sessions with state (idle/running/closed), last activity, command count, uptime, sftp_available. Use before run_in_session to avoid 'session busy' error, and before upload/download to verify sftp_available=true.",
+		Description: "List all active sessions with state (idle/running/closed), last activity, command count, uptime, sftp_available, mode (raw/shell), tags. Use before run_in_session to avoid 'session busy' error, and before upload/download to verify sftp_available=true.",
 	}, svc.Stat)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_trace",
 		Description: "Retrieve command trace for a session (alive or closed within last 10min). Returns [{time, cmd, output, raw_output, exit_code, timed_out, ctrl_c_sent}] per command. raw_output contains un cleaned PTY bytes (ANSI/sentinel/\\r\\n) for debugging sentinel mismatch or interactive prompt issues. Use last_n to limit count (0=all), trunc_output to cap each Output/raw_output length (default 200, 0=no truncation for full raw bytes).",
 	}, svc.GetTrace)
+
+	// Raw terminal primitives
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "send_in_session",
+		Description: "Send raw input to a session's PTY (like typing in a terminal). Input is written verbatim: include the Enter key yourself ('\\r'), control chars ('\\u0003' = Ctrl-C), pager keys (' ', 'q'). Only works when session is idle (check stat). Works on ALL sessions: raw devices (mode=raw, no unix shell — the primary way to run commands) and unix shells (for interactive/persistent programs like vim/top/tail -f, between run_in_session calls). Max input 64KB. Returns {sid, sent_bytes}. State (view mode, pager position, full-screen app) persists across calls.",
+	}, svc.SendInSession)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "read_in_session",
+		Description: "Read new output produced by a session's PTY since the last read (sequential cursor; unread output stays queued, nothing is lost). Absorbs output while bytes keep arriving (<400ms gaps) and returns {output, more, idle_ms}. more=true: queue still has data — call again to drain. idle_ms: ms since the last output byte (informational completion signal; large idle_ms + self-consistent content = command likely done, no confirm read needed). Defaults: wait_ms 5000 (max 60000) blocks until first byte; max_bytes 131072 (max 1048576), excess stays queued. Prefer large wait_ms (3-10s); do NOT poll with small values. Pager prompts (e.g. '---- More ----') appear in output — handle per device conventions (send pager keys or a disable-paging command).",
+	}, svc.ReadInSession)
 
 	// File transfer tools
 	mcp.AddTool(server, &mcp.Tool{
