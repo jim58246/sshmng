@@ -68,6 +68,15 @@ func runSSHCmd(_ context.Context, args []string, out io.Writer) int {
 		return 1
 	}
 
+	// Raw devices (switches etc.) have no unix shell: DetectShell/InjectRC and
+	// Run() can't work. Reject before dialing — clear early error instead of a
+	// confusing detect-shell timeout. Interactive mode is the supported path
+	// (raw sessions are driven via MCP send_in_session/read_in_session).
+	if srv != nil && command != "" && srv.Raw {
+		fmt.Fprintln(out, "Error: raw device: no unix shell, non-interactive mode not supported; use interactive mode")
+		return 1
+	}
+
 	knownHostsPath := KnownHostsPath(*configPath)
 	knownHosts := conn.NewKnownHostsStore(knownHostsPath)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))

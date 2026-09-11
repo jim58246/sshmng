@@ -131,6 +131,32 @@ func TestRunSSHCmd_BastionNonInteractiveRejected(t *testing.T) {
 	}
 }
 
+// TestRunSSHCmd_RawNonInteractiveRejected verifies that a non-interactive
+// command against a raw device (no unix shell) is rejected before any SSH
+// dial — raw devices can't run DetectShell/InjectRC, so Run() can't work.
+// No SSH server needed: the error fires at resolution time.
+func TestRunSSHCmd_RawNonInteractiveRejected(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := []byte(`{
+  "version": "1",
+  "servers": [
+    {"name": "sw1", "addr": "10.0.0.9:22", "user": "u", "auth": {"password": "p"}, "raw": true}
+  ]
+}`)
+	if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var out strings.Builder
+	code := runSSHCmd(context.Background(), []string{"--config", cfgPath, "sw1", "show version"}, &out)
+	if code != 1 {
+		t.Errorf("code = %d, want 1; output: %s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "raw device: no unix shell, non-interactive mode not supported") {
+		t.Errorf("expected raw rejection, got: %s", out.String())
+	}
+}
+
 // TestRunSSHCmd_TransparentJumphostNonInteractiveAccepted verifies that a
 // non-interactive command against a transparent (ssh_j=true) jumphost is NOT
 // rejected at the bastion check — it proceeds to dial (and fails on the
