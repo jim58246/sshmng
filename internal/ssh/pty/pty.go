@@ -515,7 +515,6 @@ func (p *PtyConn) Run(cmd string, timeoutMs int, maxOutputBytes int) (string, st
 		// raw 设备（无 unix shell）没有哨兵机制可用；connUnusable=true 让 Session 层 Close。
 		return "", "", 0, false, false, false, 0, true, errors.New("raw device: Run not supported, use SendRaw/ReadRaw")
 	}
-	p.mu.Unlock()
 
 	timeout := defaultCmdTimeout
 	if timeoutMs > 0 {
