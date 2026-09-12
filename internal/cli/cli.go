@@ -69,8 +69,9 @@ Usage:
                                   <name> resolves to a server, or a jumphost
                                   if no server matches (direct jumphost login,
                                   including bastions). Non-interactive command
-                                  against a bastion (ssh_j=false) is rejected —
-                                  use interactive mode for bastions
+                                  against a bastion (ssh_j=false) or a raw
+                                  device (raw=true, no unix shell) is rejected —
+                                  use interactive mode
   sshmng file <upload|download|upload-dir|download-dir|relay> [...]  File transfer
   sshmng help | -h | --help       Print this help
 
@@ -96,7 +97,8 @@ Subcommands:
             The name also resolves to a jumphost if no server matches —
             'sshmng ssh <jumphost>' logs in directly (interactive bastion
             menu included). Non-interactive commands need a shell landing,
-            so bastions (ssh_j=false) reject commands; use interactive mode.
+            so bastions (ssh_j=false) and raw devices (raw=true, no unix
+            shell) reject commands; use interactive mode.
   file      Transfer files over sftp: upload, download, upload-dir,
             download-dir, and relay (1:N fanout). Mirrors the MCP transfer
             tools. Pattern B (bastion) is unsupported — sftp lands on the
