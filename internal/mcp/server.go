@@ -59,7 +59,7 @@ const serverInstructions = `SSH session manager: servers, jumphosts, proxies, se
 
 == Raw devices & terminal primitives ==
 - login returns mode. mode: 'raw' = no unix shell (network switches etc.) — run_in_session is REJECTED, use send_in_session/read_in_session for everything. mode: 'shell' = unix shell, prefer run_in_session.
-- send_in_session(sid, input) types input verbatim into the PTY (Enter='\r', Ctrl-C=''). read_in_session(sid, wait_ms, max_bytes) returns new output {output, more, idle_ms}.
+- send_in_session(sid, input) types input into the PTY (server interprets C-style escapes: \r=Enter, \u0003=Ctrl-C, \\=literal backslash). read_in_session(sid, wait_ms, max_bytes) returns new output {output, more, idle_ms}.
 - Typical loop: send("show version\r") → read(wait_ms=5000) → judge from content + idle_ms → next command. more=true → keep reading to drain the queue.
 - Pager prompts (e.g. '---- More ----') pause output: send ' ' to page on, 'q' to abort, or disable paging per device convention — tags and output tell you the vendor; the server ships no vendor recipes.
 - Do NOT poll read_in_session with small wait_ms; use 3-10s. Large idle_ms + complete content = done, no confirm read.
@@ -134,7 +134,7 @@ type UpdateArgs struct {
 	Patch any    `json:"patch" jsonschema:"RFC 7396 JSON Merge Patch; null deletes the entity, object merges (or creates if name not found). Structure mirrors get_* output; via/proxy fields are name strings"`
 }
 
-// NewServer 创建 MCP server 并注册 19 个工具（9 CRUD + 7 session/file + 2 dir transfer + 1 relay transfer）。
+// NewServer 创建 MCP server 并注册 21 个工具（9 CRUD + 9 session/trace + 2 raw 原语 + 4 file/dir transfer + 1 relay transfer）。
 func NewServer(svc *Service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "sshmng", Version: version.Version}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
@@ -201,7 +201,7 @@ func NewServer(svc *Service) *mcp.Server {
 	// Raw terminal primitives
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_in_session",
-		Description: "Send raw input to a session's PTY (like typing in a terminal). Input is written verbatim: include the Enter key yourself ('\\r'), control chars ('\\u0003' = Ctrl-C), pager keys (' ', 'q'). Only works when session is idle (check stat). Works on ALL sessions: raw devices (mode=raw, no unix shell — the primary way to run commands) and unix shells (for interactive/persistent programs like vim/top/tail -f, between run_in_session calls). Max input 64KB. Returns {sid, sent_bytes}. State (view mode, pager position, full-screen app) persists across calls.",
+		Description: "Send input to a session's PTY (like typing in a terminal). The server interprets C-style escapes in input: \\r = Enter, \\n, \\t, \\e = ESC, \\uXXXX (e.g. \\u0003 = Ctrl-C), \\\\ = literal backslash; everything else is written as-is. Only works when session is idle (check stat). Works on ALL sessions: raw devices (mode=raw, no unix shell — the primary way to run commands) and unix shells (for interactive/persistent programs like vim/top/tail -f, between run_in_session calls). Max input 64KB. Returns {sid, sent_bytes}. State (view mode, pager position, full-screen app) persists across calls.",
 	}, svc.SendInSession)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "read_in_session",

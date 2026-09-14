@@ -117,7 +117,7 @@ For manual config fallback and per-Agent integration steps, see [docs/agents.md]
 | Config update | `update_ssh_server` / `update_jumphost` / `update_proxy` | RFC 7396 JSON Merge Patch; null deletes, object merges/creates |
 | Session | `login(name)` → `{sid, sftp_available, mode, tags}` | Dial + LoginFlow + RC injection + sftp channel setup. `mode`: `shell` = unix shell (use `run_in_session`); `raw` = no unix shell, e.g. network switch (use `send_in_session`/`read_in_session`). `tags` mirror the server's configured tags (human→AI hints) |
 | Session | `run_in_session(sid, cmd, timeout_ms?, max_output_bytes?)` | Run command, returns output/exit_code/timed_out/truncated/total_bytes. Rejected on raw sessions |
-| Session | `send_in_session(sid, input)` | Terminal primitive: write raw input to the PTY (Enter `\r`, Ctrl-C `\u0003`, pager keys included by the caller). Idle sessions only; works on all sessions |
+| Session | `send_in_session(sid, input)` | Terminal primitive: type into the PTY. Server interprets C-style escapes (`\r`=Enter, `\n`, `\t`, `\e`=ESC, `\uXXXX`=Ctrl-C etc., `\\`=literal backslash), rest verbatim. Idle sessions only; works on all sessions |
 | Session | `read_in_session(sid, wait_ms?, max_bytes?)` | Terminal primitive: read new PTY output since last read (quiet-absorption, unread output stays queued). Returns output/more/idle_ms |
 | Session | `close_session(sid)` | Force close, trace retained for 10 minutes |
 | Session | `stat()` | List all active session summaries (including sftp_available, mode, tags) |
@@ -128,7 +128,7 @@ For manual config fallback and per-Agent integration steps, see [docs/agents.md]
 | File transfer | `download_dir(sid, src, dst, conflict?, concurrency?, timeout_ms?)` | Remote directory tree → local, recursive sftp, concurrent default 4, conflict policy overwrite/skip/rename |
 | File transfer | `relay_transfer(src_sid, src_path, dst_sids[], dst_path, timeout_ms?)` | Stream a remote file from one session to N others via sshmng (no local disk, 1:N fanout, source read once); requires sftp on source + all dests; partial failures return ok:false (check ok field, not IsError) |
 
-> Raw devices (switches etc., `raw: true`) have no unix shell: login skips shell detection / RC injection, and `run_in_session` is rejected. Drive them with the terminal primitives `send_in_session` + `read_in_session`: send a command (`\r` included), read output, judge completion from content + `idle_ms`, handle pager prompts (`---- More ----`) per device convention — the server ships no vendor recipes. The same primitives work on unix sessions for persistent programs (`tail -f`, `top`, `vim`). MCP clients serialize tool calls, so primitives are only usable while the session is idle (never during a running `run_in_session`).
+> Raw devices (switches etc., `raw: true`) have no unix shell: login skips shell detection / RC injection, and `run_in_session` is rejected. Drive them with the terminal primitives `send_in_session` + `read_in_session`: send a command (append `\r` — the server interprets C-style escapes, so Enter works whether the client transmits a real CR or the two characters `\r`), read output, judge completion from content + `idle_ms`, handle pager prompts (`---- More ----`) per device convention — the server ships no vendor recipes. The same primitives work on unix sessions for persistent programs (`tail -f`, `top`, `vim`). MCP clients serialize tool calls, so primitives are only usable while the session is idle (never during a running `run_in_session`).
 
 ## Security Notes
 

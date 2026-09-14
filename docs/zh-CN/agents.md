@@ -205,7 +205,9 @@ sshmng doctor
 
 ```
 1. login(name="sw-core-01") → {sid: "def456", mode: "raw", tags: ["huawei", "CE12800"]}
-2. send_in_session(sid, input="display version\r")       —— 回车（\r）由调用方自带
+2. send_in_session(sid, input="display version\\r")      —— 服务端解释 input 中的 C 风格
+   转义：\r = 回车、\n、\t、\e = ESC、\uXXXX（如 \u0003 = Ctrl-C）、\\ = 字面反斜杠；
+   其余字节原样写入
 3. read_in_session(sid, wait_ms=5000) → {output, more, idle_ms}
    - more=true → 继续 read 排空队列（数据不丢）
    - idle_ms 大 + 内容自洽 → 命令完成

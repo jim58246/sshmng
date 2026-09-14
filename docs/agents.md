@@ -205,7 +205,9 @@ Checks: home directory permissions, `config.json` loadability, each Agent config
 
 ```
 1. login(name="sw-core-01") → {sid: "def456", mode: "raw", tags: ["huawei", "CE12800"]}
-2. send_in_session(sid, input="display version\r")       — Enter (\r) is the caller's job
+2. send_in_session(sid, input="display version\\r")      — server interprets C-style
+   escapes in input: \r = Enter, \n, \t, \e = ESC, \uXXXX (e.g. \u0003 = Ctrl-C),
+   \\ = literal backslash; everything else verbatim
 3. read_in_session(sid, wait_ms=5000) → {output, more, idle_ms}
    - more=true → keep reading to drain the queue (nothing is lost)
    - large idle_ms + self-consistent content → command done

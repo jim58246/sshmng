@@ -127,6 +127,45 @@ func TestSendInSessionOnNonRawConn(t *testing.T) {
 	}
 }
 
+// TestSendInSessionEscapeInterpretation 验证 send_in_session 的收敛式转义:
+// 服务端解释 \r \n \t \e \uXXXX(及 \\ 逃逸),其余 verbatim。
+// 背景:v0.2.0 纯 verbatim 契约下,模型可能把 \r 当字面 backslash-r 双转义发出
+// (真实故障:回车不生效)。收敛式解释让"JSON 转义的 CR"与"字面 \r"殊途同归。
+func TestSendInSessionEscapeInterpretation(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string // Go 字面量 = 服务端收到的原始字节
+		want  string // 期望写入 PTY 的字节
+	}{
+		// 字面 \r(模型双转义形态)→ 解释为 CR
+		{"literal backslash-r", "show version\\r", "show version\r"},
+		// 真 CR(JSON 单转义形态)→ 原样通过,与上一条收敛
+		{"real CR passes through", "show version\r", "show version\r"},
+		{"non-escape set verbatim", "st\\a", "st\\a"}, // \a 不在转义集内,保持 verbatim
+		{"tab", "a\\tb", "a\tb"},
+		{"newline", "a\\nb", "a\nb"},
+		{"escape", "\\e[B", "\x1b[B"},
+		{"unicode ctrl-c", "\\u0003", "\x03"},
+		{"real ctrl-c passes through", "q\x03", "q\x03"},
+		{"escaped backslash then r", "\\\\r", "\\r"}, // 用户要字面 \r 文本
+		{"lone trailing backslash", "dir\\", "dir\\"},
+		{"no escapes", "display clock", "display clock"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fc := &fakeRawConnForMCP{baseFakeConn: &baseFakeConn{}}
+			svc, sid := newRawSvc(t, fc, true)
+			res, _, err := svc.SendInSession(context.Background(), &mcp.CallToolRequest{}, SendInSessionArgs{SID: sid, Input: c.input})
+			if err != nil || res.IsError {
+				t.Fatalf("SendInSession failed: %v %s", err, resultText(t, res))
+			}
+			if len(fc.sends) != 1 || string(fc.sends[0]) != c.want {
+				t.Errorf("input %q → conn got %q, want %q", c.input, fc.sends, c.want)
+			}
+		})
+	}
+}
+
 func TestReadInSessionHandler(t *testing.T) {
 	fc := &fakeRawConnForMCP{baseFakeConn: &baseFakeConn{}, chunks: [][]byte{[]byte("Switch> "), []byte("more data")}}
 	svc, sid := newRawSvc(t, fc, true)

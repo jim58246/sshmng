@@ -51,8 +51,8 @@
 
 **`send_in_session(sid, input)`**
 
-- `input` 原样写入 PTY stdin。回车 `\r`、Ctrl-C `\u0003`、翻页键等由 AI 自带
-- 仅 idle 状态可用;输入上限 64KB(服务端强制)
+- `input` 写入 PTY stdin,服务端先解释最小转义集:`\r`(CR)、`\n`(LF)、`\t`(TAB)、`\e`(ESC)、`\uXXXX`(码点,如 Ctrl-C)、`\\`(字面反斜杠);其余字节 verbatim。回车/控制键由 AI 以转义形式自带
+- 仅 idle 状态可用;输入上限 64KB(服务端强制,转义前计量)
 - 返回 `{sid, sent_bytes}`
 
 **`read_in_session(sid, wait_ms?, max_bytes?)`**
@@ -138,3 +138,13 @@ Go 测试内起 sshd,login 后给 `Switch>` 提示符 CLI(无 shell、回显输�
 - `docs/agents.md` + zh-CN:两新工具签名与使用模式、login/stat 新返回字段、instructions 摘要
 - `docs/configuration.md` + zh-CN:`raw` 字段
 - 按 pre-release checklist 双向同步
+
+## 变更记录
+
+### 2026-09-14:send_in_session 由纯 verbatim 改为收敛式转义
+
+v0.2.0 实际使用中发现:纯 verbatim 契约把"产生控制字节"押在模型的 JSON 转义行为上,
+而模型落地形态不可控(JSON 转义 `\r` → 真 CR;防御性双转义 `\\r` → 字面两字符),
+Claude Code 下回车不生效。修复:服务端解释最小转义集(见 send_in_session 节),
+两种落地形态收敛为同一字节,契约对模型转义行为免疫;`\\` 逃逸保证可逆。
+转义属 MCP 工具契约层(internal/mcp.expandSendInput),PtyConn.SendRaw 保持纯 verbatim。
