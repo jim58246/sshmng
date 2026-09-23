@@ -170,7 +170,8 @@ const tcpDialTimeout = 10 * time.Second
 const edrMaxRetries = 2
 
 // edrRetryDelay 是两次重试之间的间隔；包级变量以便测试注入缩短。
-var edrRetryDelay = 25 * time.Millisecond
+// 100ms 来自实测：25ms 间隔下重试仍会被拒（EDR 的拒绝状态可短暂持续）。
+var edrRetryDelay = 100 * time.Millisecond
 
 // wsaEAccess 是 WSAEACCES(10013)：Windows connect 被本地策略（EDR/WFP callout）
 // 拒绝时返回的 errno。非 Windows 平台内核 errno 上限远小于该值（Linux ≤133、
