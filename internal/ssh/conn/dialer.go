@@ -2,12 +2,14 @@ package conn
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -154,10 +156,70 @@ func (d *Dialer) DialThrough(jumpClient *ssh.Client, opts DialOptions) (*ssh.Cli
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
+// —— Windows EDR 本地拒绝重试 ——
+//
+// 奇安信天擎等 EDR 的 WFP filter 偶发在本地同步拒绝 outbound connect：错误
+// WSAEACCES(10013)、~1ms 返回、未分配源端口（SYN 未出本机）。实测为孤立单次
+// 失败（200 次采样 ~0.5%，最大连续 1 次），短延迟重试即可恢复；重试次数有上
+// 界，真实的目的端策略拦截仍会快速失败并保留原始错误。
+
+// tcpDialTimeout 是所有出站 TCP dial 的单次超时（与 ssh.ClientConfig.Timeout 一致）。
+const tcpDialTimeout = 10 * time.Second
+
+// edrMaxRetries 是 WSAEACCES 本地拒绝后的最大重试次数（总尝试 = 1 + edrMaxRetries）。
+const edrMaxRetries = 2
+
+// edrRetryDelay 是两次重试之间的间隔；包级变量以便测试注入缩短。
+var edrRetryDelay = 25 * time.Millisecond
+
+// wsaEAccess 是 WSAEACCES(10013)：Windows connect 被本地策略（EDR/WFP callout）
+// 拒绝时返回的 errno。非 Windows 平台内核 errno 上限远小于该值（Linux ≤133、
+// macOS ≤106），该判定天然惰性；单元测试可在任意平台构造该 errno 走重试路径。
+const wsaEAccess = syscall.Errno(10013)
+
+// isLocalPolicyReject 判断 err 是否为 connect 阶段的本地策略拒绝（WSAEACCES）。
+func isLocalPolicyReject(err error) bool {
+	return errors.Is(err, wsaEAccess)
+}
+
+// tcpDialer 抽象单次 TCP 拨号（net.DialTimeout 的 "tcp" 特化），测试可注入。
+type tcpDialer func(addr string, timeout time.Duration) (net.Conn, error)
+
+// netDialTimeoutTCP 是 tcpDialer 的标准实现。
+func netDialTimeoutTCP(addr string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("tcp", addr, timeout)
+}
+
+// dialTCPWithRetry 是所有出站 TCP dial 的唯一入口：对 WSAEACCES 本地拒绝做
+// 有界重试，其他错误原样返回。每次尝试独立使用 timeout（DialTimeout 语义）。
+func dialTCPWithRetry(dial tcpDialer, addr string, timeout time.Duration, logger *slog.Logger) (net.Conn, error) {
+	conn, err := dial(addr, timeout)
+	for attempt := 1; err != nil && isLocalPolicyReject(err) && attempt <= edrMaxRetries; attempt++ {
+		logger.Warn("tcp dial rejected locally by policy (WSAEACCES), retrying",
+			"addr", addr, "attempt", attempt, "max_retries", edrMaxRetries)
+		time.Sleep(edrRetryDelay)
+		conn, err = dial(addr, timeout)
+	}
+	return conn, err
+}
+
+// retryForwardDialer 是 proxy.SOCKS5 的 forward dialer：到代理的 TCP 连接同样
+// 纳入 WSAEACCES 重试（WFP 拦的是本机 connect，与对端是代理还是目标机无关）。
+type retryForwardDialer struct {
+	logger *slog.Logger
+}
+
+func (r retryForwardDialer) Dial(network, addr string) (net.Conn, error) {
+	if network != "tcp" {
+		return net.Dial(network, addr)
+	}
+	return dialTCPWithRetry(netDialTimeoutTCP, addr, tcpDialTimeout, r.logger)
+}
+
 // dialUnderlying 建立底层 TCP 连接。无代理时直连；有代理时走 SOCKS5 或 HTTP CONNECT。
 func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) {
 	if p == nil {
-		return net.DialTimeout("tcp", addr, 10*time.Second)
+		return dialTCPWithRetry(netDialTimeoutTCP, addr, tcpDialTimeout, d.logger)
 	}
 	switch p.Type {
 	case config.ProxySOCKS5:
@@ -165,13 +227,13 @@ func (d *Dialer) dialUnderlying(addr string, p *config.Proxy) (net.Conn, error) 
 		if p.Auth != nil && p.Auth.User != "" {
 			auth = &proxy.Auth{User: p.Auth.User, Password: p.Auth.Password}
 		}
-		dialer, err := proxy.SOCKS5("tcp", p.Addr, auth, &net.Dialer{Timeout: 10 * time.Second})
+		dialer, err := proxy.SOCKS5("tcp", p.Addr, auth, retryForwardDialer{logger: d.logger})
 		if err != nil {
 			return nil, fmt.Errorf("socks5 dialer: %w", err)
 		}
 		return dialer.Dial("tcp", addr)
 	case config.ProxyHTTP:
-		return httpConnect(p.Addr, p.Auth, addr, 10*time.Second)
+		return httpConnect(d.logger, p.Addr, p.Auth, addr, tcpDialTimeout)
 	default:
 		return nil, fmt.Errorf("unknown proxy type %q", p.Type)
 	}
@@ -265,8 +327,8 @@ func translateDialError(err error, addr string) error {
 
 // httpConnect 实现 HTTP CONNECT 代理隧道。
 // 协议简单：发 `CONNECT host:port HTTP/1.1` + 代理认证（如有），等 200 响应。
-func httpConnect(proxyAddr string, auth *config.ProxyAuth, target string, timeout time.Duration) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+func httpConnect(logger *slog.Logger, proxyAddr string, auth *config.ProxyAuth, target string, timeout time.Duration) (net.Conn, error) {
+	conn, err := dialTCPWithRetry(netDialTimeoutTCP, proxyAddr, timeout, logger)
 	if err != nil {
 		return nil, fmt.Errorf("dial proxy %s: %w", proxyAddr, err)
 	}
